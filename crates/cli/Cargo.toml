@@ -1,0 +1,24 @@
+[package]
+name = "peregrine-cli"
+description = "pg — thin client for the peregrine daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "pg"
+path = "src/main.rs"
+
+[dependencies]
+peregrine-api = { workspace = true }
+clap = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+http-body-util = { workspace = true }
+tower = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
