@@ -30,6 +30,8 @@
 3. `xdm` 死后，**Linux 平台至今没有 IDM 平替**；Reddit（r/linuxquestions 等）持续出现"IDM for Linux"求荐帖，需求真实且未被满足。
 4. 没有任何下载器原生支持 MCP——已出现第三方给 JDownloader 包 MCP wrapper 的项目，证明"Agent 驱动下载"是新兴真实需求，**先占位者得品类定义权**。
 
+> 逐品定性深拆（实现机制/精华/糟粕/启示，含 IDM、JDownloader2、FDM、ABDM 源码级浏览器集成、Gopeed 扩展生态、aria2 维护史、qB RSS 管道、Downie 站点运营范式、供应链投毒事件）见 [competitive-analysis.md](./competitive-analysis.md)。
+
 ### 1.2 IDM 能力拆解（对标基准）
 
 IDM 的核心竞争力按重要性排序：
