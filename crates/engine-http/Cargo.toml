@@ -9,6 +9,7 @@ authors.workspace = true
 
 [dependencies]
 peregrine-api = { workspace = true }
+peregrine-storage = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
 hyper-rustls = { workspace = true }

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/api", "crates/server", "crates/cli", "crates/engine-http"]
+members = ["crates/api", "crates/server", "crates/cli", "crates/engine-http", "crates/storage"]
 
 [workspace.package]
 version = "0.1.0"
@@ -43,6 +43,10 @@ libc = "1.0.0-alpha.4"
 
 # internal crates
 peregrine-api = { path = "crates/api" }
+peregrine-storage = { path = "crates/storage" }
+# sqlite (WAL): segment table for byte-exact resume (PROPOSAL §5.2)
+rusqlite = { version = "0.37", features = ["bundled"] }
+tempfile = "3"
 
 [profile.release]
 lto = "thin"

@@ -1,0 +1,18 @@
+[package]
+name = "peregrine-storage"
+description = "Peregrine persistence: SQLite (WAL) task + segment tables"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+peregrine-api = { workspace = true }
+anyhow = { workspace = true }
+rusqlite = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -111,6 +111,42 @@ impl ProgressSink for NoProgress {
 /// Shared sink handle — cheap to clone into worker tasks.
 pub type SharedProgressSink = Arc<dyn ProgressSink>;
 
+/// Tuning knobs for the multi-connection segmenter (PROPOSAL §5.1,
+/// phases 2–3). M1-c1 issues a STATIC even split; dynamic rebalancing
+/// (phase 4, slow-segment tail claiming) and adaptive worker counts
+/// (phase 5) arrive in M1-c2 and consume the same struct.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct SegmentConfig {
+    /// Upper bound on concurrent segment connections. PROPOSAL caps
+    /// the adaptive range at 32; the static planner uses `min(total /
+    /// min_segment, max_conns)` so small files get fewer workers.
+    pub max_conns: u32,
+    /// Segments smaller than this are not worth a connection
+    /// (PROPOSAL suggests ~5 MiB). Also the resume-cursor persistence
+    /// granularity upper bound rationale: losing ≤ this much per
+    /// segment on kill -9 is acceptable.
+    pub min_segment: u64,
+}
+
+impl Default for SegmentConfig {
+    fn default() -> Self {
+        Self {
+            max_conns: 8,
+            min_segment: 5 * 1024 * 1024,
+        }
+    }
+}
+
+impl SegmentConfig {
+    /// Clamp to sane bounds so config typos cannot spawn 10k sockets
+    /// or 1-byte segments.
+    pub fn sanitized(mut self) -> Self {
+        self.max_conns = self.max_conns.clamp(1, 32);
+        self.min_segment = self.min_segment.clamp(64 * 1024, 64 * 1024 * 1024);
+        self
+    }
+}
+
 /// A single-connection download request.
 #[derive(Debug, Clone)]
 pub struct DownloadJob {

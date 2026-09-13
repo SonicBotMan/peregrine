@@ -18,6 +18,8 @@ pub enum ApiError {
     Network(String),
     #[error("io error: {0}")]
     Io(String),
+    #[error("storage error: {0}")]
+    Storage(String),
     #[error("internal: {0}")]
     Internal(String),
 }

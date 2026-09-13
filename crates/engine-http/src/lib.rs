@@ -16,6 +16,9 @@
 //! rustls (ring provider) — no system OpenSSL dependency.
 
 pub(crate) mod download;
+pub mod segment;
+
+pub use segment::{SegmentConfig, plan_ranges};
 
 use http_body_util::Full;
 use hyper::Request;
@@ -67,6 +70,30 @@ impl HttpEngine {
             client,
             max_redirects,
         })
+    }
+}
+
+impl HttpEngine {
+    /// Segmented download (PROPOSAL §5): static ranges, bounded worker
+    /// pool, per-segment cursors persisted in `store`. Requires a known
+    /// total — the caller (probe layer) must route unknown-size or
+    /// non-ranged downloads to [`ProtocolEngine::download`].
+    pub async fn download_segmented(
+        &self,
+        job: peregrine_api::DownloadJob,
+        cfg: &segment::SegmentConfig,
+        store: &peregrine_storage::Store,
+        progress: peregrine_api::SharedProgressSink,
+    ) -> Result<peregrine_api::DownloadOutcome, ApiError> {
+        segment::run_segmented_download(
+            &self.client,
+            self.max_redirects,
+            job,
+            cfg,
+            store,
+            &progress,
+        )
+        .await
     }
 }
 
@@ -435,17 +462,22 @@ mod tests {
         };
         assert_eq!(
             HttpEngine::parse_content_range(&range("bytes 500-999/1000")),
-            Some((500, Some(1000)))
+            Some((500, 999, Some(1000)))
         );
         assert_eq!(
             HttpEngine::parse_content_range(&range("bytes 500-999/*")),
-            Some((500, None))
+            Some((500, 999, None))
         );
         // Malformed variants all refuse.
         assert_eq!(HttpEngine::parse_content_range(&range("bytes -/")), None);
         assert_eq!(HttpEngine::parse_content_range(&range("items 1-2/3")), None);
         assert_eq!(
             HttpEngine::parse_content_range(&range("bytes x-9/10")),
+            None
+        );
+        // end < start is nonsense — refuse (B20).
+        assert_eq!(
+            HttpEngine::parse_content_range(&range("bytes 999-500/1000")),
             None
         );
     }

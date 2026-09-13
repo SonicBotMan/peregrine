@@ -17,7 +17,7 @@ pub mod transport;
 pub use bus::{EngineEvent, EventBus};
 pub use download::{
     DownloadFuture, DownloadJob, DownloadOutcome, DownloadProgress, IfRangeValidator, NoProgress,
-    ProgressSink, ResumeContext, SharedProgressSink,
+    ProgressSink, ResumeContext, SegmentConfig, SharedProgressSink,
 };
 pub use engine::{ProbeFuture, ProbeInfo, ProtocolEngine};
 pub use error::ApiError;
