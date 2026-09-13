@@ -79,7 +79,9 @@ impl Listen {
             match kind {
                 "unix" => {
                     if unix.is_some() {
-                        anyhow::bail!("duplicate --listen unix spec (last-wins would silently drop the first)");
+                        anyhow::bail!(
+                            "duplicate --listen unix spec (last-wins would silently drop the first)"
+                        );
                     }
                     unix = Some(std::path::PathBuf::from(rest));
                 }
@@ -91,10 +93,14 @@ impl Listen {
                         // Ephemeral: --print_socket would print the
                         // SPEC ("tcp:0"), not the bound port — the
                         // caller's discovery would be a lie.
-                        anyhow::bail!("--listen tcp:0 is invalid: an explicit port is required (ephemeral ports break --print_socket discovery)");
+                        anyhow::bail!(
+                            "--listen tcp:0 is invalid: an explicit port is required (ephemeral ports break --print_socket discovery)"
+                        );
                     }
                     if tcp.is_some() {
-                        anyhow::bail!("duplicate --listen tcp spec (last-wins would silently drop the first)");
+                        anyhow::bail!(
+                            "duplicate --listen tcp spec (last-wins would silently drop the first)"
+                        );
                     }
                     tcp = Some(port);
                 }
@@ -147,17 +153,10 @@ mod tests {
 
     #[test]
     fn duplicate_kind_is_rejected() {
-        let err = Listen::parse(&[
-            "tcp:8420".to_string(),
-            "tcp:8421".to_string(),
-        ])
-        .unwrap_err();
+        let err = Listen::parse(&["tcp:8420".to_string(), "tcp:8421".to_string()]).unwrap_err();
         assert!(err.to_string().contains("duplicate"), "{err}");
-        let err = Listen::parse(&[
-            "unix:/a.sock".to_string(),
-            "unix:/b.sock".to_string(),
-        ])
-        .unwrap_err();
+        let err =
+            Listen::parse(&["unix:/a.sock".to_string(), "unix:/b.sock".to_string()]).unwrap_err();
         assert!(err.to_string().contains("duplicate"), "{err}");
     }
 

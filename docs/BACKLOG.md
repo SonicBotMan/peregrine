@@ -43,3 +43,7 @@ milestone noted. (R1 review, 2026-02-27)
 | B36 | `resume_job` sends `ResumeContext { validator: None }`: no If-Range/ETag revalidation — a server-side file change mid-pause resumes onto a corrupted mix. Engine already parses validators; thread the task row's stored validator through (was B31's residual) | M2+ (next engine pass) | Paused-resume against a CHANGED remote is rare for mirrors, real for small hosts |
 | B37 | WS `/events` has no hello/snapshot frame: a GUI joining after `TaskAdded` sees nothing until the next event. M3 must bootstrap REST-first then subscribe (documented), or a `hello` frame lands then | M3 | Contract note, not a bug |
 | B38 | `axum::serve` error path in main.rs exits before `sched.shutdown()` + socket cleanup (stale socket self-heals next boot via probe; workers un-drained). Also `shutdown_signal` consumes only the FIRST signal — a second Ctrl-C hits the default handler. Both worth fixing when the shutdown surface gets its own pass | M2+ | Filed from M2-d R2 (P2-8) |
+| B39 | UI 操作失败（add/pause/limit/remove）静默：catch 后无 toast/banner，用户不知道失败原因 | M3-c3+/M4 前的 UI polish 轮 | M3-c1 R2 P1-3 驳回时遗留 |
+| B40 | 桌面壳固定端口 8420：被占时 daemon 立死，GUI 只显示连接断开。改进：spawn 前 probe 端口，冲突时换端口号或弹通知 | M3-c3+ | M3-c2 R2 P2-5（单用户本地应用，接受现状） |
+| B41 | sidecar stdout/stderr 在发布 GUI 二进制里进 void（无控制台）。发布前转 log 文件（app_data_dir/peregrined.log） | M6 发布轮 | M3-c2 R2 P2-7 |
+| B42 | CI desktop workflow 产物未验证 deb 依赖完整性：补 `dpkg-deb -I bundle/**.deb` 打印 Depends 确认 webkit 运行时依赖在列 | CI 首跑后 | M3-c2 R2 P1-3 残余 |

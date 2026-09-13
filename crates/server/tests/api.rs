@@ -530,7 +530,11 @@ async fn segments_alias_same_url_sink_shares_engine_row() {
     use peregrine_storage::Store;
     let store = Store::open(&rig.dir.path().join("tasks.db")).unwrap();
     let id2 = TaskId::new(format!("{id1}-alias"));
-    let mut t2 = Task::new(id2.clone(), "https://example.com/alias.bin", "/tmp/alias.bin");
+    let mut t2 = Task::new(
+        id2.clone(),
+        "https://example.com/alias.bin",
+        "/tmp/alias.bin",
+    );
     t2.status = TaskStatus::Failed;
     store.insert_download(&t2).await.unwrap();
 
@@ -567,7 +571,11 @@ async fn host_guard_rejects_rebound_and_foreign_hosts() {
     let rig = rig().await;
     let guarded = with_host_guard(rig.app.clone());
 
-    for evil in ["evil.attacker.example:8420", "evil.attacker.example", "192.168.1.5:8420"] {
+    for evil in [
+        "evil.attacker.example:8420",
+        "evil.attacker.example",
+        "192.168.1.5:8420",
+    ] {
         let res = guarded
             .clone()
             .oneshot(
@@ -589,7 +597,12 @@ async fn host_guard_passes_loopback_hosts() {
     let rig = rig().await;
     let guarded = with_host_guard(rig.app.clone());
 
-    for ok in ["127.0.0.1:8420", "localhost:8420", "localhost", "[::1]:8420"] {
+    for ok in [
+        "127.0.0.1:8420",
+        "localhost:8420",
+        "localhost",
+        "[::1]:8420",
+    ] {
         let res = guarded
             .clone()
             .oneshot(

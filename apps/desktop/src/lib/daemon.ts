@@ -16,6 +16,32 @@ export class ApiError extends Error {
   }
 }
 
+/** Resolve daemon endpoints for THIS runtime (M3-c2).
+ *
+ * Browser (dev + served): relative — the vite proxy / a static
+ * host in front of the daemon. Tauri webview: the origin is
+ * `tauri://localhost` (macOS) / `http://tauri.localhost` (others),
+ * so relative paths would hit the webview's own origin; point
+ * straight at the sidecar's fixed loopback port instead (shell
+ * spawns it with `--tcp 8420`). Detection is feature-based
+ * (`__TAURI_INTERNALS__` is injected by every Tauri 2 webview).
+ */
+export function detectBases(): { api: string; ws: string } {
+  if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
+    // No /api prefix: that prefix exists for the vite proxy, which
+    // strips it before forwarding — the daemon serves bare routes.
+    return {
+      api: 'http://127.0.0.1:8420',
+      ws: 'ws://127.0.0.1:8420/events',
+    };
+  }
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  return {
+    api: '/api',
+    ws: `${proto}://${location.host}/ws/events`,
+  };
+}
+
 export class Daemon {
   constructor(private base: string = '') {}
 

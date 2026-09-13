@@ -135,6 +135,7 @@ async fn main() -> anyhow::Result<()> {
         // loop (logged, not silent) rather than racing a select! —
         // a UDS panic shouldn't take the GUI surface down with it.
         let app = peregrine_server::api::with_host_guard(app);
+        let app = peregrine_server::api::with_tcp_cors(app);
         serve_result = axum::serve(l, app)
             .with_graceful_shutdown(shutdown_signal())
             .await

@@ -1,0 +1,36 @@
+[package]
+name = "peregrine-desktop"
+version = "0.1.0"
+edition = "2021"
+description = "Peregrine desktop shell (Tauri 2)"
+# NOTE: intentionally NOT a workspace member — building this crate
+# requires system webkit2gtk/gtk headers, which the dev container
+# lacks. CI (.github/workflows/desktop.yml) builds it with the deps
+# installed. Keep the workspace build green locally.
+
+# Standalone workspace marker: prevents cargo from adopting this
+# crate into the parent workspace (which would break every local
+# `cargo test --workspace` on webkit-less machines).
+[workspace]
+
+[lib]
+name = "peregrine_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-shell = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["process", "time", "macros"] }
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

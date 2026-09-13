@@ -62,7 +62,13 @@ function view(t: Task, prev?: TaskView): TaskView {
   };
 }
 
-export function createStore(daemon: Daemon, stream: EventStream) {
+export function createStore(
+  daemon: Daemon,
+  stream: EventStream,
+  /** Presentation hook: fired once per completion event (dedup by
+   * the caller). Wired to OS notifications in Tauri, no-op on web. */
+  onCompleted?: (id: string) => void,
+) {
   let tasks = $state(new Map<string, TaskView>());
   const conn = writable<Conn>('connecting');
 
@@ -168,6 +174,7 @@ export function createStore(daemon: Daemon, stream: EventStream) {
         // counts (and any error text is absent by definition).
         fold(e.id, { status: 'completed', error: null });
         void daemon.get(e.id).then((t) => tasks.set(t.id, view(t, tasks.get(t.id)))).catch(() => {});
+        onCompleted?.(e.id);
         break;
       }
       case 'task_failed': {

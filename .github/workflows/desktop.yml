@@ -1,0 +1,79 @@
+name: desktop
+
+# M3-c2: Tauri shell build. The dev container lacks webkit2gtk, so
+# the src-tauri crate is NOT a workspace member and never builds
+# locally — this workflow is the ONLY place the desktop bundle is
+# compiled and validated.
+on:
+  push:
+    branches: [master]
+    paths:
+      - "apps/desktop/**"
+      - "crates/**"
+      - "Cargo.lock"
+      - ".github/workflows/desktop.yml"
+  pull_request:
+    paths:
+      - "apps/desktop/**"
+      - "crates/**"
+      - "Cargo.lock"
+      - ".github/workflows/desktop.yml"
+  workflow_dispatch:
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Tauri system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/desktop/pnpm-lock.yaml
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            apps/desktop/src-tauri
+
+      - name: Install frontend deps
+        run: pnpm install --frozen-lockfile
+        working-directory: apps/desktop
+
+      - name: Build daemon sidecar (release)
+        run: cargo build -p peregrine-server --release
+
+      - name: Stage sidecar binary for tauri externalBin
+        run: |
+          TRIPLE=$(rustc -vV | sed -n 's/host: //p')
+          mkdir -p apps/desktop/src-tauri/binaries
+          cp target/release/peregrined \
+            "apps/desktop/src-tauri/binaries/peregrined-$TRIPLE"
+
+      - name: Build desktop bundle (deb + appimage)
+        run: pnpm exec tauri build --bundles deb,appimage
+        working-directory: apps/desktop
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: peregrine-desktop-linux
+          path: |
+            apps/desktop/src-tauri/target/release/peregrine-desktop
+            apps/desktop/src-tauri/target/release/bundle/**
+          if-no-files-found: warn

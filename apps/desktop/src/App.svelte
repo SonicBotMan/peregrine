@@ -1,21 +1,26 @@
 <script lang="ts">
-  import { Daemon, EventStream } from './lib/daemon';
+  import { Daemon, EventStream, detectBases } from './lib/daemon';
   import { createStore, type TaskStore } from './lib/store.svelte';
   import TaskRow from './lib/TaskRow.svelte';
   import AddDialog from './lib/AddDialog.svelte';
   import { LIMIT_PRESETS, presetFor } from './lib/format';
   import type { Conn } from './lib/store.svelte';
+  import { notifyCompleted } from './lib/notify';
 
-  // Dev: Vite proxies /api + /ws to the daemon's loopback TCP.
-  // Tauri build: same-origin webview serving, base '' hits the
-  // bundled proxy (M3-b wires the exact base).
-  const daemon = new Daemon('/api');
-  const store: TaskStore = createStore(daemon, new EventStream(
-    `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/events`,
-    (e) => store.applyEvent(e),
-    () => void store.resync(),
-    () => connDown(),
-  ));
+  // Runtime-dependent endpoints: relative under the vite proxy
+  // (dev/served), absolute loopback inside the Tauri webview
+  // (origin there is tauri.localhost — see detectBases).
+  const daemon = new Daemon(detectBases().api);
+  const store: TaskStore = createStore(
+    daemon,
+    new EventStream(
+      detectBases().ws,
+      (e) => store.applyEvent(e),
+      () => void store.resync(),
+      () => connDown(),
+    ),
+    (id) => void notifyCompleted(id, () => store.list.find((t) => t.id === id)),
+  );
 
   let showAdd = $state(false);
   let conn: Conn = $state('connecting');

@@ -325,6 +325,34 @@ async fn remove_task(
 /// Rejecting any Host that isn't a loopback name kills the rebind.
 /// Layer this on the TCP listener ONLY — the UDS surface's boundary
 /// is filesystem permissions (0700), where Host is meaningless.
+/// Loopback Host names the guard accepts. `tauri.localhost` is the
+/// Tauri 2 webview origin on Linux/Windows (macOS uses
+/// `tauri://localhost`, which never sends a Host header the HTTP
+/// stack sees) — the shell's fetches come from there.
+pub(crate) const LOOPBACK_HOSTS: [&str; 4] = ["127.0.0.1", "localhost", "[::1]", "tauri.localhost"];
+
+/// CORS for the TCP face (M3-c2): the Tauri webview origin is not
+/// the daemon origin, so the browser stack demands CORS headers on
+/// every fetch. Origins pinned to the two Tauri webview origins plus
+/// the vite dev server; host_guard stays the outer perimeter (both
+/// layers, in order: host → cors).
+pub fn with_tcp_cors(app: axum::Router) -> axum::Router {
+    use tower_http::cors::{AllowMethods, AllowOrigin};
+    let cors = tower_http::cors::CorsLayer::new()
+        .allow_origin(AllowOrigin::list([
+            "http://tauri.localhost".parse().unwrap(),
+            "tauri://localhost".parse().unwrap(),
+            "http://localhost:5173".parse().unwrap(),
+        ]))
+        .allow_methods(AllowMethods::list([
+            axum::http::Method::GET,
+            axum::http::Method::POST,
+            axum::http::Method::PATCH,
+        ]))
+        .allow_headers(tower_http::cors::Any);
+    app.layer(cors)
+}
+
 pub fn with_host_guard(app: axum::Router) -> axum::Router {
     use axum::response::IntoResponse;
     app.layer(axum::middleware::from_fn(
@@ -335,7 +363,7 @@ pub fn with_host_guard(app: axum::Router) -> axum::Router {
                 .and_then(|h| h.to_str().ok())
                 .map(|h| {
                     let host = h.rsplit_once(':').map(|(n, _)| n).unwrap_or(h);
-                    matches!(host, "127.0.0.1" | "localhost" | "[::1]")
+                    LOOPBACK_HOSTS.contains(&host)
                 })
                 .unwrap_or(false); // HTTP/1.1 requires Host; absence = hostile
             if ok {
