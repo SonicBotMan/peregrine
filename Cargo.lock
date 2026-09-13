@@ -825,6 +825,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "peregrine-scheduler"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "peregrine-api",
+ "peregrine-engine-http",
+ "peregrine-storage",
+ "peregrine-task-manager",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "peregrine-server"
 version = "0.1.0"
 dependencies = [

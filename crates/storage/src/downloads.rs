@@ -249,7 +249,7 @@ impl Store {
                     "UPDATE downloads
                      SET received = MAX(received, ?2),
                          total = CASE WHEN ?3 IS NOT NULL THEN ?3 ELSE total END
-                     WHERE id = ?1 AND status = 'running'",
+                     WHERE id = ?1 AND status NOT IN ('completed', 'failed')",
                     params![id, received as i64, total.map(|t| t as i64)],
                 )
                 .context("updating download progress")?;

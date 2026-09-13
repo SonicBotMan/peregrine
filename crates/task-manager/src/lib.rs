@@ -234,9 +234,11 @@ impl TaskManager {
 
     /// Progress persistence for the scheduler's coalesced ticks
     /// (no event: progress events come from the engine's sink, this
-    /// only makes them durable). Ticks for missing or non-running
-    /// tasks are dropped silently: they race completion/removal by
-    /// design, and that noise is not an error.
+    /// only makes them durable). Ticks for missing or TERMINAL tasks
+    /// are dropped silently: they race completion/removal by design,
+    /// and that noise is not an error. Non-terminal states (queued /
+    /// running / PAUSED) all accept writes — a paused task's final
+    /// partial reading must land, or resume loses the UI truth.
     pub async fn update_progress(
         &self,
         id: &TaskId,
