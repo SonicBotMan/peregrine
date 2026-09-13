@@ -4,7 +4,9 @@
 //! truncate-and-rewrite when the server replays the full body), progress
 //! is cumulative (resume offset included), and every exit path leaves
 //! either a complete file or a VALID PARTIAL file the caller can resume
-//! from. Cancellation is future-drop: writes already issued to the OS
+//! from. Cancellation is cooperative via the CancellationToken: the
+//! body loop flushes and leaves a valid partial (drop-cancel still
+//! works for non-spawned futures — the writes already issued to the OS
 //! stay in the page cache, so even `kill -9` cannot corrupt the prefix.
 //!
 //! Short reads (server closes before the announced total) are ERRORS,
@@ -24,7 +26,9 @@ use hyper::Request;
 use hyper::Response;
 use hyper::body::{Bytes, Incoming};
 use hyper::header::{CONTENT_RANGE, IF_RANGE, RANGE};
-use peregrine_api::{ApiError, DownloadJob, DownloadOutcome, IfRangeValidator, SharedProgressSink};
+use peregrine_api::{
+    ApiError, DownloadJob, DownloadOutcome, DownloadProgress, IfRangeValidator, SharedProgressSink,
+};
 use std::path::Path;
 use std::time::Duration;
 use url::Url;
@@ -190,7 +194,15 @@ pub(crate) async fn run_download(
     max_redirects: usize,
     job: DownloadJob,
     progress: SharedProgressSink,
+    cancel: tokio_util::sync::CancellationToken,
 ) -> Result<DownloadOutcome, ApiError> {
+    // Fast-out on a pre-cancelled token (M2-b R2 P1-3): without this,
+    // a paused task still pays the redirect chase and — worse — a
+    // fresh (non-resume) call would truncate the sink via
+    // WriteMode::Truncate before the body loop notices the token.
+    if cancel.is_cancelled() {
+        return Err(ApiError::Cancelled);
+    }
     let DownloadJob {
         url,
         sink,
@@ -356,18 +368,36 @@ pub(crate) async fn run_download(
 
     let mut written: u64 = 0;
     loop {
-        let frame = tokio::time::timeout(STALL_TIMEOUT, body.frame())
-            .await
-            .map_err(|_| {
-                ApiError::Network(format!(
-                    "download stalled: no data for {}s (got {} of {:?})",
-                    STALL_TIMEOUT.as_secs(),
-                    resume_offset + written,
-                    expected_total
-                ))
-            })?
-            .transpose()
-            .map_err(|e| ApiError::Network(format!("body read {current}: {e}")))?;
+        let frame = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                // Cooperative stop (user pause / shutdown): flush what
+                // landed and leave a clean partial. The next resume
+                // Range-continues from the verified on-disk length.
+                // A final progress event lets the scheduler's
+                // received_bytes converge without re-stat (P2-6).
+                use tokio::io::AsyncWriteExt;
+                file.flush()
+                    .await
+                    .map_err(|e| ApiError::Io(format!("flush {}: {e}", sink.display())))?;
+                progress.on_progress(&DownloadProgress {
+                    bytes_done: resume_offset + written,
+                    total: expected_total,
+                });
+                return Err(ApiError::Cancelled);
+            }
+            frame = tokio::time::timeout(STALL_TIMEOUT, body.frame()) => frame
+                .map_err(|_| {
+                    ApiError::Network(format!(
+                        "download stalled: no data for {}s (got {} of {:?})",
+                        STALL_TIMEOUT.as_secs(),
+                        resume_offset + written,
+                        expected_total
+                    ))
+                })?
+                .transpose()
+                .map_err(|e| ApiError::Network(format!("body read {current}: {e}")))?,
+        };
 
         let Some(frame) = frame else { break }; // clean EOF
 

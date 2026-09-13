@@ -11,11 +11,13 @@ use peregrine_api::{
 };
 use peregrine_engine_http::{HttpEngine, SegmentConfig};
 use peregrine_storage::Store;
+use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;
+use tokio_util::sync::CancellationToken;
 
 fn body_bytes() -> Vec<u8> {
     (0..1000u32).map(|i| (i % 251) as u8).collect()
@@ -170,6 +172,7 @@ async fn segmented_download_assembles_exact_file() {
             &std_cfg(),
             &store,
             rec.clone(),
+            token(),
         )
         .await
         .unwrap();
@@ -218,6 +221,7 @@ async fn workers_run_concurrently_within_budget() {
             &std_cfg(),
             &store,
             Arc::new(Recorder::default()),
+            token(),
         )
         .await
         .unwrap();
@@ -261,7 +265,7 @@ async fn resume_continues_from_persisted_cursors() {
     });
 
     let out = engine()
-        .download_segmented(j, &std_cfg(), &store, rec.clone())
+        .download_segmented(j, &std_cfg(), &store, rec.clone(), token())
         .await
         .unwrap();
 
@@ -294,7 +298,13 @@ async fn validator_change_wipes_and_replans() {
         validator: Some(IfRangeValidator::StrongEtag("\"v1\"".into())),
     });
     let out = engine()
-        .download_segmented(j, &std_cfg(), &store, Arc::new(Recorder::default()))
+        .download_segmented(
+            j,
+            &std_cfg(),
+            &store,
+            Arc::new(Recorder::default()),
+            token(),
+        )
         .await
         .unwrap();
 
@@ -314,6 +324,7 @@ async fn two_ended_206_mismatch_is_refused() {
             &std_cfg(),
             &store,
             Arc::new(Recorder::default()),
+            token(),
         )
         .await
         .unwrap_err();
@@ -342,6 +353,7 @@ async fn ignored_range_hints_single_stream_downgrade() {
             &std_cfg(),
             &store,
             Arc::new(Recorder::default()),
+            token(),
         )
         .await
         .unwrap_err();
@@ -364,7 +376,13 @@ async fn unknown_total_is_rejected_upfront() {
     j.expected_total = None;
 
     let err = engine()
-        .download_segmented(j, &std_cfg(), &store, Arc::new(Recorder::default()))
+        .download_segmented(
+            j,
+            &std_cfg(),
+            &store,
+            Arc::new(Recorder::default()),
+            token(),
+        )
         .await
         .unwrap_err();
     assert!(format!("{err}").contains("known total"));
@@ -418,6 +436,7 @@ async fn missing_sink_auto_replans_from_zero() {
             &std_cfg(),
             &store,
             Arc::new(Recorder::default()),
+            token(),
         )
         .await
         .unwrap();
@@ -448,6 +467,7 @@ async fn wrong_length_sink_is_refused() {
             &std_cfg(),
             &store,
             Arc::new(Recorder::default()),
+            token(),
         )
         .await
         .unwrap_err();
@@ -498,6 +518,7 @@ async fn over_serving_worker_is_refused() {
             &std_cfg(),
             &store,
             Arc::new(Recorder::default()),
+            token(),
         )
         .await
         .unwrap_err();
@@ -534,6 +555,7 @@ async fn served_etag_mismatch_triggers_restart() {
             &std_cfg(),
             &store,
             Arc::new(Recorder::default()),
+            token(),
         )
         .await
         .unwrap();
@@ -566,6 +588,7 @@ async fn progress_total_is_always_file_total() {
             &std_cfg(),
             &store,
             rec.clone(),
+            token(),
         )
         .await
         .unwrap();
@@ -588,4 +611,191 @@ async fn progress_total_is_always_file_total() {
             events
         );
     }
+}
+
+/// A live (never-cancelled) token for tests that don't exercise cancellation.
+fn token() -> CancellationToken {
+    CancellationToken::new()
+}
+
+// --------------------------------------------------------------------
+// M2-b: cooperative cancellation (CancellationToken)
+
+/// Slow closed-range handler: parses `bytes=S-E` and drips the slice
+/// one 32B chunk per 25ms — workers sit mid-body long enough to cancel.
+async fn slow_closed(headers: HeaderMap) -> Response {
+    use axum::body::Bytes;
+    use futures::stream::StreamExt as _;
+    let full = body_bytes();
+    let Some((start, end)) = headers
+        .get(header::RANGE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("bytes="))
+        .and_then(|v| v.split_once('-'))
+        .and_then(|(s, e)| Some((s.parse::<u64>().ok()?, e.parse::<u64>().ok()?)))
+    else {
+        return (StatusCode::OK, full).into_response();
+    };
+    let slice = full[start as usize..=end as usize].to_vec();
+    let chunks: VecDeque<Result<Bytes, std::io::Error>> = slice
+        .chunks(32)
+        .map(Bytes::copy_from_slice)
+        .map(Ok)
+        .collect();
+    let stream = futures::stream::iter(chunks).then(|c| async move {
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        c
+    });
+    let mut resp = (
+        StatusCode::PARTIAL_CONTENT,
+        axum::body::Body::from_stream(stream),
+    )
+        .into_response();
+    let h = resp.headers_mut();
+    h.insert(
+        header::CONTENT_RANGE,
+        HeaderValue::from_str(&format!("bytes {start}-{end}/{}", full.len())).unwrap(),
+    );
+    h.insert(header::ETAG, HeaderValue::from_static("\"v1\""));
+    h.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    resp
+}
+
+#[tokio::test]
+async fn cancel_mid_swarm_keeps_cursors_and_resumes_cleanly() {
+    let addr = spawn(vec![("/file", get(slow_closed))]).await;
+    let engine = HttpEngine::new().unwrap();
+    let sink = temp_sink("cancel-swarm");
+    let store = Store::open_memory().unwrap();
+    let cfg = SegmentConfig {
+        min_segment_bytes: 100,
+        max_concurrency: 4,
+    };
+
+    let token = CancellationToken::new();
+    let t2 = token.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+        t2.cancel();
+    });
+
+    let url = format!("http://{addr}/file");
+    let job = DownloadJob {
+        url: url.clone(),
+        sink: sink.clone(),
+        resume: Some(ResumeContext {
+            start_offset: 0,
+            validator: Some(IfRangeValidator::StrongEtag("v1".into())),
+        }),
+        expected_total: Some(1000),
+    };
+    let err = engine
+        .download_segmented(job, &cfg, &store, Arc::new(Recorder::default()), token)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ApiError::Cancelled), "got {err:?}");
+
+    // The task row survives with a known total — that IS the resume
+    // state; wiping it on pause would throw away every flushed cursor.
+    let row = store
+        .get_task(&url, &sink)
+        .await
+        .unwrap()
+        .expect("row kept");
+    assert_eq!(row.total, Some(1000));
+    let done: u64 = row.segments.iter().map(|s| s.done).sum();
+    assert!(
+        done < 1000,
+        "cancelled swarm cannot be complete (done={done})"
+    );
+    // Preallocated sparse sink at full size.
+    assert_eq!(std::fs::metadata(&sink).unwrap().len(), 1000);
+
+    // The kill-shot for ghost workers: a clean resume after cancel
+    // completes the file exactly once. Overlapping byte writes from
+    // a stray worker would surface here as mismatched bytes.
+    let out = engine
+        .download_segmented(
+            DownloadJob {
+                url: url.clone(),
+                sink: sink.clone(),
+                resume: Some(ResumeContext {
+                    start_offset: 0,
+                    validator: Some(IfRangeValidator::StrongEtag("v1".into())),
+                }),
+                expected_total: Some(1000),
+            },
+            &cfg,
+            &store,
+            Arc::new(Recorder::default()),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert!(out.completed);
+    assert_eq!(std::fs::read(&sink).unwrap(), body_bytes());
+}
+
+// --------------------------------------------------------------------
+// M2-b R2 P0-1 regression: no ghost worker may outlive a cancelled
+// swarm. Observable via the mock: count in-flight requests. A leaked
+// worker keeps dripping (25ms/chunk) well past the joiner's return;
+// a properly aborted one drives the count to zero quickly.
+
+/// Shared in-flight request counter for leak detection.
+static SLOW_ACTIVE: AtomicI64 = AtomicI64::new(0);
+
+async fn slow_closed_counted(headers: HeaderMap) -> Response {
+    SLOW_ACTIVE.fetch_add(1, Ordering::SeqCst);
+    let resp = slow_closed(headers).await;
+    SLOW_ACTIVE.fetch_sub(1, Ordering::SeqCst);
+    resp
+}
+
+#[tokio::test]
+async fn cancelled_swarm_leaves_no_ghost_worker() {
+    let addr = spawn(vec![("/file", get(slow_closed_counted))]).await;
+    let engine = HttpEngine::new().unwrap();
+    let sink = temp_sink("ghost-check");
+    let store = Store::open_memory().unwrap();
+    let cfg = SegmentConfig {
+        min_segment_bytes: 100,
+        max_concurrency: 4,
+    };
+
+    let token = CancellationToken::new();
+    let t2 = token.clone();
+    tokio::spawn(async move {
+        // Long enough that workers are mid-body (each 100B segment
+        // drips for ~75ms at 25ms/32B), short of completion.
+        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+        t2.cancel();
+    });
+
+    let job = DownloadJob {
+        url: format!("http://{addr}/file"),
+        sink: sink.clone(),
+        resume: None,
+        expected_total: Some(1000),
+    };
+    let err = engine
+        .download_segmented(job, &cfg, &store, Arc::new(Recorder::default()), token)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ApiError::Cancelled), "got {err:?}");
+
+    // The joiner has returned; every worker must already be aborted.
+    // Poll briefly: a ghost would hold the count above zero while it
+    // finishes its ~700ms of remaining drips.
+    for _ in 0..40 {
+        if SLOW_ACTIVE.load(Ordering::SeqCst) == 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert_eq!(
+        SLOW_ACTIVE.load(Ordering::SeqCst),
+        0,
+        "a segment worker outlived the cancelled download (ghost)"
+    );
 }

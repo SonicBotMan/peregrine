@@ -15,6 +15,7 @@ hyper-util = { workspace = true }
 hyper-rustls = { workspace = true }
 http-body-util = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 url = { workspace = true }
 tracing = { workspace = true }
 

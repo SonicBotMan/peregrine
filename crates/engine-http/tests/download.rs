@@ -9,14 +9,15 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use futures::stream::StreamExt as _;
 use peregrine_api::{
-    DownloadJob, DownloadProgress, IfRangeValidator, NoProgress, ProgressSink, ProtocolEngine,
-    ResumeContext,
+    ApiError, DownloadJob, DownloadProgress, IfRangeValidator, NoProgress, ProgressSink,
+    ProtocolEngine, ResumeContext,
 };
 use peregrine_engine_http::HttpEngine;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;
+use tokio_util::sync::CancellationToken;
 
 /// The canonical body every handler serves: 1000 deterministic bytes.
 fn body_bytes() -> Vec<u8> {
@@ -197,6 +198,7 @@ async fn fresh_download_streams_all_bytes() {
                 expected_total: Some(1000),
             },
             rec.clone(),
+            token(),
         )
         .await
         .unwrap();
@@ -239,6 +241,7 @@ async fn resume_appends_from_offset() {
                 expected_total: Some(1000),
             },
             Arc::new(NoProgress),
+            token(),
         )
         .await
         .unwrap();
@@ -298,6 +301,7 @@ async fn short_206_on_resume_is_an_error_not_a_completion() {
                 expected_total: Some(1000),
             },
             Arc::new(NoProgress),
+            token(),
         )
         .await
         .unwrap_err();
@@ -343,6 +347,7 @@ async fn four16_without_a_settling_total_is_an_error() {
                 expected_total: Some(1000),
             },
             Arc::new(NoProgress),
+            token(),
         )
         .await
         .unwrap_err();
@@ -372,6 +377,7 @@ async fn mutated_resource_replays_full_body_over_partial() {
                 expected_total: Some(1000),
             },
             Arc::new(NoProgress),
+            token(),
         )
         .await
         .unwrap();
@@ -439,6 +445,7 @@ async fn etag_flipped_206_is_refused_not_glued() {
                 expected_total: Some(1000),
             },
             Arc::new(NoProgress),
+            token(),
         )
         .await
         .unwrap_err();
@@ -484,6 +491,7 @@ async fn misaligned_206_is_refused_not_glued() {
                 expected_total: Some(1000),
             },
             Arc::new(NoProgress),
+            token(),
         )
         .await
         .unwrap_err();
@@ -507,6 +515,7 @@ async fn short_read_is_an_error_not_a_completion() {
                 expected_total: Some(1000),
             },
             Arc::new(NoProgress),
+            token(),
         )
         .await
         .unwrap_err();
@@ -531,6 +540,7 @@ async fn unknown_size_completes_at_eof() {
                 expected_total: None,
             },
             Arc::new(NoProgress),
+            token(),
         )
         .await
         .unwrap();
@@ -559,6 +569,7 @@ async fn already_complete_resume_short_circuits_on_416() {
                 expected_total: Some(1000),
             },
             Arc::new(NoProgress),
+            token(),
         )
         .await
         .unwrap();
@@ -582,6 +593,7 @@ async fn download_follows_redirects() {
                 expected_total: Some(1000),
             },
             Arc::new(NoProgress),
+            token(),
         )
         .await
         .unwrap();
@@ -605,6 +617,7 @@ async fn bodyless_success_status_is_refused() {
                 expected_total: None,
             },
             Arc::new(NoProgress),
+            token(),
         )
         .await
         .unwrap_err();
@@ -629,6 +642,7 @@ async fn dropping_the_future_leaves_a_valid_prefix() {
                 expected_total: Some(16000),
             },
             Arc::new(NoProgress),
+            token(),
         );
         tokio::pin!(fut);
         let _ = tokio::time::timeout(std::time::Duration::from_millis(300), fut.as_mut()).await;
@@ -642,4 +656,83 @@ async fn dropping_the_future_leaves_a_valid_prefix() {
         on_disk.len()
     );
     assert!(on_disk.iter().all(|&b| b == 7));
+}
+
+/// A live (never-cancelled) token for tests that don't exercise cancellation.
+fn token() -> CancellationToken {
+    CancellationToken::new()
+}
+
+// --------------------------------------------------------------------
+// M2-b: cooperative cancellation (CancellationToken)
+
+/// Pause mid-download: the engine must stop reading, flush, and
+/// return Cancelled — with a valid partial on disk that a later
+/// resume continues from (not restarts).
+#[tokio::test]
+async fn cancel_mid_stream_leaves_valid_partial() {
+    let addr = spawn_mock().await;
+    let engine = HttpEngine::new().unwrap();
+    let sink = temp_sink("cancel-mid");
+
+    let token = CancellationToken::new();
+    let t2 = token.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        t2.cancel();
+    });
+
+    let err = engine
+        .download(
+            DownloadJob {
+                url: format!("http://{addr}/drip"),
+                sink: sink.clone(),
+                resume: None,
+                expected_total: Some(16000),
+            },
+            recorder(),
+            token,
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(err, ApiError::Cancelled), "got {err:?}");
+    // A partial exists, is a prefix the next resume can build on
+    // (drip chunks are 64B frames), and is strictly short of the end.
+    let len = std::fs::metadata(&sink).unwrap().len();
+    assert!(len > 0, "cancelled download must leave its partial");
+    assert_eq!(len % 64, 0);
+    assert!(len < 16000);
+    // Full resume-after-cancel round-trip lives in the segment suite
+    // (cancel_mid_swarm_keeps_cursors_and_resumes_cleanly); here the
+    // on-disk prefix is the contract.
+}
+
+/// A token already cancelled at call time returns Cancelled without
+/// touching the network.
+#[tokio::test]
+async fn cancel_before_start_returns_immediately() {
+    let addr = spawn_mock().await;
+    let engine = HttpEngine::new().unwrap();
+    let sink = temp_sink("cancel-upfront");
+
+    let token = CancellationToken::new();
+    token.cancel();
+
+    let err = engine
+        .download(
+            DownloadJob {
+                url: format!("http://{addr}/file"),
+                sink: sink.clone(),
+                resume: None,
+                expected_total: Some(1000),
+            },
+            recorder(),
+            token,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ApiError::Cancelled), "got {err:?}");
+    // Nothing written: the file may exist (pre-open) but is empty.
+    assert_eq!(std::fs::metadata(&sink).map(|m| m.len()).unwrap_or(0), 0);
 }

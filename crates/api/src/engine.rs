@@ -63,17 +63,27 @@ pub trait ProtocolEngine: Send + Sync {
     /// Move bytes into `job.sink`. Single connection, resumable, streaming:
     /// returns `Ok` only when the body ended cleanly (`completed` is
     /// always true in `Ok`); a SHORT body relative to the announced
-    /// total is `Err`. Cancellation is future-drop, which leaves a valid
-    /// partial file on disk for the next resume.
+    /// total is `Err`. Cancellation is cooperative via the token —
+    /// the engine flushes, leaves a valid partial on disk for the
+    /// next resume, and returns `Err(ApiError::Cancelled)`. (M1's
+    /// "future-drop" cancellation is not enough for the segmenter,
+    /// whose workers are spawned tasks that survive a dropped joiner.)
     ///
     /// Default: this engine does not implement download yet (M1+ engines
-    /// override; returns `ApiError::Internal`).
+    /// override; returns `ApiError::Internal`). A cancelled token is
+    /// still honored so every engine, implemented or not, reports a
+    /// pause as `Cancelled` rather than an internal failure (M2-b
+    /// R2 P2-5).
     fn download(
         &self,
         _job: DownloadJob,
         _progress: SharedProgressSink,
+        cancel: tokio_util::sync::CancellationToken,
     ) -> DownloadFuture<Result<DownloadOutcome, ApiError>> {
-        Box::pin(async {
+        Box::pin(async move {
+            if cancel.is_cancelled() {
+                return Err(ApiError::Cancelled);
+            }
             Err(ApiError::Internal(
                 "engine does not implement download".into(),
             ))

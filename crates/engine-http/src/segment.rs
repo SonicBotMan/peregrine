@@ -141,6 +141,7 @@ pub(crate) async fn run_segmented_download(
     cfg: &SegmentConfig,
     store: &Store,
     progress: &peregrine_api::download::SharedProgressSink,
+    cancel: tokio_util::sync::CancellationToken,
 ) -> Result<DownloadOutcome, ApiError> {
     // Wire form of the probe-confirmed validator (sent as If-Range on
     // every segment request and compared against the stored one for
@@ -172,6 +173,7 @@ pub(crate) async fn run_segmented_download(
             progress,
             attempt_validator.clone(),
             attempt > 0,
+            &cancel,
         )
         .await
         {
@@ -201,6 +203,7 @@ async fn run_attempt(
     progress: &peregrine_api::download::SharedProgressSink,
     validator_wire: Option<String>,
     force_fresh: bool,
+    cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<DownloadOutcome, (ApiError, bool)> {
     let fatal = |e: ApiError| (e, false);
     let DownloadJob {
@@ -373,12 +376,37 @@ async fn run_attempt(
     let mut session_written: u64 = 0;
     let mut last_etag: Option<String> = None;
     let mut first_failure: Option<(ApiError, bool)> = None;
+    let mut cancelled = false;
     let mut remaining = handles.into_iter();
-    for h in remaining.by_ref() {
-        match h
-            .await
-            .map_err(|e| fatal(ApiError::Network(format!("segment worker panicked: {e}"))))
-        {
+    for mut h in remaining.by_ref() {
+        // biased: a cancellation ping between worker completions is
+        // honored before awaiting the next worker.
+        let outcome = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                // Cooperative stop: no ghost workers may outlive the
+                // caller (spawned tasks survive a dropped joiner —
+                // they hold file handles and connections into a file
+                // whose ownership is about to change). Cursors already
+                // flushed are the resume story.
+                tracing::debug!(url = %url, "segmented download cancelled");
+                None
+            }
+            // `&mut h`: on the cancel branch the handle must stay
+            // owned HERE — dropping it would detach the worker
+            // (drop ≠ abort), leaking exactly one ghost (M2-b R2
+            // P0-1).
+            r = &mut h => Some(
+                r.map_err(|e| fatal(ApiError::Network(format!("segment worker panicked: {e}"))))
+            ),
+        };
+        let Some(r) = outcome else {
+            h.abort();
+            let _ = h.await;
+            cancelled = true;
+            break;
+        };
+        match r {
             Ok(Ok((written, etag))) => {
                 session_written += written;
                 if etag.is_some() {
@@ -390,12 +418,23 @@ async fn run_attempt(
                 first_failure = Some((e, restart));
                 break;
             }
-            Err(e) => return Err(e),
+            Err(e) => {
+                // Worker panic: abort every unjoined worker before
+                // surfacing — dropping handles detaches them (P1-4).
+                for h in remaining.by_ref() {
+                    h.abort();
+                    let _ = h.await;
+                }
+                return Err(e);
+            }
         }
     }
     for h in remaining {
         h.abort();
         let _ = h.await;
+    }
+    if cancelled {
+        return Err(fatal(ApiError::Cancelled));
     }
     if let Some(failure) = first_failure {
         return Err(failure);

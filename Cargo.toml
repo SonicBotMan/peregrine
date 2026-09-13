@@ -19,6 +19,7 @@ authors = ["SonicBotMan"]
 [workspace.dependencies]
 # async runtime
 tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 # url handling (parse/route/join redirects)
 url = "2"
 # https for engines (ring provider: pure-rust build, no system openssl)

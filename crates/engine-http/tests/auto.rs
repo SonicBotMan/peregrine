@@ -15,6 +15,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;
+use tokio_util::sync::CancellationToken;
 
 /// Middleware counting GETs that carry a REAL (non-probe) Range
 /// header — i.e. segment workers. The probe's confirm round sends
@@ -161,6 +162,7 @@ async fn fresh_ranged_large_routes_segmented() {
             &cfg(),
             &store,
             Arc::new(Recorder::default()),
+            token(),
         )
         .await
         .unwrap();
@@ -219,6 +221,7 @@ async fn small_file_routes_single() {
             &cfg(),
             &store,
             Arc::new(Recorder::default()),
+            token(),
         )
         .await
         .unwrap();
@@ -272,6 +275,7 @@ async fn no_ranges_routes_single() {
             &cfg(),
             &store,
             Arc::new(Recorder::default()),
+            token(),
         )
         .await
         .unwrap();
@@ -320,6 +324,7 @@ async fn probe_failure_falls_back_to_single() {
             &cfg(),
             &store,
             Arc::new(Recorder::default()),
+            token(),
         )
         .await
         .unwrap();
@@ -366,6 +371,7 @@ async fn store_row_sticks_to_segmented() {
             &cfg(),
             &store,
             Arc::new(Recorder::default()),
+            token(),
         )
         .await
         .unwrap();
@@ -399,6 +405,7 @@ async fn resume_context_routes_single() {
             &cfg(),
             &store,
             Arc::new(Recorder::default()),
+            token(),
         )
         .await
         .unwrap();
@@ -479,6 +486,7 @@ async fn downgrade_restarts_single_stream() {
             &cfg(),
             &store,
             Arc::new(Recorder::default()),
+            token(),
         )
         .await
         .unwrap();
@@ -489,4 +497,9 @@ async fn downgrade_restarts_single_stream() {
         served_full.load(Ordering::SeqCst) >= 1,
         "the swarm must have actually been betrayed before downgrading"
     );
+}
+
+/// A live (never-cancelled) token for tests that don't exercise cancellation.
+fn token() -> CancellationToken {
+    CancellationToken::new()
 }

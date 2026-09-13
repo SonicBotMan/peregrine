@@ -40,9 +40,13 @@ impl fmt::Display for TaskId {
 ///                    └────────── remove (any non-terminal,
 ///                               or terminal with its row) ──┘
 /// ```
-/// Cancellation is `remove`, not a state: a cancelled task leaves no
-/// row to transition (the frozen scope has no Cancelled status, and a
-/// tombstone state would only serve UI history we do not have yet).
+/// Task cancellation is `remove`, not a state: a cancelled task leaves
+/// no row to transition (the frozen scope has no Cancelled status, and
+/// a tombstone state would only serve UI history we do not have yet).
+/// That is the USER-facing cancel (delete). The ENGINE-facing pause
+/// (M2-b) is different: the engine returns `ApiError::Cancelled`, the
+/// scheduler lands the task in `Paused` WITH its row and progress —
+/// resume continues from the partial instead of restarting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskStatus {

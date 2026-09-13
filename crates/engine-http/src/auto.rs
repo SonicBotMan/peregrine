@@ -27,16 +27,20 @@ use crate::HttpEngine;
 use peregrine_api::ProtocolEngine;
 use peregrine_api::{ApiError, DownloadJob, DownloadOutcome, ResumeContext, SharedProgressSink};
 use peregrine_storage::Store;
+use tokio_util::sync::CancellationToken;
 impl HttpEngine {
     /// Probe, route, download. See the module docs for the routing
     /// table. `store` is the segment-cursor store; `cfg` the segmenter
-    /// tuning. This is the entry M2's task manager will call.
+    /// tuning. `cancel` threads through to both engines: a cancelled
+    /// call leaves a valid partial and returns `ApiError::Cancelled`.
+    /// This is the entry M2's task manager will call.
     pub async fn download_auto(
         &self,
         mut job: DownloadJob,
         cfg: &crate::segment::SegmentConfig,
         store: &Store,
         progress: SharedProgressSink,
+        cancel: CancellationToken,
     ) -> Result<DownloadOutcome, ApiError> {
         // Route 1: a live task row means the sink is a segmented
         // partial — resume in mode, ignoring today's probe (P0-2's
@@ -57,13 +61,13 @@ impl HttpEngine {
             if job.expected_total.is_none() {
                 job.expected_total = row.total;
             }
-            return run_with_downgrade(self, job, cfg, store, progress).await;
+            return run_with_downgrade(self, job, cfg, store, progress, cancel).await;
         }
 
         // Route 2: a single-stream partial in the caller's hands.
         if job.resume.is_some() {
             tracing::debug!("resume context present — single stream");
-            return self.download(job, progress).await;
+            return self.download(job, progress, cancel).await;
         }
 
         // Fresh task: probe and decide.
@@ -92,10 +96,10 @@ impl HttpEngine {
             job.expected_total = info.content_length;
             job.resume = Some(ResumeContext::from_probe(&info, 0));
             tracing::debug!(total = ?info.content_length, "routing: segmented");
-            run_with_downgrade(self, job, cfg, store, progress).await
+            run_with_downgrade(self, job, cfg, store, progress, cancel).await
         } else {
             tracing::debug!("routing: single stream");
-            self.download(job, progress).await
+            self.download(job, progress, cancel).await
         }
     }
 }
@@ -111,13 +115,24 @@ async fn run_with_downgrade(
     cfg: &crate::segment::SegmentConfig,
     store: &Store,
     progress: SharedProgressSink,
+    cancel: CancellationToken,
 ) -> Result<DownloadOutcome, ApiError> {
     match engine
-        .download_segmented(job.clone(), cfg, store, progress.clone())
+        .download_segmented(job.clone(), cfg, store, progress.clone(), cancel.clone())
         .await
     {
         Ok(out) => Ok(out),
         Err(ApiError::SingleStreamRequired { reason }) => {
+            // Cancellation beats the downgrade restart (M2-b R2
+            // P1-2): restarting destroys all progress (delete_task +
+            // single-stream truncate) before the body loop ever sees
+            // the token — a pause would silently lose every byte.
+            // Re-checked here so the race between the worker's
+            // downgrade signal and the user's cancel resolves on the
+            // side of keeping the cursors.
+            if cancel.is_cancelled() {
+                return Err(ApiError::Cancelled);
+            }
             tracing::info!(%reason, "segmenter downgraded — restarting single stream");
             // Drop the segment row first (P1-1/P1-2, M1-c2 R2): its
             // cursors describe a plan we no longer trust. Left
@@ -140,7 +155,7 @@ async fn run_with_downgrade(
             }
             let mut fresh = job;
             fresh.resume = None;
-            engine.download(fresh, progress).await
+            engine.download(fresh, progress, cancel).await
         }
         Err(e) => Err(e),
     }

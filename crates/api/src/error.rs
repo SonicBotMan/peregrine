@@ -16,6 +16,12 @@ pub enum ApiError {
     TooManyRedirects(String),
     #[error("network error: {0}")]
     Network(String),
+    /// Not a failure — the caller asked us to stop (user pause,
+    /// shutdown). Partial state on disk is deliberately valid: both
+    /// engines persist resume state as they go. The scheduler treats
+    /// this as "worker exited cleanly", never as a task failure.
+    #[error("cancelled")]
+    Cancelled,
     #[error("io error: {0}")]
     Io(String),
     #[error("storage error: {0}")]
