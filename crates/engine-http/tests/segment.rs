@@ -173,6 +173,7 @@ async fn segmented_download_assembles_exact_file() {
             &store,
             rec.clone(),
             token(),
+            &peregrine_api::budget::BudgetChain::unlimited(),
         )
         .await
         .unwrap();
@@ -222,6 +223,7 @@ async fn workers_run_concurrently_within_budget() {
             &store,
             Arc::new(Recorder::default()),
             token(),
+            &peregrine_api::budget::BudgetChain::unlimited(),
         )
         .await
         .unwrap();
@@ -265,7 +267,14 @@ async fn resume_continues_from_persisted_cursors() {
     });
 
     let out = engine()
-        .download_segmented(j, &std_cfg(), &store, rec.clone(), token())
+        .download_segmented(
+            j,
+            &std_cfg(),
+            &store,
+            rec.clone(),
+            token(),
+            &peregrine_api::budget::BudgetChain::unlimited(),
+        )
         .await
         .unwrap();
 
@@ -304,6 +313,7 @@ async fn validator_change_wipes_and_replans() {
             &store,
             Arc::new(Recorder::default()),
             token(),
+            &peregrine_api::budget::BudgetChain::unlimited(),
         )
         .await
         .unwrap();
@@ -325,6 +335,7 @@ async fn two_ended_206_mismatch_is_refused() {
             &store,
             Arc::new(Recorder::default()),
             token(),
+            &peregrine_api::budget::BudgetChain::unlimited(),
         )
         .await
         .unwrap_err();
@@ -354,6 +365,7 @@ async fn ignored_range_hints_single_stream_downgrade() {
             &store,
             Arc::new(Recorder::default()),
             token(),
+            &peregrine_api::budget::BudgetChain::unlimited(),
         )
         .await
         .unwrap_err();
@@ -382,6 +394,7 @@ async fn unknown_total_is_rejected_upfront() {
             &store,
             Arc::new(Recorder::default()),
             token(),
+            &peregrine_api::budget::BudgetChain::unlimited(),
         )
         .await
         .unwrap_err();
@@ -437,6 +450,7 @@ async fn missing_sink_auto_replans_from_zero() {
             &store,
             Arc::new(Recorder::default()),
             token(),
+            &peregrine_api::budget::BudgetChain::unlimited(),
         )
         .await
         .unwrap();
@@ -468,6 +482,7 @@ async fn wrong_length_sink_is_refused() {
             &store,
             Arc::new(Recorder::default()),
             token(),
+            &peregrine_api::budget::BudgetChain::unlimited(),
         )
         .await
         .unwrap_err();
@@ -519,6 +534,7 @@ async fn over_serving_worker_is_refused() {
             &store,
             Arc::new(Recorder::default()),
             token(),
+            &peregrine_api::budget::BudgetChain::unlimited(),
         )
         .await
         .unwrap_err();
@@ -556,6 +572,7 @@ async fn served_etag_mismatch_triggers_restart() {
             &store,
             Arc::new(Recorder::default()),
             token(),
+            &peregrine_api::budget::BudgetChain::unlimited(),
         )
         .await
         .unwrap();
@@ -589,6 +606,7 @@ async fn progress_total_is_always_file_total() {
             &store,
             rec.clone(),
             token(),
+            &peregrine_api::budget::BudgetChain::unlimited(),
         )
         .await
         .unwrap();
@@ -690,7 +708,14 @@ async fn cancel_mid_swarm_keeps_cursors_and_resumes_cleanly() {
         expected_total: Some(1000),
     };
     let err = engine
-        .download_segmented(job, &cfg, &store, Arc::new(Recorder::default()), token)
+        .download_segmented(
+            job,
+            &cfg,
+            &store,
+            Arc::new(Recorder::default()),
+            token,
+            &peregrine_api::budget::BudgetChain::unlimited(),
+        )
         .await
         .unwrap_err();
     assert!(matches!(err, ApiError::Cancelled), "got {err:?}");
@@ -729,6 +754,7 @@ async fn cancel_mid_swarm_keeps_cursors_and_resumes_cleanly() {
             &store,
             Arc::new(Recorder::default()),
             CancellationToken::new(),
+            &peregrine_api::budget::BudgetChain::unlimited(),
         )
         .await
         .unwrap();
@@ -779,7 +805,14 @@ async fn cancelled_swarm_leaves_no_ghost_worker() {
         expected_total: Some(1000),
     };
     let err = engine
-        .download_segmented(job, &cfg, &store, Arc::new(Recorder::default()), token)
+        .download_segmented(
+            job,
+            &cfg,
+            &store,
+            Arc::new(Recorder::default()),
+            token,
+            &peregrine_api::budget::BudgetChain::unlimited(),
+        )
         .await
         .unwrap_err();
     assert!(matches!(err, ApiError::Cancelled), "got {err:?}");

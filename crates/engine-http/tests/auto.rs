@@ -163,6 +163,7 @@ async fn fresh_ranged_large_routes_segmented() {
             &store,
             Arc::new(Recorder::default()),
             token(),
+            &peregrine_api::budget::BudgetChain::unlimited(),
         )
         .await
         .unwrap();
@@ -222,6 +223,7 @@ async fn small_file_routes_single() {
             &store,
             Arc::new(Recorder::default()),
             token(),
+            &peregrine_api::budget::BudgetChain::unlimited(),
         )
         .await
         .unwrap();
@@ -276,6 +278,7 @@ async fn no_ranges_routes_single() {
             &store,
             Arc::new(Recorder::default()),
             token(),
+            &peregrine_api::budget::BudgetChain::unlimited(),
         )
         .await
         .unwrap();
@@ -325,6 +328,7 @@ async fn probe_failure_falls_back_to_single() {
             &store,
             Arc::new(Recorder::default()),
             token(),
+            &peregrine_api::budget::BudgetChain::unlimited(),
         )
         .await
         .unwrap();
@@ -372,6 +376,7 @@ async fn store_row_sticks_to_segmented() {
             &store,
             Arc::new(Recorder::default()),
             token(),
+            &peregrine_api::budget::BudgetChain::unlimited(),
         )
         .await
         .unwrap();
@@ -406,6 +411,7 @@ async fn resume_context_routes_single() {
             &store,
             Arc::new(Recorder::default()),
             token(),
+            &peregrine_api::budget::BudgetChain::unlimited(),
         )
         .await
         .unwrap();
@@ -487,6 +493,7 @@ async fn downgrade_restarts_single_stream() {
             &store,
             Arc::new(Recorder::default()),
             token(),
+            &peregrine_api::budget::BudgetChain::unlimited(),
         )
         .await
         .unwrap();

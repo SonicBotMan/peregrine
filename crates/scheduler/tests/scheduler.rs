@@ -48,6 +48,16 @@ enum Script {
     RaceOk { bytes: u64, total: Option<u64> },
     /// Fail immediately.
     Fail(ApiError),
+    /// Declare a session base, then report `frames` frames
+    /// COUNTED FROM that base (the real engines' post-resume
+    /// behavior — readings are absolute cumulatives from their own
+    /// resume base, which can LAG the row's received_bytes).
+    OkFromBase {
+        base: u64,
+        bytes: u64,
+        total: Option<u64>,
+        frames: u64,
+    },
     /// Panic inside the engine future (a misbehaving port): the
     /// supervisor must log, move the row to Failed, and free the
     /// slot (R2 review F8/F10).
@@ -62,6 +72,8 @@ struct ScriptedPort {
     /// (url, sink) pairs the scheduler asked the engine to purge
     /// (B31: remove must drop engine-side resume rows).
     purged: Mutex<Vec<(String, std::path::PathBuf)>>,
+    /// (url, sink, bps) live limit pokes received (M3-b).
+    limit_calls: Mutex<Vec<(String, std::path::PathBuf, Option<u64>)>>,
 }
 
 impl ScriptedPort {
@@ -72,6 +84,7 @@ impl ScriptedPort {
             active: AtomicUsize::new(0),
             peak_active: AtomicUsize::new(0),
             purged: Mutex::new(Vec::new()),
+            limit_calls: Mutex::new(Vec::new()),
         })
     }
 
@@ -81,6 +94,10 @@ impl ScriptedPort {
 
     fn purged(&self) -> Vec<(String, std::path::PathBuf)> {
         self.purged.lock().unwrap().clone()
+    }
+
+    fn limit_calls(&self) -> Vec<(String, std::path::PathBuf, Option<u64>)> {
+        self.limit_calls.lock().unwrap().clone()
     }
 }
 
@@ -127,6 +144,13 @@ impl DownloadPort for ScriptedPort {
             .unwrap()
             .push((url.to_string(), sink.to_path_buf()));
         Box::pin(async { Ok(()) })
+    }
+
+    fn set_task_limit(&self, url: &str, sink: &std::path::Path, bps: Option<u64>) {
+        self.limit_calls
+            .lock()
+            .unwrap()
+            .push((url.to_string(), sink.to_path_buf(), bps));
     }
 }
 
@@ -176,6 +200,22 @@ async fn run_script(
             cancel.cancelled().await;
             Ok(outcome(bytes, total))
         }
+        Script::OkFromBase {
+            base,
+            bytes,
+            total,
+            frames,
+        } => {
+            p.on_session_base(base);
+            for i in 1..=frames {
+                p.on_progress(&DownloadProgress {
+                    bytes_done: base + bytes * i / frames.max(1),
+                    total,
+                });
+                tokio::task::yield_now().await;
+            }
+            Ok(outcome(bytes, total))
+        }
         Script::Fail(e) => Err(e),
         Script::Panic => {
             panic!("scripted port panic");
@@ -207,7 +247,13 @@ fn rig_cfg(scripts: Vec<Script>, cfg: SchedulerConfig) -> Rig {
     let bus = EventBus::new(1024);
     let tm = Arc::new(TaskManager::new(Store::open_memory().unwrap(), bus.clone()));
     let port = ScriptedPort::new(scripts);
-    let sched = Arc::new(Scheduler::new(tm, bus.clone(), port.clone(), cfg));
+    let sched = Arc::new(Scheduler::new(
+        tm,
+        bus.clone(),
+        port.clone(),
+        peregrine_api::budget::RateBudget::unlimited(),
+        cfg,
+    ));
     Rig { sched, port, bus }
 }
 
@@ -517,17 +563,88 @@ async fn pause_mid_flight_keeps_paused_not_failed_and_lands_partial() {
         Box::pin(status_is(&rig.sched, &t.id, TaskStatus::Paused))
     })
     .await;
-    // The partial reading the engine reported before hanging must be
-    // in the row (finish_pending lands it).
-    let row = rig.sched.tasks().get(&t.id).await.unwrap().unwrap();
-    assert_eq!(row.received_bytes, 42);
-    assert_eq!(row.total_bytes, Some(100));
+    // The partial reading the engine reported before hanging must
+    // be in the row (finish_pending lands it). The status lands
+    // BEFORE that flush (the CAS runs first), so wait for the
+    // READING, not just the status — this was a 1-in-6 flake.
+    wait_for("partial lands", || {
+        Box::pin(async {
+            matches!(
+                rig.sched.tasks().get(&t.id).await,
+                Ok(Some(t)) if t.received_bytes == 42 && t.total_bytes == Some(100)
+            )
+        })
+    })
+    .await;
 
     rig.sched.shutdown().await;
 }
 
 // ---------------------------------------------------------------------
 // 6. Resume requeues and finishes.
+
+#[tokio::test]
+async fn resumed_session_rebases_onto_row_reading() {
+    // M3-b1 smoke P0 regression: a paused task's engine cursors lag
+    // the row's received_bytes (the tail quantum reported but not
+    // yet flushed to cursors). The resumed session declares its own
+    // base (600 here) BELOW the row's landed reading (1000). Raw
+    // absolute accounting would freeze the row at 1000 until the
+    // session out-ran the tail; re-basing (`seed + (v - base)`)
+    // advances it from the very first frame. Final: 1000 + 5000.
+    let dir = tempfile::tempdir().unwrap();
+    let rig = rig(
+        vec![
+            // paused with 1000 bytes reported
+            Script::AwaitCancel {
+                partial: 1000,
+                total: Some(100_000),
+            },
+            // resumed: cursors sum 600, session adds 5000
+            Script::OkFromBase {
+                base: 600,
+                bytes: 5000,
+                total: Some(100_000),
+                frames: 5,
+            },
+        ],
+        1,
+    );
+    tokio::spawn(rig.sched.clone().run());
+
+    let t = add(&rig.sched, dir.path(), "f.bin", Priority::Normal).await;
+    wait_for("running", || {
+        Box::pin(status_is(&rig.sched, &t.id, TaskStatus::Running))
+    })
+    .await;
+    rig.sched.pause(&t.id).await.unwrap();
+    wait_for("paused", || {
+        Box::pin(status_is(&rig.sched, &t.id, TaskStatus::Paused))
+    })
+    .await;
+    wait_for("paused partial lands", || {
+        Box::pin(async {
+            matches!(
+                rig.sched.tasks().get(&t.id).await,
+                Ok(Some(t)) if t.received_bytes == 1000
+            )
+        })
+    })
+    .await;
+
+    rig.sched.resume(&t.id).await.unwrap();
+    wait_for("completed after resume", || {
+        Box::pin(status_is(&rig.sched, &t.id, TaskStatus::Completed))
+    })
+    .await;
+    let row = rig.sched.tasks().get(&t.id).await.unwrap().unwrap();
+    assert_eq!(
+        row.received_bytes, 6000,
+        "session is re-based onto the row reading (1000 + 5000), not the raw max (5600)"
+    );
+
+    rig.sched.shutdown().await;
+}
 
 #[tokio::test]
 async fn resume_requeues_the_task_and_it_completes() {
@@ -974,4 +1091,98 @@ async fn shutdown_leaves_unstarted_tasks_queued() {
         "never-started task must stay Queued across shutdown, got {:?}",
         row.status
     );
+}
+
+// ---- M3-b: rate limits -------------------------------------------------
+
+#[tokio::test]
+async fn set_task_limit_persists_and_routes_to_port() {
+    let dir = tempfile::tempdir().unwrap();
+    let rig = rig(
+        vec![Script::AwaitCancel {
+            partial: 1,
+            total: Some(10),
+        }],
+        1,
+    );
+    tokio::spawn(rig.sched.clone().run());
+
+    let t = add(&rig.sched, dir.path(), "lim.bin", Priority::Normal).await;
+    wait_for("running", || {
+        Box::pin(status_is(&rig.sched, &t.id, TaskStatus::Running))
+    })
+    .await;
+
+    // 256 KiB/s
+    let updated = rig.sched.set_task_limit(&t.id, 262_144).await.unwrap();
+    assert_eq!(updated.speed_limit_bps, 262_144);
+
+    // Row persisted...
+    let row = rig.sched.tasks().get(&t.id).await.unwrap().unwrap();
+    assert_eq!(row.speed_limit_bps, 262_144);
+    // ...and the RUNNING engine was poked live (url + sink, bps).
+    let calls = rig.port.limit_calls();
+    assert_eq!(calls.len(), 1, "exactly one live poke, got {calls:?}");
+    assert_eq!(calls[0].0, t.url);
+    assert_eq!(calls[0].1, std::path::PathBuf::from(&t.save_path));
+    assert_eq!(calls[0].2, Some(262_144));
+
+    // Unlimited (0) pokes with None.
+    rig.sched.set_task_limit(&t.id, 0).await.unwrap();
+    let calls = rig.port.limit_calls();
+    assert_eq!(calls[1].2, None);
+
+    // Unknown id → NotFound, no poke.
+    let err = rig
+        .sched
+        .set_task_limit(&peregrine_api::TaskId::new("nope"), 1)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, TaskError::NotFound(_)), "got {err:?}");
+    assert_eq!(rig.port.limit_calls().len(), 2);
+
+    rig.sched.shutdown().await;
+}
+
+#[tokio::test]
+async fn global_limit_persists_and_restores() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("g.db");
+    // Two daemons over the SAME db file: set, then boot fresh.
+    let bus = EventBus::new(1024);
+    let tm = Arc::new(TaskManager::new(
+        peregrine_storage::Store::open(&db).unwrap(),
+        bus.clone(),
+    ));
+    let port = ScriptedPort::new(vec![]);
+    let global = peregrine_api::budget::RateBudget::unlimited();
+    let sched = Arc::new(Scheduler::new(
+        tm,
+        bus.clone(),
+        port,
+        global.clone(),
+        SchedulerConfig::default(),
+    ));
+
+    assert_eq!(global.bps(), 0, "fresh daemon is unlimited");
+    sched.set_global_limit(524_288).await.unwrap();
+    assert_eq!(global.bps(), 524_288, "applied live");
+
+    // Fresh daemon, same db: restore must re-apply the persisted value.
+    let bus2 = EventBus::new(1024);
+    let tm2 = Arc::new(TaskManager::new(
+        peregrine_storage::Store::open(&db).unwrap(),
+        bus2.clone(),
+    ));
+    let global2 = peregrine_api::budget::RateBudget::unlimited();
+    let sched2 = Arc::new(Scheduler::new(
+        tm2,
+        bus2,
+        ScriptedPort::new(vec![]),
+        global2.clone(),
+        SchedulerConfig::default(),
+    ));
+    let restored = sched2.restore_global_limit().await.unwrap();
+    assert_eq!(restored, 524_288);
+    assert_eq!(global2.bps(), 524_288, "restored into the live budget");
 }

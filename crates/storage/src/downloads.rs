@@ -23,15 +23,38 @@ CREATE TABLE IF NOT EXISTS downloads (
     priority   TEXT NOT NULL DEFAULT 'normal',
     error      TEXT,
     created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
+    updated_at INTEGER NOT NULL,
+    speed_limit_bps INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_downloads_status ON downloads(status);
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 "#;
 
 /// Ensure the downloads schema exists (idempotent, part of `Store::open`).
 pub(super) fn migrate(conn: &Connection) -> Result<()> {
     conn.execute_batch(SCHEMA)
-        .context("running downloads schema migration")
+        .context("running downloads schema migration")?;
+    // Pre-M3 databases lack the limit column; SQLite has no
+    // "ADD COLUMN IF NOT EXISTS", so try once and treat a duplicate
+    // column error as success (any other error is real).
+    match conn.execute(
+        "ALTER TABLE downloads ADD COLUMN speed_limit_bps INTEGER NOT NULL DEFAULT 0",
+        [],
+    ) {
+        Ok(_) => Ok(()),
+        Err(rusqlite::Error::SqliteFailure(e, msg))
+            if e.extended_code == rusqlite::ffi::SQLITE_ERROR
+                && msg
+                    .as_deref()
+                    .is_some_and(|m| m.contains("duplicate column")) =>
+        {
+            Ok(())
+        }
+        Err(e) => Err(anyhow::anyhow!(e)).context("adding speed_limit_bps column"),
+    }
 }
 
 fn row_to_task(r: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
@@ -46,6 +69,7 @@ fn row_to_task(r: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
         error: r.get(7)?,
         created_at: r.get::<_, i64>(8)? as u64,
         updated_at: r.get::<_, i64>(9)? as u64,
+        speed_limit_bps: r.get::<_, i64>(10).unwrap_or(0).max(0) as u64,
     })
 }
 
@@ -134,7 +158,7 @@ impl Store {
             let conn = this.lock().unwrap();
             conn.query_row(
                 "SELECT id, url, save_path, status, total, received,
-                        priority, error, created_at, updated_at
+                        priority, error, created_at, updated_at, speed_limit_bps
                  FROM downloads WHERE id = ?1",
                 params![id],
                 row_to_task,
@@ -157,7 +181,7 @@ impl Store {
             let mut stmt = conn
                 .prepare(
                     "SELECT id, url, save_path, status, total, received,
-                            priority, error, created_at, updated_at
+                            priority, error, created_at, updated_at, speed_limit_bps
                      FROM downloads
                      WHERE (?1 IS NULL OR status = ?1)
                      ORDER BY CASE priority
@@ -290,6 +314,72 @@ impl Store {
         })
         .await
         .context("join update_download_progress")?
+    }
+
+    /// Persist a task's rate limit (0 = unlimited). Touches
+    /// `updated_at` so GUI ordering stays sane on limit changes.
+    pub async fn update_download_limit(&self, id: &TaskId, bps: u64) -> Result<Option<Task>> {
+        let id = id.as_str().to_string();
+        let this = self.0.clone();
+        let task = tokio::task::spawn_blocking(move || {
+            let conn = this.lock().unwrap();
+            let n = conn
+                .execute(
+                    "UPDATE downloads SET speed_limit_bps = ?2, updated_at = ?3 WHERE id = ?1",
+                    params![id, bps as i64, peregrine_api::task::unix_now()],
+                )
+                .context("updating download limit")?;
+            if n == 0 {
+                return Ok(None);
+            }
+            conn.query_row(
+                "SELECT id, url, save_path, status, total, received, priority, error, created_at, updated_at, speed_limit_bps FROM downloads WHERE id = ?1",
+                params![id],
+                row_to_task,
+            )
+            .map(Some)
+            .context("re-reading task after limit update")
+        })
+        .await
+        .context("join update_download_limit")??;
+        Ok(task)
+    }
+
+    /// Read a settings key (returns None when unset).
+    pub async fn get_setting(&self, key: &str) -> Result<Option<String>> {
+        let key = key.to_string();
+        let this = self.0.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = this.lock().unwrap();
+            conn.query_row(
+                "SELECT value FROM settings WHERE key = ?1",
+                params![key],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()
+            .context("reading setting")
+        })
+        .await
+        .context("join get_setting")?
+    }
+
+    /// Write a settings key (upsert).
+    pub async fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+        let key = key.to_string();
+        let value = value.to_string();
+        let this = self.0.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = this.lock().unwrap();
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![key, value],
+            )
+            .context("writing setting")?;
+            Ok(())
+        })
+        .await
+        .context("join set_setting")?
     }
 
     /// Remove a task row entirely (any status).

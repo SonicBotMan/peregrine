@@ -87,6 +87,12 @@ impl TaskManager {
         Self { store, bus }
     }
 
+    /// Shared handle to the store (scheduler settings persistence;
+    /// single-Store rule B32 — this is the SAME instance).
+    pub fn store(&self) -> &Store {
+        &self.store
+    }
+
     /// Boot-time crash recovery: re-queue persisted `running` rows.
     /// Returns how many were repaired (0 on a clean start).
     ///
@@ -139,6 +145,7 @@ impl TaskManager {
             total_bytes: None,
             received_bytes: 0,
             priority,
+            speed_limit_bps: 0,
             error: None,
             created_at: now,
             updated_at: now,
@@ -269,6 +276,24 @@ impl TaskManager {
             .update_download_progress(id, received, total)
             .await?;
         Ok(())
+    }
+
+    /// Set a task's per-task rate limit (0 = unlimited). Persists
+    /// (queued tasks read it at spawn) and pushes TaskLimitChanged.
+    /// Poking a RUNNING engine's bucket live is the scheduler's job
+    /// (`Scheduler::set_task_limit`) — the manager layer has no
+    /// engine handles on purpose.
+    pub async fn set_limit(&self, id: &TaskId, bps: u64) -> Result<Task, TaskError> {
+        let task = self
+            .store
+            .update_download_limit(id, bps)
+            .await?
+            .ok_or_else(|| TaskError::NotFound(id.clone()))?;
+        self.bus.publish(EngineEvent::TaskLimitChanged {
+            id: task.id.clone(),
+            speed_limit_bps: bps,
+        });
+        Ok(task)
     }
 
     /// The one transition path, compare-and-set: validate against a

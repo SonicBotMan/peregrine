@@ -79,6 +79,7 @@ pub trait ProtocolEngine: Send + Sync {
         _job: DownloadJob,
         _progress: SharedProgressSink,
         cancel: tokio_util::sync::CancellationToken,
+        _budget: &crate::budget::BudgetChain,
     ) -> DownloadFuture<Result<DownloadOutcome, ApiError>> {
         Box::pin(async move {
             if cancel.is_cancelled() {

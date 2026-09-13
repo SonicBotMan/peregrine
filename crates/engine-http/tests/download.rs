@@ -199,6 +199,7 @@ async fn fresh_download_streams_all_bytes() {
             },
             rec.clone(),
             token(),
+            &peregrine_api::budget::BudgetChain::unlimited(),
         )
         .await
         .unwrap();
@@ -242,6 +243,7 @@ async fn resume_appends_from_offset() {
             },
             Arc::new(NoProgress),
             token(),
+            &peregrine_api::budget::BudgetChain::unlimited(),
         )
         .await
         .unwrap();
@@ -302,6 +304,7 @@ async fn short_206_on_resume_is_an_error_not_a_completion() {
             },
             Arc::new(NoProgress),
             token(),
+            &peregrine_api::budget::BudgetChain::unlimited(),
         )
         .await
         .unwrap_err();
@@ -348,6 +351,7 @@ async fn four16_without_a_settling_total_is_an_error() {
             },
             Arc::new(NoProgress),
             token(),
+            &peregrine_api::budget::BudgetChain::unlimited(),
         )
         .await
         .unwrap_err();
@@ -378,6 +382,7 @@ async fn mutated_resource_replays_full_body_over_partial() {
             },
             Arc::new(NoProgress),
             token(),
+            &peregrine_api::budget::BudgetChain::unlimited(),
         )
         .await
         .unwrap();
@@ -446,6 +451,7 @@ async fn etag_flipped_206_is_refused_not_glued() {
             },
             Arc::new(NoProgress),
             token(),
+            &peregrine_api::budget::BudgetChain::unlimited(),
         )
         .await
         .unwrap_err();
@@ -492,6 +498,7 @@ async fn misaligned_206_is_refused_not_glued() {
             },
             Arc::new(NoProgress),
             token(),
+            &peregrine_api::budget::BudgetChain::unlimited(),
         )
         .await
         .unwrap_err();
@@ -516,6 +523,7 @@ async fn short_read_is_an_error_not_a_completion() {
             },
             Arc::new(NoProgress),
             token(),
+            &peregrine_api::budget::BudgetChain::unlimited(),
         )
         .await
         .unwrap_err();
@@ -541,6 +549,7 @@ async fn unknown_size_completes_at_eof() {
             },
             Arc::new(NoProgress),
             token(),
+            &peregrine_api::budget::BudgetChain::unlimited(),
         )
         .await
         .unwrap();
@@ -570,6 +579,7 @@ async fn already_complete_resume_short_circuits_on_416() {
             },
             Arc::new(NoProgress),
             token(),
+            &peregrine_api::budget::BudgetChain::unlimited(),
         )
         .await
         .unwrap();
@@ -594,6 +604,7 @@ async fn download_follows_redirects() {
             },
             Arc::new(NoProgress),
             token(),
+            &peregrine_api::budget::BudgetChain::unlimited(),
         )
         .await
         .unwrap();
@@ -618,6 +629,7 @@ async fn bodyless_success_status_is_refused() {
             },
             Arc::new(NoProgress),
             token(),
+            &peregrine_api::budget::BudgetChain::unlimited(),
         )
         .await
         .unwrap_err();
@@ -643,6 +655,7 @@ async fn dropping_the_future_leaves_a_valid_prefix() {
             },
             Arc::new(NoProgress),
             token(),
+            &peregrine_api::budget::BudgetChain::unlimited(),
         );
         tokio::pin!(fut);
         let _ = tokio::time::timeout(std::time::Duration::from_millis(300), fut.as_mut()).await;
@@ -692,6 +705,7 @@ async fn cancel_mid_stream_leaves_valid_partial() {
             },
             recorder(),
             token,
+            &peregrine_api::budget::BudgetChain::unlimited(),
         )
         .await
         .unwrap_err();
@@ -729,6 +743,7 @@ async fn cancel_before_start_returns_immediately() {
             },
             recorder(),
             token,
+            &peregrine_api::budget::BudgetChain::unlimited(),
         )
         .await
         .unwrap_err();

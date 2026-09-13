@@ -47,9 +47,7 @@ impl Args {
         match (self.tcp, &self.socket) {
             (Some(port), unix) => Ok(Listen::Tcp {
                 port,
-                also_unix: unix
-                    .as_deref()
-                    .map(std::path::PathBuf::from),
+                also_unix: unix.as_deref().map(std::path::PathBuf::from),
             }),
             (None, Some(p)) => Ok(Listen::Unix(std::path::PathBuf::from(p))),
             (None, None) => Ok(Listen::default()),
@@ -127,12 +125,8 @@ mod tests {
 
     #[test]
     fn parses_tcp_plus_unix() {
-        let args = Args::try_parse_from([
-            "peregrined",
-            "--listen",
-            "tcp:8420+unix:/tmp/g.sock",
-        ])
-        .unwrap();
+        let args =
+            Args::try_parse_from(["peregrined", "--listen", "tcp:8420+unix:/tmp/g.sock"]).unwrap();
         assert_eq!(
             args.listen_spec().unwrap(),
             Listen::Tcp {

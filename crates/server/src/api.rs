@@ -21,9 +21,9 @@ use axum::{
     Json, Router,
     extract::{Path, Query, State},
     http::StatusCode,
-    routing::{get, post},
+    routing::{get, post, put},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use peregrine_api::task::{Task, TaskId, TaskStatus};
 use peregrine_api::{AddTaskRequest, ApiErrorBody};
@@ -40,6 +40,8 @@ pub fn router(state: AppState) -> Router {
         .route("/tasks/{id}", get(get_task).delete(remove_task))
         .route("/tasks/{id}/pause", post(pause_task))
         .route("/tasks/{id}/resume", post(resume_task))
+        .route("/tasks/{id}/limit", put(set_task_limit))
+        .route("/settings", get(get_settings).put(put_settings))
         .route("/events", get(crate::ws::handler))
         // Wire contract (R2 P1-3): EVERY non-2xx is an ApiErrorBody.
         // Axum's built-in extractor rejections and router misses
@@ -228,6 +230,63 @@ async fn resume_task(State(state): State<AppState>, Path(id): Path<String>) -> A
         .await
         .map_err(map_err)?;
     Ok((StatusCode::OK, Json(task)))
+}
+
+/// Request/response pair for the rate-limit endpoints. `0` means
+/// unlimited everywhere — one representation, no nullable tricks.
+#[derive(Debug, Deserialize)]
+struct SetLimitBody {
+    bps: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SettingsBody {
+    pub global_limit_bps: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct PutSettingsBody {
+    global_limit_bps: u64,
+}
+
+/// `PUT /tasks/{id}/limit {"bps": 131072}` — persists and pokes a
+/// running engine live. 0 = unlimited.
+async fn set_task_limit(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    JsonBody(b): JsonBody<SetLimitBody>,
+) -> ApiResult<Task> {
+    let task = state
+        .0
+        .sched
+        .set_task_limit(&TaskId::new(id), b.bps)
+        .await
+        .map_err(map_err)?;
+    Ok((StatusCode::OK, Json(task)))
+}
+
+/// `GET /settings` — daemon-wide knobs. Only the global rate limit
+/// exists today; the shape is extensible (new keys are additive).
+async fn get_settings(State(state): State<AppState>) -> Json<SettingsBody> {
+    Json(SettingsBody {
+        global_limit_bps: state.0.global_budget.bps(),
+    })
+}
+
+/// `PUT /settings {"global_limit_bps": n}` — persist + apply live.
+async fn put_settings(
+    State(state): State<AppState>,
+    JsonBody(b): JsonBody<PutSettingsBody>,
+) -> Result<Json<SettingsBody>, (StatusCode, Json<ApiErrorBody>)> {
+    state
+        .0
+        .sched
+        .set_global_limit(b.global_limit_bps)
+        .await
+        .map_err(map_err)?;
+    Ok(Json(SettingsBody {
+        global_limit_bps: b.global_limit_bps,
+    }))
 }
 
 async fn remove_task(

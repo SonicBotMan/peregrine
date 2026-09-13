@@ -196,6 +196,7 @@ pub(crate) async fn run_download(
     job: DownloadJob,
     progress: SharedProgressSink,
     cancel: tokio_util::sync::CancellationToken,
+    budget: &peregrine_api::budget::BudgetChain,
 ) -> Result<DownloadOutcome, ApiError> {
     // Fast-out on a pre-cancelled token (M2-b R2 P1-3): without this,
     // a paused task still pays the redirect chase and — worse — a
@@ -210,6 +211,9 @@ pub(crate) async fn run_download(
         resume,
         mut expected_total,
     } = job;
+    // Same session-base declaration as the segmented path (see
+    // there): single-stream resumes from `start_offset`.
+    progress.on_session_base(resume.as_ref().map(|c| c.start_offset).unwrap_or(0));
 
     let current =
         Url::parse(&url).map_err(|e| ApiError::Network(format!("invalid url {url:?}: {e}")))?;
@@ -403,15 +407,48 @@ pub(crate) async fn run_download(
         let Some(frame) = frame else { break }; // clean EOF
 
         if let Some(chunk) = frame.data_ref().filter(|c| !c.is_empty()) {
-            use tokio::io::AsyncWriteExt;
-            file.write_all(chunk)
-                .await
-                .map_err(|e| ApiError::Io(format!("write {}: {e}", sink.display())))?;
-            written += chunk.len() as u64;
-            progress.on_progress(&peregrine_api::DownloadProgress {
-                bytes_done: resume_offset + written,
-                total: expected_total,
-            });
+            // Slice a frame LARGER than one second's budget into
+            // cap-sized writes: a single acquire for a 1.5 MiB hyper
+            // frame at 128 KiB/s parks ~12 s with zero bytes written
+            // (progress goes dark — the M3-b1 smoke caught this).
+            // Slice-wise payment keeps progress ~1 Hz and the write
+            // stream smooth. Unlimited → hint is u64::MAX → one slice.
+            let hint = budget.slice_hint();
+            let mut rest = chunk.as_ref();
+            while !rest.is_empty() {
+                let take = (rest.len() as u64).min(hint) as usize;
+                // Rate budget (M3-b): park for affordability BEFORE the
+                // write. The park itself is cancellable — a pause during
+                // a long throttle park (tiny bps, big chunk) must flush
+                // the partial, not hang the worker until the budget
+                // fills. Budget debits only after a completed park, so a
+                // cancelled park leaks nothing.
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => {
+                        use tokio::io::AsyncWriteExt;
+                        file.flush()
+                            .await
+                            .map_err(|e| ApiError::Io(format!("flush {}: {e}", sink.display())))?;
+                        progress.on_progress(&DownloadProgress {
+                            bytes_done: resume_offset + written,
+                            total: expected_total,
+                        });
+                        return Err(ApiError::Cancelled);
+                    }
+                    _ = budget.acquire(take as u64) => {}
+                }
+                use tokio::io::AsyncWriteExt;
+                file.write_all(&rest[..take])
+                    .await
+                    .map_err(|e| ApiError::Io(format!("write {}: {e}", sink.display())))?;
+                written += take as u64;
+                progress.on_progress(&peregrine_api::DownloadProgress {
+                    bytes_done: resume_offset + written,
+                    total: expected_total,
+                });
+                rest = &rest[take..];
+            }
         }
         // trailers (and any future frame kinds) are skipped.
     }

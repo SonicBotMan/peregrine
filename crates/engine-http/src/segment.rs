@@ -142,6 +142,7 @@ pub(crate) async fn run_segmented_download(
     store: &Store,
     progress: &peregrine_api::download::SharedProgressSink,
     cancel: tokio_util::sync::CancellationToken,
+    budget: &peregrine_api::budget::BudgetChain,
 ) -> Result<DownloadOutcome, ApiError> {
     // Wire form of the probe-confirmed validator (sent as If-Range on
     // every segment request and compared against the stored one for
@@ -174,6 +175,7 @@ pub(crate) async fn run_segmented_download(
             attempt_validator.clone(),
             attempt > 0,
             &cancel,
+            budget,
         )
         .await
         {
@@ -204,6 +206,7 @@ async fn run_attempt(
     validator_wire: Option<String>,
     force_fresh: bool,
     cancel: &tokio_util::sync::CancellationToken,
+    budget: &peregrine_api::budget::BudgetChain,
 ) -> Result<DownloadOutcome, (ApiError, bool)> {
     let fatal = |e: ApiError| (e, false);
     let DownloadJob {
@@ -229,12 +232,16 @@ async fn run_attempt(
     //     exactly (P2-1: defends the non-atomic upsert/replace window
     //     and manual DB edits),
     //   * both the probe's and the stored validator are known and
-    //     differ (two generations, both visible),
-    //   * NEITHER is known — without a validator we cannot prove the
-    //     cursors belong to the current bytes, so conservatively
-    //     replan (same posture as the single-stream 200-truncate).
-    // A single-sided validator is fine: it goes out as If-Range and
-    // the 206-vs-200 answer settles staleness per segment.
+    //     differ (two generations, both visible).
+    // NEITHER side having a validator is NOT staleness (M3-b1 smoke
+    // P0: big static mirrors like TUNA send no ETag; replanning on
+    // every resume turned "resume" into "start over" for them, and
+    // the resulting done-counter reset fought the store's MAX()
+    // progress clamp into a frozen received_bytes). Mid-flight
+    // betrayal is already covered one level down: a changed resource
+    // answers a cursor's Range with 200, which routes to the
+    // single-stream downgrade — trust the cursors, let the
+    // per-segment guards catch the rare real change.
     let existing = store
         .get_task(url, sink)
         .await
@@ -249,7 +256,6 @@ async fn run_attempt(
             }
             match (&t.etag, &validator_wire) {
                 (Some(a), Some(b)) => a != b,
-                (None, None) => true,
                 _ => false,
             }
         });
@@ -315,6 +321,12 @@ async fn run_attempt(
         bytes_done: initial_done,
         total: Some(total),
     };
+    // Declare the session base FIRST (M3-b1 smoke P0): sinks that
+    // track a cumulative column of their own (the scheduler's row)
+    // re-base this session's readings onto it — a paused task's
+    // cursors lag the row's reading by the tail quantum, and raw
+    // absolutes would freeze that column behind its monotone max().
+    progress.on_session_base(initial_done);
     if initial_done > 0 {
         progress.on_progress(&target);
     }
@@ -349,6 +361,7 @@ async fn run_attempt(
         store: store.clone(),
         done_counter: done_counter.clone(),
         progress: progress.clone(),
+        budget: budget.clone(),
     };
     let permits = Arc::new(Semaphore::new(cfg.max_concurrency));
     let mut handles = Vec::with_capacity(segments.len());
@@ -552,6 +565,9 @@ struct SegmentCtx {
     store: Store,
     done_counter: Arc<AtomicU64>,
     progress: peregrine_api::download::SharedProgressSink,
+    /// Byte budget (M3-b): per-task × global chain shared by every
+    /// worker of this task. Cheap to clone (two Arcs).
+    budget: peregrine_api::budget::BudgetChain,
 }
 
 /// Fetch one segment's remaining bytes into place. Returns
@@ -578,6 +594,7 @@ async fn run_segment(
         store,
         done_counter,
         progress,
+        budget,
     } = ctx;
     let frontier = seg.frontier();
     let want_range = format!("bytes={frontier}-{}", seg.end);
@@ -678,6 +695,13 @@ async fn run_segment(
     let mut written: u64 = 0; // this session, this segment
     let mut since_persist: u64 = 0; // bytes since last cursor flush
     let mut since_progress: u64 = 0;
+    // Progress has a BYTES threshold (don't spam events at LAN speed)
+    // and a TIME floor (don't go silent at throttled speed): with a
+    // 256 KiB threshold and a per-worker share of ~21 KiB/s under a
+    // 128 KiB/s task limit, a pure byte threshold means one event
+    // every ~12 s — a live view reads that as dead. Either-or wins
+    // in both regimes (M3-b1 smoke finding).
+    let mut last_progress = tokio::time::Instant::now();
 
     loop {
         let frame = tokio::time::timeout(STALL_TIMEOUT, body.frame())
@@ -716,31 +740,49 @@ async fn run_segment(
                     ),
                 }));
             }
-            file.write_all(chunk)
-                .await
-                .map_err(|e| fatal(ApiError::Io(format!("write {}: {e}", sink.display()))))?;
-            written += n;
-            since_persist += n;
-            since_progress += n;
-
-            if since_persist >= CURSOR_PERSIST_BYTES {
-                store
-                    .update_cursor(task_id, seg.idx, seg.done + written)
+            // Slice a frame LARGER than one second's budget into
+            // cap-sized writes (see run_download: one acquire for a
+            // multi-MB hyper frame parks for seconds with zero
+            // progress). Cancellation is the pool supervisor's
+            // abort() — it kills a parked or slicing worker equally,
+            // and tokens only leave the bucket after a completed
+            // park, so a killed slice debits nothing.
+            let hint = budget.slice_hint();
+            let mut rest = chunk.as_ref();
+            while !rest.is_empty() {
+                let take = (rest.len() as u64).min(hint) as usize;
+                budget.acquire(take as u64).await;
+                file.write_all(&rest[..take])
                     .await
-                    .map_err(|e| fatal(ApiError::Storage(e.to_string())))?;
-                since_persist = 0;
-            }
-            if since_progress >= PROGRESS_EVERY_BYTES {
-                let now =
-                    done_counter.fetch_add(since_progress, Ordering::Relaxed) + since_progress;
-                progress.on_progress(&DownloadProgress {
-                    bytes_done: now,
-                    // File-level total, ALWAYS (P1-5, M1-c1 R2): bytes_done
-                    // is cumulative for the file, so the total must be too
-                    // — never the segment's own end.
-                    total: Some(total),
-                });
-                since_progress = 0;
+                    .map_err(|e| fatal(ApiError::Io(format!("write {}: {e}", sink.display()))))?;
+                let t = take as u64;
+                written += t;
+                since_persist += t;
+                since_progress += t;
+
+                if since_persist >= CURSOR_PERSIST_BYTES {
+                    store
+                        .update_cursor(task_id, seg.idx, seg.done + written)
+                        .await
+                        .map_err(|e| fatal(ApiError::Storage(e.to_string())))?;
+                    since_persist = 0;
+                }
+                if since_progress >= PROGRESS_EVERY_BYTES
+                    || (since_progress > 0 && last_progress.elapsed() >= Duration::from_secs(1))
+                {
+                    let now =
+                        done_counter.fetch_add(since_progress, Ordering::Relaxed) + since_progress;
+                    progress.on_progress(&DownloadProgress {
+                        bytes_done: now,
+                        // File-level total, ALWAYS (P1-5, M1-c1 R2): bytes_done
+                        // is cumulative for the file, so the total must be too
+                        // — never the segment's own end.
+                        total: Some(total),
+                    });
+                    since_progress = 0;
+                    last_progress = tokio::time::Instant::now();
+                }
+                rest = &rest[take..];
             }
         }
     }

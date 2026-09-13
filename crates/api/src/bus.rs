@@ -42,6 +42,14 @@ pub enum EngineEvent {
         url: String,
         save_path: String,
     },
+    /// Per-task rate limit changed (M3-b). `speed_limit_bps` is the
+    /// NEW value (0 = unlimited). Pushed so a GUI updates its limit
+    /// control without a refetch; running engines have already been
+    /// poked live by the setter.
+    TaskLimitChanged {
+        id: TaskId,
+        speed_limit_bps: u64,
+    },
 }
 
 /// Broadcast hub. Lagging subscribers drop oldest events

@@ -88,12 +88,17 @@ fn tmp_fallback_dir() -> std::io::Result<PathBuf> {
     Ok(dir)
 }
 
-/// Effective socket path: explicit flag wins, else default.
+/// Effective socket path: explicit flag > `PGRG_SOCKET` env >
+/// default. The env var is what test harnesses and the smoke
+/// scripts set; users should use `--socket`.
 pub fn socket_path(flag: Option<&str>) -> std::io::Result<PathBuf> {
-    match flag {
-        Some(p) => Ok(PathBuf::from(p)),
-        None => default_socket_path(),
+    if let Some(p) = flag {
+        return Ok(PathBuf::from(p));
     }
+    if let Some(p) = std::env::var_os("PGRG_SOCKET").filter(|s| !s.is_empty()) {
+        return Ok(PathBuf::from(p));
+    }
+    default_socket_path()
 }
 
 #[cfg(test)]

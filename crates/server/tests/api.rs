@@ -35,6 +35,8 @@ use tower::ServiceExt;
 struct HangingPort {
     entered: AtomicUsize,
     cancelled: AtomicUsize,
+    /// Live limit pokes received (url, bps) — M3-b.
+    limits: std::sync::Mutex<Vec<(String, Option<u64>)>>,
 }
 
 impl DownloadPort for HangingPort {
@@ -60,6 +62,10 @@ impl DownloadPort for HangingPort {
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
         Box::pin(async { Ok(()) })
     }
+
+    fn set_task_limit(&self, url: &str, _sink: &std::path::Path, bps: Option<u64>) {
+        self.limits.lock().unwrap().push((url.to_string(), bps));
+    }
 }
 
 struct Rig {
@@ -74,6 +80,7 @@ async fn rig() -> Rig {
     let port = Arc::new(HangingPort {
         entered: AtomicUsize::new(0),
         cancelled: AtomicUsize::new(0),
+        limits: std::sync::Mutex::new(Vec::new()),
     });
     let daemon = Arc::new(
         Daemon::build_with_port(
@@ -259,4 +266,106 @@ async fn pause_running_task_reaches_engine_and_row() {
     assert_eq!(status, 409, "{again}");
     assert_eq!(again["error"], "illegal_transition");
     let _ = TaskStatus::Queued; // import sanity for status assertions
+}
+
+// ---- M3-b: rate-limit + settings surface -------------------------------
+
+#[tokio::test]
+async fn task_limit_endpoint_persists_and_pokes_live() {
+    let rig = rig().await;
+    let save = rig.dir.path().join("lim.bin");
+
+    let (status, created) = json_req(
+        &rig.app,
+        "POST",
+        "/tasks",
+        Some(serde_json::json!({
+            "url": "http://example.test/lim.bin",
+            "save_path": save.display().to_string(),
+        })),
+    )
+    .await;
+    assert_eq!(status, 201, "{created}");
+    let id = created["id"].as_str().unwrap().to_string();
+    wait_for(|| rig.port.entered.load(Ordering::SeqCst) == 1).await;
+
+    // PUT /tasks/{id}/limit → 200 with the updated row.
+    let (status, body) = json_req(
+        &rig.app,
+        "PUT",
+        &format!("/tasks/{id}/limit"),
+        Some(serde_json::json!({ "bps": 131072 })),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["speed_limit_bps"], 131072);
+
+    // The RUNNING engine was poked live through the port.
+    {
+        let limits = rig.port.limits.lock().unwrap();
+        assert_eq!(limits.len(), 1, "{limits:?}");
+        assert_eq!(limits[0].1, Some(131072));
+    }
+
+    // Row persisted (GET reflects it).
+    let (status, row) = json_req(&rig.app, "GET", &format!("/tasks/{id}"), None).await;
+    assert_eq!(status, 200);
+    assert_eq!(row["speed_limit_bps"], 131072);
+
+    // Unknown id → 404 not_found, no poke.
+    let (status, body) = json_req(
+        &rig.app,
+        "PUT",
+        "/tasks/nope/limit",
+        Some(serde_json::json!({ "bps": 1 })),
+    )
+    .await;
+    assert_eq!(status, 404, "{body}");
+    assert_eq!(body["error"], "not_found");
+    assert_eq!(rig.port.limits.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn settings_global_limit_roundtrip_and_persistence() {
+    let rig = rig().await;
+
+    // Fresh daemon: unlimited.
+    let (status, s) = json_req(&rig.app, "GET", "/settings", None).await;
+    assert_eq!(status, 200, "{s}");
+    assert_eq!(s["global_limit_bps"], 0);
+
+    // Set → applies live + echoes.
+    let (status, s) = json_req(
+        &rig.app,
+        "PUT",
+        "/settings",
+        Some(serde_json::json!({ "global_limit_bps": 262144 })),
+    )
+    .await;
+    assert_eq!(status, 200, "{s}");
+    assert_eq!(s["global_limit_bps"], 262144);
+    assert_eq!(rig.daemon.global_budget.bps(), 262144);
+
+    // Persistence: a NEW daemon over the same db restores at start().
+    let daemon2 = Arc::new(
+        Daemon::build_with_port(
+            Some(&rig.dir.path().join("tasks.db")),
+            SchedulerConfig::default(),
+            {
+                let p: Arc<dyn DownloadPort> = Arc::new(HangingPort {
+                    entered: AtomicUsize::new(0),
+                    cancelled: AtomicUsize::new(0),
+                    limits: std::sync::Mutex::new(Vec::new()),
+                });
+                p
+            },
+        )
+        .unwrap(),
+    );
+    daemon2.start().await.unwrap();
+    assert_eq!(
+        daemon2.global_budget.bps(),
+        262144,
+        "persisted global limit must survive a daemon restart"
+    );
 }

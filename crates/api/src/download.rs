@@ -99,6 +99,18 @@ impl DownloadProgress {
 /// this one trait.
 pub trait ProgressSink: Send + Sync {
     fn on_progress(&self, progress: &DownloadProgress);
+
+    /// Declares the absolute cumulative base THIS session resumes
+    /// from (0 for a fresh download, the store cursors' sum for
+    /// segmented resume, the sink offset for single-stream resume).
+    /// Engines call it once, before any `on_progress` frame, so a
+    /// sink that tracks a DIFFERENT cumulative (e.g. the row's own
+    /// `received_bytes`, which may lead the cursors) can re-base
+    /// the session's readings onto its own column instead of
+    /// freezing it behind a monotone max() (M3-b1 smoke P0).
+    /// Default: no-op — a sink that ignores bases keeps the raw
+    /// absolute-value semantics.
+    fn on_session_base(&self, _base: u64) {}
 }
 
 /// No-op sink for callers that don't care (internal downloads, tests).

@@ -77,6 +77,12 @@ pub trait DownloadPort: Send + Sync {
         url: &str,
         sink: &std::path::Path,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>>;
+
+    /// Live-poke a running download's per-task rate limit
+    /// (`None` = unlimited). Sync because implementations only flip
+    /// atomics. Default no-op: scripted/test ports don't throttle;
+    /// production is `HttpAutoPort`'s registry poked in-place.
+    fn set_task_limit(&self, _url: &str, _sink: &std::path::Path, _bps: Option<u64>) {}
 }
 
 /// Production port over `HttpEngine::download_auto` (PROPOSAL §5:
@@ -88,6 +94,21 @@ pub struct HttpAutoPort {
     engine: Arc<peregrine_engine_http::HttpEngine>,
     cfg: peregrine_engine_http::SegmentConfig,
     store: Store,
+    /// Daemon-wide byte budget (M3-b): every task's engine consults
+    /// it in addition to its own per-task budget. Live-updatable via
+    /// `set_bps` — no restart needed.
+    global: peregrine_api::budget::SharedRateBudget,
+    /// Per-task budgets handed out per download; keyed by (url,
+    /// sink) because that is the identity the port sees. A running
+    /// task's budget can be poked live by the settings layer.
+    locals: Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<
+                (String, std::path::PathBuf),
+                peregrine_api::budget::SharedRateBudget,
+            >,
+        >,
+    >,
 }
 
 impl HttpAutoPort {
@@ -95,8 +116,38 @@ impl HttpAutoPort {
         engine: Arc<peregrine_engine_http::HttpEngine>,
         cfg: peregrine_engine_http::SegmentConfig,
         store: Store,
+        global: peregrine_api::budget::SharedRateBudget,
     ) -> Self {
-        Self { engine, cfg, store }
+        Self {
+            engine,
+            cfg,
+            store,
+            global,
+            locals: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        }
+    }
+
+    /// Resolve the task's budget chain. `initial_bps` comes from the
+    /// task ROW (0 = unlimited): a fresh session starts from the
+    /// persisted limit, not from "unlimited" — live `set_task_limit`
+    /// only refines an existing entry.
+    fn budget_for(
+        &self,
+        url: &str,
+        sink: &std::path::Path,
+        initial_bps: u64,
+    ) -> peregrine_api::budget::BudgetChain {
+        let key = (url.to_string(), sink.to_path_buf());
+        let local = {
+            let mut map = self.locals.lock().expect("locals map poisoned");
+            map.entry(key)
+                .or_insert_with(|| peregrine_api::budget::RateBudget::with_bps(initial_bps))
+                .clone()
+        };
+        peregrine_api::budget::BudgetChain {
+            local,
+            global: self.global.clone(),
+        }
     }
 }
 
@@ -107,10 +158,36 @@ impl DownloadPort for HttpAutoPort {
         progress: SharedProgressSink,
         cancel: CancellationToken,
     ) -> Pin<Box<dyn Future<Output = Result<DownloadOutcome, ApiError>> + Send + '_>> {
-        Box::pin(
-            self.engine
-                .download_auto(job, &self.cfg, &self.store, progress, cancel),
-        )
+        let key = (job.url.clone(), job.sink.clone());
+        let locals = self.locals.clone();
+        Box::pin(async move {
+            // Read the downloads ROW before resolving the budget:
+            // the persisted limit seeds this session's local bucket.
+            // (The engine `tasks` table has no limit — downloads is
+            // the source of truth.)
+            let row = async {
+                let tid = self
+                    .store
+                    .find_active_download_by_target(&job.url, &job.sink.to_string_lossy())
+                    .await
+                    .ok()??;
+                self.store.get_download(&tid).await.ok().flatten()
+            }
+            .await;
+            let initial_bps = row.map(|t| t.speed_limit_bps).unwrap_or(0);
+            let budget = self.budget_for(&job.url, job.sink.as_path(), initial_bps);
+            let result = self
+                .engine
+                .download_auto(job, &self.cfg, &self.store, progress, cancel, &budget)
+                .await;
+            // The download (any route) is over — drop the registry
+            // entry so a future re-add of the same target starts
+            // from the row's limit, not this session's stale budget.
+            if let Ok(mut map) = locals.lock() {
+                map.remove(&key);
+            }
+            result
+        })
     }
 
     fn purge(
@@ -131,6 +208,17 @@ impl DownloadPort for HttpAutoPort {
             }
             Ok(())
         })
+    }
+
+    fn set_task_limit(&self, url: &str, sink: &std::path::Path, bps: Option<u64>) {
+        // Live poke: the RUNNING task's budget adapts on its next
+        // byte; queued tasks read the row when they start.
+        let key = (url.to_string(), sink.to_path_buf());
+        if let Ok(map) = self.locals.lock()
+            && let Some(b) = map.get(&key)
+        {
+            b.set_bps(bps.unwrap_or(0));
+        }
     }
 }
 
@@ -170,6 +258,10 @@ struct Running {
 
 pub struct Scheduler {
     tm: Arc<TaskManager>,
+    /// Daemon-wide byte budget (M3-b): the `global` half of every
+    /// task's `BudgetChain`. Owned here so `set_global_limit` can
+    /// persist (settings KV) AND apply (`set_bps`) in one call.
+    global: peregrine_api::budget::SharedRateBudget,
     bus: EventBus,
     port: Arc<dyn DownloadPort>,
     cfg: SchedulerConfig,
@@ -186,6 +278,7 @@ impl Scheduler {
         tm: Arc<TaskManager>,
         bus: EventBus,
         port: Arc<dyn DownloadPort>,
+        global: peregrine_api::budget::SharedRateBudget,
         cfg: SchedulerConfig,
     ) -> Self {
         assert!(cfg.max_concurrent >= 1, "max_concurrent must be >= 1");
@@ -201,6 +294,7 @@ impl Scheduler {
             tm,
             bus,
             port,
+            global,
             cfg,
             running: Mutex::new(HashMap::new()),
             shutdown: CancellationToken::new(),
@@ -260,6 +354,41 @@ impl Scheduler {
         // A paused head-of-queue changes what fill_slots should pick
         // next — wake so the policy re-evaluates immediately.
         self.wake.notify_one();
+        Ok(task)
+    }
+
+    /// Set the daemon-wide rate limit (0 = unlimited): persist to
+    /// the settings KV (survives restarts) and apply to the live
+    /// budget (running engines feel it on their next byte).
+    pub async fn set_global_limit(&self, bps: u64) -> Result<(), TaskError> {
+        self.tm
+            .store()
+            .set_setting("global_limit_bps", &bps.to_string())
+            .await?;
+        self.global.set_bps(bps);
+        Ok(())
+    }
+
+    /// Restore the persisted global limit at boot (settings KV →
+    /// live budget). Missing key = unlimited, the default.
+    pub async fn restore_global_limit(&self) -> Result<u64, TaskError> {
+        let raw = self.tm.store().get_setting("global_limit_bps").await?;
+        let bps = raw.and_then(|s| s.parse().ok()).unwrap_or(0);
+        self.global.set_bps(bps);
+        Ok(bps)
+    }
+
+    /// Set a task's rate limit (0 = unlimited): persist via the
+    /// manager (queued tasks pick it up at spawn) and poke a
+    /// RUNNING engine's bucket in-place — the next byte pays the new
+    /// rate, no restart.
+    pub async fn set_task_limit(&self, id: &TaskId, bps: u64) -> Result<Task, TaskError> {
+        let task = self.tm.set_limit(id, bps).await?;
+        self.port.set_task_limit(
+            &task.url,
+            task.save_path.as_ref(),
+            (bps != 0).then_some(bps),
+        );
         Ok(task)
     }
 
@@ -497,11 +626,24 @@ impl Worker {
 
     async fn run(self) {
         let id = self.task.id.clone();
+        // Seed the sink with the row's CURRENT cumulative reading
+        // (M3-b1 smoke P0): a paused task's cursors lag the store's
+        // `received_bytes` by up to one persist/progress quantum per
+        // worker (tail bytes reported but not yet flushed). A sink
+        // starting from 0 combined with on_progress's monotone max()
+        // would freeze the row's reading at the OLD value until new
+        // bytes out-ran the tail — at 128 KiB/s that's ~10 s of a
+        // dead-looking live view, at tiny rates minutes. The fill
+        // snapshot is fresh enough: between fill and this worker's
+        // engine call no other worker writes progress for this row
+        // (single-worker-per-task is the scheduler's invariant).
+        let seed = self.task.received_bytes;
         let sink = CoalescingSink::new(
             self.sched.tm.clone(),
             self.sched.bus.clone(),
             id.clone(),
             self.sched.cfg.progress_interval,
+            seed,
         );
         // Panic-safe slot release (R2 review, Race C): the guard
         // removes the map entry and stops the sink drainer even if
@@ -647,6 +789,19 @@ struct CoalescingSink {
     /// the store write is unconditional, but a late drainer tick
     /// must not emit a smaller `TaskProgress` after the final one.
     last_published: Mutex<(u64, Option<u64>)>,
+    /// The engine-declared session base (see `on_session_base`),
+    /// and the row reading at worker start (the seed). Re-basing
+    /// every reading onto the seed (`seed + (v - base)`) keeps the
+    /// column monotone from the first post-resume frame AND
+    /// immediately responsive: a paused task's cursors lag the
+    /// row's `received_bytes` by one persist/progress quantum per
+    /// worker (the paused tail), and a monotone max() over raw
+    /// engine absolutes would freeze the column until new bytes
+    /// out-ran that tail (M3-b1 smoke P0: ~10 s of dead air at
+    /// 128 KiB/s, minutes at tiny rates). No declared base (old
+    /// engines, mocks) → raw absolutes, unchanged semantics.
+    base: Mutex<Option<u64>>,
+    seed: u64,
     /// New data since the last flush. Cleared before flushing; a
     /// concurrent frame re-arms it, so the next tick writes again —
     /// no frame is ever silently swallowed.
@@ -657,14 +812,22 @@ struct CoalescingSink {
 }
 
 impl CoalescingSink {
-    fn new(tm: Arc<TaskManager>, bus: EventBus, id: TaskId, interval: Duration) -> Arc<Self> {
+    fn new(
+        tm: Arc<TaskManager>,
+        bus: EventBus,
+        id: TaskId,
+        interval: Duration,
+        seed_received: u64,
+    ) -> Arc<Self> {
         let sink = Arc::new(Self {
             tm,
             bus,
             id,
             interval,
-            state: Mutex::new((0, None)),
-            last_published: Mutex::new((0, None)),
+            state: Mutex::new((seed_received, None)),
+            last_published: Mutex::new((seed_received, None)),
+            base: Mutex::new(None),
+            seed: seed_received,
             dirty: AtomicBool::new(false),
             stop: CancellationToken::new(),
         });
@@ -729,6 +892,15 @@ impl CoalescingSink {
         });
     }
 
+    /// Map an engine-reported cumulative onto the seed base when
+    /// the engine declared its session base; raw otherwise.
+    fn rebase(&self, engine_value: u64) -> u64 {
+        match *self.base.lock().unwrap() {
+            Some(base) => engine_value.saturating_sub(base).saturating_add(self.seed),
+            None => engine_value,
+        }
+    }
+
     /// Terminal path after `Ok`: fold in the session outcome, stop
     /// the drainer, land the final reading. The final write is the
     /// one that matters for crash recovery — it must happen even if
@@ -744,7 +916,8 @@ impl CoalescingSink {
     async fn finish(self: Arc<Self>, resume_start: u64, session_bytes: u64, total: Option<u64>) {
         {
             let mut st = self.state.lock().unwrap();
-            st.0 = st.0.max(resume_start.saturating_add(session_bytes));
+            st.0 =
+                st.0.max(self.rebase(resume_start.saturating_add(session_bytes)));
             st.1 = total.or(st.1);
             if let Some(t) = st.1 {
                 st.0 = st.0.min(t); // total is the authoritative ceiling
@@ -764,13 +937,31 @@ impl CoalescingSink {
 }
 
 impl ProgressSink for CoalescingSink {
+    fn on_session_base(&self, base: u64) {
+        *self.base.lock().unwrap() = Some(base);
+    }
+
     /// Sync by trait contract (the engine's reporting surface is
     /// sync): stash the reading, mark dirty, return. No allocation,
     /// no I/O, no lock held across await — an engine may call this
     /// thousands of times per second and the cost stays O(1).
     fn on_progress(&self, p: &peregrine_api::download::DownloadProgress) {
         let mut st = self.state.lock().unwrap();
-        st.0 = st.0.max(p.bytes_done);
+        // Contract tripwire (M3-b1 R2 P1-2): a reading BELOW the
+        // seed with no declared base means this engine skipped
+        // `on_session_base` — the rebase path is off and the
+        // monotone max() will freeze the column until the session
+        // out-runs the tail. Loud, not silent.
+        if self.base.lock().unwrap().is_none() && p.bytes_done < self.seed {
+            tracing::warn!(
+                task = ?self.id,
+                reading = p.bytes_done,
+                seed = self.seed,
+                "engine reported below-row reading without declaring a session base — \
+                 received_bytes may freeze until the session out-runs the row"
+            );
+        }
+        st.0 = st.0.max(self.rebase(p.bytes_done));
         // Total only ever GROWS (R2 review: `p.total.or(st.1)` would
         // let a later frame's smaller/absent total shrink it, and the
         // finish-time min-clamp would then clamp received below

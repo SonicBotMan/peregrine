@@ -92,6 +92,7 @@ impl HttpEngine {
         store: &peregrine_storage::Store,
         progress: peregrine_api::SharedProgressSink,
         cancel: tokio_util::sync::CancellationToken,
+        budget: &peregrine_api::budget::BudgetChain,
     ) -> Result<peregrine_api::DownloadOutcome, ApiError> {
         segment::run_segmented_download(
             &self.client,
@@ -101,6 +102,7 @@ impl HttpEngine {
             store,
             &progress,
             cancel,
+            budget,
         )
         .await
     }
@@ -122,16 +124,14 @@ impl ProtocolEngine for HttpEngine {
         job: peregrine_api::DownloadJob,
         progress: peregrine_api::SharedProgressSink,
         cancel: tokio_util::sync::CancellationToken,
+        budget: &peregrine_api::budget::BudgetChain,
     ) -> peregrine_api::DownloadFuture<Result<peregrine_api::DownloadOutcome, ApiError>> {
         let client = self.client.clone();
         let max_redirects = self.max_redirects;
-        Box::pin(download::run_download(
-            client,
-            max_redirects,
-            job,
-            progress,
-            cancel,
-        ))
+        let budget = budget.clone(); // owned by the boxed future ('static)
+        Box::pin(async move {
+            download::run_download(client, max_redirects, job, progress, cancel, &budget).await
+        })
     }
 
     fn probe(&self, url: &str) -> ProbeFuture<Result<ProbeInfo, ApiError>> {

@@ -170,6 +170,10 @@ pub struct Task {
     /// Bytes announced by the server, if known (`None` for chunked/unknown).
     pub total_bytes: Option<u64>,
     pub received_bytes: u64,
+    /// Per-task throttle, bytes/sec. 0 = unlimited (M3-b). Applied
+    /// live to a RUNNING download; queued tasks read it at start.
+    #[serde(default)]
+    pub speed_limit_bps: u64,
     /// Queue ordering weight (M2-a).
     pub priority: Priority,
     /// Last error, kept for `Failed` tasks (user-facing; cleared on retry).
@@ -192,6 +196,7 @@ impl Task {
             status: TaskStatus::Queued,
             total_bytes: None,
             received_bytes: 0,
+            speed_limit_bps: 0,
             priority: Priority::Normal,
             error: None,
             created_at: now,

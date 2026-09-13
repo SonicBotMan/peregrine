@@ -54,6 +54,21 @@ enum Cmd {
 
     /// Remove a task (partial files are kept).
     Remove { id: String },
+
+    /// Set a task's download rate limit.
+    Limit {
+        id: String,
+        /// Bytes/sec. 0 = unlimited. Accepts k/m suffixes (64k, 2m).
+        #[arg(long, short)]
+        bps: String,
+    },
+
+    /// Show (or set) the daemon-wide rate limit.
+    Speed {
+        /// Set instead of show. 0 = unlimited. k/m suffixes OK.
+        #[arg(long, short)]
+        set: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -130,8 +145,69 @@ async fn main() -> anyhow::Result<()> {
             anyhow::ensure!(v["removed"].as_bool().unwrap_or(false), "daemon: {v}");
             println!("removed {id}");
         }
+        Cmd::Limit { id, bps } => {
+            let bps = parse_bps(&bps)?;
+            let task: Task = client
+                .request_json(
+                    "PUT",
+                    &format!("/tasks/{id}/limit"),
+                    Some(&serde_json::json!({ "bps": bps })),
+                )
+                .await?;
+            println!("limit {} = {}", task.id, human_bps(task.speed_limit_bps));
+        }
+        Cmd::Speed { set } => match set {
+            None => {
+                let v: serde_json::Value = client
+                    .request_json("GET", "/settings", None::<&serde_json::Value>)
+                    .await?;
+                let bps = v["global_limit_bps"].as_u64().unwrap_or(0);
+                println!("global limit = {}", human_bps(bps));
+            }
+            Some(raw) => {
+                let bps = parse_bps(&raw)?;
+                let v: serde_json::Value = client
+                    .request_json(
+                        "PUT",
+                        "/settings",
+                        Some(&serde_json::json!({ "global_limit_bps": bps })),
+                    )
+                    .await?;
+                let now = v["global_limit_bps"].as_u64().unwrap_or(bps);
+                println!("global limit = {}", human_bps(now));
+            }
+        },
     }
     Ok(())
+}
+
+/// `"64k"` → 65536, `"2m"` → 2097152, `"0"` → 0. Bare numbers are
+/// bytes/sec.
+fn parse_bps(raw: &str) -> anyhow::Result<u64> {
+    let raw = raw.trim().to_ascii_lowercase();
+    let (num, mult) = match raw.chars().last() {
+        Some('k') => (&raw[..raw.len() - 1], 1024u64),
+        Some('m') => (&raw[..raw.len() - 1], 1024 * 1024),
+        _ => (&raw[..], 1),
+    };
+    let n: u64 = num
+        .trim()
+        .parse()
+        .map_err(|_| anyhow::anyhow!("invalid rate {raw:?}: expected e.g. 128k / 2m / 0"))?;
+    Ok(n.saturating_mul(mult))
+}
+
+/// Human-readable rate for the success line.
+fn human_bps(bps: u64) -> String {
+    if bps == 0 {
+        "unlimited".to_string()
+    } else if bps >= 1024 * 1024 {
+        format!("{:.1} MB/s", bps as f64 / (1024.0 * 1024.0))
+    } else if bps >= 1024 {
+        format!("{:.1} KB/s", bps as f64 / 1024.0)
+    } else {
+        format!("{bps} B/s")
+    }
 }
 
 /// Plain-text table: stable columns, no pager, no colors. The GUI is
@@ -222,5 +298,24 @@ mod tests {
         assert_eq!(bytes_fmt(999), "999 B");
         assert_eq!(bytes_fmt(4096), "4.0 KB");
         assert_eq!(bytes_fmt(5 * 1024 * 1024), "5.0 MB");
+    }
+
+    #[test]
+    fn parses_bps_suffixes() {
+        assert_eq!(parse_bps("0").unwrap(), 0);
+        assert_eq!(parse_bps("1000").unwrap(), 1_000);
+        assert_eq!(parse_bps("64k").unwrap(), 65_536);
+        assert_eq!(parse_bps("2m").unwrap(), 2_097_152);
+        assert_eq!(parse_bps(" 128K ").unwrap(), 131_072);
+        assert!(parse_bps("fast").is_err());
+        assert!(parse_bps("").is_err());
+    }
+
+    #[test]
+    fn humanizes() {
+        assert_eq!(human_bps(0), "unlimited");
+        assert_eq!(human_bps(999), "999 B/s");
+        assert_eq!(human_bps(4096), "4.0 KB/s");
+        assert_eq!(human_bps(2 * 1024 * 1024), "2.0 MB/s");
     }
 }

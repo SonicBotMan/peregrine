@@ -36,6 +36,10 @@ use peregrine_task_manager::TaskManager;
 pub struct Daemon {
     pub sched: Arc<Scheduler>,
     pub bus: EventBus,
+    /// Daemon-wide download rate limit (M3-b). 0 = unlimited. Every
+    /// engine consults it through its `BudgetChain`; the settings
+    /// endpoint pokes it live via `set_bps`.
+    pub global_budget: peregrine_api::budget::SharedRateBudget,
     /// The db file we opened (diagnostics, tests).
     pub db_path: PathBuf,
     /// Double-boot guard: `start()` twice is a wiring bug, not a
@@ -55,6 +59,7 @@ impl Clone for Daemon {
         Self {
             sched: Arc::clone(&self.sched),
             bus: self.bus.clone(),
+            global_budget: self.global_budget.clone(),
             db_path: self.db_path.clone(),
             booted: std::sync::atomic::AtomicBool::new(
                 self.booted.load(std::sync::atomic::Ordering::SeqCst),
@@ -74,9 +79,9 @@ impl Daemon {
         sched_cfg: SchedulerConfig,
         seg_cfg: SegmentConfig,
     ) -> anyhow::Result<Self> {
-        Self::assemble(db_path, sched_cfg, |store| {
+        Self::assemble(db_path, sched_cfg, |store, global| {
             let engine = Arc::new(HttpEngine::new()?);
-            Ok(Arc::new(HttpAutoPort::new(engine, seg_cfg, store)))
+            Ok(Arc::new(HttpAutoPort::new(engine, seg_cfg, store, global)))
         })
     }
 
@@ -89,7 +94,7 @@ impl Daemon {
         sched_cfg: SchedulerConfig,
         port: Arc<dyn DownloadPort>,
     ) -> anyhow::Result<Self> {
-        Self::assemble(db_path, sched_cfg, |_| Ok(port))
+        Self::assemble(db_path, sched_cfg, |_, _| Ok(port))
     }
 
     /// The one assembly path: exactly one `Store` is opened, the
@@ -97,7 +102,10 @@ impl Daemon {
     fn assemble(
         db_path: Option<&Path>,
         sched_cfg: SchedulerConfig,
-        port_factory: impl FnOnce(Store) -> anyhow::Result<Arc<dyn DownloadPort>>,
+        port_factory: impl FnOnce(
+            Store,
+            peregrine_api::budget::SharedRateBudget,
+        ) -> anyhow::Result<Arc<dyn DownloadPort>>,
     ) -> anyhow::Result<Self> {
         let path = match db_path {
             Some(p) => p.to_path_buf(),
@@ -107,11 +115,19 @@ impl Daemon {
         let store = Store::open(&path)?;
         let bus = EventBus::default();
         let tm = Arc::new(TaskManager::new(store.clone(), bus.clone()));
-        let port = port_factory(store)?;
-        let sched = Arc::new(Scheduler::new(tm, bus.clone(), port, sched_cfg));
+        let global_budget = peregrine_api::budget::RateBudget::unlimited();
+        let port = port_factory(store, global_budget.clone())?;
+        let sched = Arc::new(Scheduler::new(
+            tm,
+            bus.clone(),
+            port,
+            global_budget.clone(),
+            sched_cfg,
+        ));
         Ok(Self {
             sched,
             bus,
+            global_budget,
             db_path: path,
             booted: AtomicBool::new(false),
             started: std::time::Instant::now(),
@@ -142,6 +158,12 @@ impl Daemon {
             anyhow::bail!("daemon already started");
         }
         let requeued = self.sched.tasks().boot().await?;
+        // M3-b: the persisted global rate limit applies from the
+        // first byte of the first task after boot (missing = 0).
+        let restored = self.sched.restore_global_limit().await?;
+        if restored > 0 {
+            tracing::info!(bps = restored, "restored global rate limit");
+        }
         let daemon = Arc::clone(self);
         tokio::spawn(async move {
             let sched = Arc::clone(&daemon.sched);

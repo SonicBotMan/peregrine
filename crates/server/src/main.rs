@@ -82,8 +82,13 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // ---- 2. Build + start (crash recovery BEFORE serving) ---------
+    // db: flag > PGRG_DB env (test/smoke harnesses) > XDG default.
+    let db = args
+        .db
+        .clone()
+        .or_else(|| std::env::var_os("PGRG_DB").map(std::path::PathBuf::from));
     let daemon = std::sync::Arc::new(Daemon::build(
-        args.db.as_deref(),
+        db.as_deref(),
         SchedulerConfig::default(),
         SegmentConfig::default(),
     )?);
@@ -153,7 +158,9 @@ async fn main() -> anyhow::Result<()> {
 /// requests before `remove_socket_file` runs.
 async fn shutdown_signal() {
     let ctrl_c = async {
-        tokio::signal::ctrl_c().await.expect("install ctrl-c handler");
+        tokio::signal::ctrl_c()
+            .await
+            .expect("install ctrl-c handler");
     };
     #[cfg(unix)]
     let terminate = async {

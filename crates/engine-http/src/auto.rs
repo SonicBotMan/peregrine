@@ -41,6 +41,7 @@ impl HttpEngine {
         store: &Store,
         progress: SharedProgressSink,
         cancel: CancellationToken,
+        budget: &peregrine_api::budget::BudgetChain,
     ) -> Result<DownloadOutcome, ApiError> {
         // Route 1: a live task row means the sink is a segmented
         // partial — resume in mode, ignoring today's probe (P0-2's
@@ -61,13 +62,13 @@ impl HttpEngine {
             if job.expected_total.is_none() {
                 job.expected_total = row.total;
             }
-            return run_with_downgrade(self, job, cfg, store, progress, cancel).await;
+            return run_with_downgrade(self, job, cfg, store, progress, cancel, budget).await;
         }
 
         // Route 2: a single-stream partial in the caller's hands.
         if job.resume.is_some() {
             tracing::debug!("resume context present — single stream");
-            return self.download(job, progress, cancel).await;
+            return self.download(job, progress, cancel, budget).await;
         }
 
         // Fresh task: probe and decide.
@@ -96,10 +97,10 @@ impl HttpEngine {
             job.expected_total = info.content_length;
             job.resume = Some(ResumeContext::from_probe(&info, 0));
             tracing::debug!(total = ?info.content_length, "routing: segmented");
-            run_with_downgrade(self, job, cfg, store, progress, cancel).await
+            run_with_downgrade(self, job, cfg, store, progress, cancel, budget).await
         } else {
             tracing::debug!("routing: single stream");
-            self.download(job, progress, cancel).await
+            self.download(job, progress, cancel, budget).await
         }
     }
 }
@@ -116,9 +117,17 @@ async fn run_with_downgrade(
     store: &Store,
     progress: SharedProgressSink,
     cancel: CancellationToken,
+    budget: &peregrine_api::budget::BudgetChain,
 ) -> Result<DownloadOutcome, ApiError> {
     match engine
-        .download_segmented(job.clone(), cfg, store, progress.clone(), cancel.clone())
+        .download_segmented(
+            job.clone(),
+            cfg,
+            store,
+            progress.clone(),
+            cancel.clone(),
+            budget,
+        )
         .await
     {
         Ok(out) => Ok(out),
@@ -155,7 +164,7 @@ async fn run_with_downgrade(
             }
             let mut fresh = job;
             fresh.resume = None;
-            engine.download(fresh, progress, cancel).await
+            engine.download(fresh, progress, cancel, budget).await
         }
         Err(e) => Err(e),
     }

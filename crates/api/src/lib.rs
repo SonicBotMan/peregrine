@@ -5,6 +5,7 @@
 //! Clients (GUI / CLI / MCP) and engines both consume this crate; nothing in
 //! here may depend on any shell or engine crate (architecture rule #3/#1).
 
+pub mod budget;
 pub mod bus;
 pub mod download;
 pub mod engine;
