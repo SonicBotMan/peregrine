@@ -12,8 +12,7 @@ export type TaskStatus =
   | 'running'
   | 'paused'
   | 'completed'
-  | 'failed'
-  | 'removed';
+  | 'failed';
 
 export type Priority = 'low' | 'normal' | 'high';
 
@@ -28,8 +27,11 @@ export interface Task {
   /** Per-task throttle, bytes/sec. 0 = unlimited (wire snake_case). */
   speed_limit_bps: number;
   error: string | null;
-  created_at: string;
-  updated_at: string;
+  /** Unix epoch SECONDS (wire u64) — not ISO strings. Multiply by
+   * 1000 for Date math; the store keeps all internal time in epoch
+   * seconds so REST rows and folded events share one unit. */
+  created_at: number;
+  updated_at: number;
 }
 
 /** Wire view of one planned segment (M3-c1 telemetry). `pct` is
@@ -50,12 +52,22 @@ export interface Settings {
   global_limit_bps: number;
 }
 
+/** Mirrors crates/api/src/bus.rs `EngineEvent` (serde tag="type",
+ * snake_case) PLUS the server's synthetic lag frame — the daemon's
+ * WS bridge serializes the bus enum verbatim, so this union must
+ * list every variant or applyEvent silently drops it. When bus.rs
+ * gains a variant, mirror it here in the same commit. */
 export type EngineEvent =
   | { type: 'task_added'; id: string; status: TaskStatus }
+  | { type: 'task_started'; id: string }
   | { type: 'task_progress'; id: string; received: number; total: number | null }
-  | { type: 'task_status'; id: string; status: TaskStatus; error?: string | null }
-  | { type: 'task_removed'; id: string }
-  | { type: 'task_limit_changed'; id: string; speed_limit_bps: number };
+  | { type: 'task_status_changed'; id: string; status: TaskStatus }
+  | { type: 'task_completed'; id: string }
+  | { type: 'task_failed'; id: string; reason: string }
+  | { type: 'task_removed'; id: string; url: string; save_path: string }
+  | { type: 'task_limit_changed'; id: string; speed_limit_bps: number }
+  /** Synthetic (server/src/ws.rs): subscriber lagged — refetch. */
+  | { type: 'resync_required'; skipped: number };
 
 export interface Health {
   name: string;
@@ -65,8 +77,4 @@ export interface Health {
   status: string;
 }
 
-export const TERMINAL: ReadonlySet<TaskStatus> = new Set([
-  'completed',
-  'failed',
-  'removed',
-]);
+export const TERMINAL: ReadonlySet<TaskStatus> = new Set(['completed', 'failed']);

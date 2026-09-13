@@ -10,20 +10,25 @@
   // Tauri build: same-origin webview serving, base '' hits the
   // bundled proxy (M3-b wires the exact base).
   const daemon = new Daemon('/api');
-  const stream = new EventStream(
+  const store: TaskStore = createStore(daemon, new EventStream(
     `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/events`,
     (e) => store.applyEvent(e),
     () => void store.resync(),
-  );
-  const store: TaskStore = createStore(daemon, stream);
+    () => connDown(),
+  ));
 
   let showAdd = $state(false);
   let conn: Conn = $state('connecting');
   // Plain subscribe (not `$store.conn`): conn is a nested property
   // holding a Svelte store, not a store-valued binding target.
+  // WS death flips the badge immediately (resync only runs on
+  // reconnect; between attempts the socket is silently dead).
+  function connDown() {
+    conn = 'down';
+  }
   store.conn.subscribe((c: Conn) => (conn = c));
 
-  const active = $derived(store.list.filter((t) => t.status !== 'completed' && t.status !== 'removed'));
+  const active = $derived(store.list.filter((t) => t.status !== 'completed'));
   const done = $derived(store.list.filter((t) => t.status === 'completed'));
   const totalSpeed = $derived(
     active.reduce((sum, t) => sum + (t.speed ?? 0), 0),

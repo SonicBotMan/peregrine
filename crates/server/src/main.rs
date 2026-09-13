@@ -127,11 +127,18 @@ async fn main() -> anyhow::Result<()> {
         }));
     }
 
+    let unix_only = tcp_listener.is_none();
+    let mut serve_result: anyhow::Result<()> = Ok(());
     if let Some(l) = tcp_listener {
-        axum::serve(l, app)
+        // Dual-mode (TCP + UDS): drive TCP on this future; UDS tasks
+        // were spawned above. Their failures are OBSERVED after the
+        // loop (logged, not silent) rather than racing a select! —
+        // a UDS panic shouldn't take the GUI surface down with it.
+        let app = peregrine_server::api::with_host_guard(app);
+        serve_result = axum::serve(l, app)
             .with_graceful_shutdown(shutdown_signal())
             .await
-            .context("tcp server run loop")?;
+            .context("tcp server run loop");
     } else {
         // Unix-only: drive the (single) serve task on the main
         // future so errors propagate directly.
@@ -140,17 +147,39 @@ async fn main() -> anyhow::Result<()> {
             t.abort();
         }
         if let Some(t) = only.first_mut() {
-            t.await.context("unix server run loop")??;
+            serve_result = t
+                .await
+                .context("unix server run loop")
+                .and_then(|r| r.map_err(anyhow::Error::from));
         }
     }
 
     // ---- 4. Shutdown: engines drain, THEN socket files go --------
+    // Runs on the error path too — a crashed serve loop must not
+    // skip cleanup (P2-8). Index 0 in unix-only mode was already
+    // driven above; awaiting a finished JoinHandle panics.
+    let crashed = serve_result.is_err();
+    for (i, t) in unix_tasks.iter_mut().enumerate() {
+        if unix_only && i == 0 {
+            continue;
+        }
+        if crashed {
+            // Still parked on the shutdown signal (which will never
+            // come — the main loop already died). Abort first.
+            t.abort();
+        }
+        if let Err(join_err) = t.await
+            && !join_err.is_cancelled()
+        {
+            tracing::error!(error = %join_err, "unix serve task failed");
+        }
+    }
     daemon.sched.shutdown().await;
     for (p, id) in &bound_unix {
         uds::remove_socket_file(p, *id).await;
     }
     tracing::info!("peregrined stopped, sockets cleaned");
-    Ok(())
+    serve_result
 }
 
 /// Exit cleanly on SIGINT (^C, interactive) and SIGTERM (systemd/kill).

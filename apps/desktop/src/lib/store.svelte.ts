@@ -4,18 +4,25 @@
  * Data flow (thin-client contract):
  *   REST snapshot (truth)  ──►  tasks: Map<id, TaskView>
  *   WS events (deltas)     ──►  applyEvent() folds into the map
- *   unknown id / reconnect ──►  resync() re-snapshots
+ *   unknown id / reconnect ──►  resync() re-snapshots (throttled)
  *
  * Speed is NOT on the wire for a single task — it is derived here
  * from consecutive progress deltas (EMA, ~1s half-life), which keeps
  * the daemon protocol minimal and the GUI free to present.
+ *
+ * Time convention: ALL internal timestamps are Unix epoch SECONDS
+ * (the wire unit, wire u64). Folded events stamp with nowSec(); REST
+ * rows arrive as numbers. No ISO strings anywhere — mixing units
+ * once silently broke every delta computation (M3-a R2 P1-2).
  */
 import { writable } from 'svelte/store';
 import type { Daemon, EventStream } from './daemon';
 import type { EngineEvent, Task } from './types';
 
 export interface TaskView extends Task {
-  /** Derived: EMA bytes/sec (null before two samples). */
+  /** Derived: EMA bytes/sec (null before two samples, cleared on
+   * terminal status and on gaps > 5s — a stalled download must not
+   * render its last speed forever). */
   speed: number | null;
   /** Derived: 0..1, null when total unknown. */
   fraction: number | null;
@@ -23,11 +30,11 @@ export interface TaskView extends Task {
 
 export type Conn = 'connecting' | 'live' | 'down';
 
+const nowSec = () => Math.floor(Date.now() / 1000);
+
 function view(t: Task, prev?: TaskView): TaskView {
   const received = Math.max(t.received_bytes, prev?.received_bytes ?? 0);
-  const dt = prev
-    ? (new Date(t.updated_at).getTime() - new Date(prev.updated_at).getTime()) / 1000
-    : 0;
+  const dt = prev ? t.updated_at - prev.updated_at : 0;
   // EMA with ~1s half-life; only fold positive samples inside a
   // sane window: a huge dt (REST snapshot → first live frame) would
   // compute a nonsense instantaneous speed, and a tiny dt a huge
@@ -38,6 +45,8 @@ function view(t: Task, prev?: TaskView): TaskView {
       const inst = (received - prev.received_bytes) / dt;
       const alpha = 1 - 0.5 ** dt;
       speed = speed === null ? inst : speed + alpha * (inst - speed);
+    } else if (dt > 5) {
+      speed = null; // stalled: last-known speed is now a lie
     }
   } else {
     speed = null;
@@ -57,7 +66,39 @@ export function createStore(daemon: Daemon, stream: EventStream) {
   let tasks = $state(new Map<string, TaskView>());
   const conn = writable<Conn>('connecting');
 
+  // resync throttle: startup + reconnect + unknown-id events can all
+  // fire in a burst; without a guard each unknown frame triggers its
+  // own full list() (N tasks × event rate = a self-inflicted storm).
+  let resyncing = false;
+  let lastAt = 0;
+  let pending = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  function scheduleTrailing() {
+    // Exactly one pending timer: callers that arrive inside the
+    // 500ms window (or during an in-flight call) just set `pending`;
+    // this timer is the only thing that can observe it later.
+    if (timer !== null) return;
+    const wait = Math.max(0, 500 - (Date.now() - lastAt));
+    timer = setTimeout(() => {
+      timer = null;
+      void resync();
+    }, wait);
+  }
+
   async function resync() {
+    if (resyncing) {
+      pending = true;
+      scheduleTrailing();
+      return;
+    }
+    if (Date.now() - lastAt < 500) {
+      pending = true;
+      scheduleTrailing();
+      return;
+    }
+    resyncing = true;
+    lastAt = Date.now();
     try {
       const rows = await daemon.list();
       const next = new Map<string, TaskView>();
@@ -66,7 +107,22 @@ export function createStore(daemon: Daemon, stream: EventStream) {
       conn.set('live');
     } catch {
       conn.set('down');
+    } finally {
+      resyncing = false;
+      if (pending) {
+        pending = false;
+        scheduleTrailing();
+      }
     }
+  }
+
+  function fold(id: string, patch: Partial<Task>) {
+    const cur = tasks.get(id);
+    if (!cur) {
+      void resync();
+      return;
+    }
+    tasks.set(id, view({ ...cur, ...patch, updated_at: nowSec() }, cur));
   }
 
   function applyEvent(e: EngineEvent) {
@@ -79,13 +135,16 @@ export function createStore(daemon: Daemon, stream: EventStream) {
           .catch(() => resync());
         break;
       }
+      case 'task_started': {
+        fold(e.id, { status: 'running' });
+        break;
+      }
       case 'task_progress': {
         const cur = tasks.get(e.id);
         if (!cur) {
           void resync();
           break;
         }
-        const now = new Date().toISOString();
         tasks.set(
           e.id,
           view(
@@ -93,23 +152,28 @@ export function createStore(daemon: Daemon, stream: EventStream) {
               ...cur,
               received_bytes: Math.max(cur.received_bytes, e.received),
               total_bytes: e.total ?? cur.total_bytes,
-              updated_at: now,
+              updated_at: nowSec(),
             },
             cur,
           ),
         );
         break;
       }
-      case 'task_status': {
-        const cur = tasks.get(e.id);
-        if (!cur) {
-          void resync();
-          break;
-        }
-        tasks.set(
-          e.id,
-          view({ ...cur, status: e.status, error: e.error ?? null, updated_at: new Date().toISOString() }, cur),
-        );
+      case 'task_status_changed': {
+        fold(e.id, { status: e.status });
+        break;
+      }
+      case 'task_completed': {
+        // Terminal: fold status; the REST row holds final byte
+        // counts (and any error text is absent by definition).
+        fold(e.id, { status: 'completed', error: null });
+        void daemon.get(e.id).then((t) => tasks.set(t.id, view(t, tasks.get(t.id)))).catch(() => {});
+        break;
+      }
+      case 'task_failed': {
+        // reason IS on the wire (bus.rs TaskFailed.reason) — fold it
+        // directly; the row is already terminal-persisted.
+        fold(e.id, { status: 'failed', error: e.reason });
         break;
       }
       case 'task_removed': {
@@ -119,16 +183,18 @@ export function createStore(daemon: Daemon, stream: EventStream) {
       case 'task_limit_changed': {
         // Another window (or MCP, M5) changed the throttle — fold it
         // in or this tab's select would keep showing a stale value.
-        const cur = tasks.get(e.id);
-        if (!cur) {
-          void resync();
-          break;
-        }
-        tasks.set(
-          e.id,
-          view({ ...cur, speed_limit_bps: e.speed_limit_bps, updated_at: new Date().toISOString() }, cur),
-        );
+        fold(e.id, { speed_limit_bps: e.speed_limit_bps });
         break;
+      }
+      case 'resync_required': {
+        void resync();
+        break;
+      }
+      default: {
+        // Future wire variant this client doesn't know: degrade to
+        // a snapshot instead of silently dropping it (the M3-a
+        // lesson — one dropped variant froze rows mid-flight).
+        void resync();
       }
     }
   }
@@ -139,9 +205,10 @@ export function createStore(daemon: Daemon, stream: EventStream) {
   return {
     conn: { subscribe: conn.subscribe },
     get list(): TaskView[] {
-      // Newest first; stable within equal timestamps by id.
+      // Newest first; created_at has 1s resolution so ties are
+      // common — break them by id for a deterministic order.
       return [...tasks.values()].sort(
-        (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+        (a, b) => b.created_at - a.created_at || b.id.localeCompare(a.id),
       );
     },
     applyEvent,

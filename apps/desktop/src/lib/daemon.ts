@@ -101,6 +101,9 @@ export class EventStream {
     private url: string,
     private onEvent: (e: EngineEvent) => void,
     private onResync: () => void,
+    /** Fired when the socket dies — the store flips `conn` to 'down'
+     * immediately instead of waiting for the next resync to fail. */
+    private onDown: () => void,
   ) {}
 
   start() {
@@ -126,7 +129,10 @@ export class EventStream {
     };
     ws.onclose = () => {
       if (this.closed) return;
-      const wait = this.backoff;
+      this.onDown();
+      // Jittered exponential backoff (0.75–1.25×): several clients
+      // reconnecting in lockstep would otherwise stampede the daemon.
+      const wait = this.backoff * (0.75 + Math.random() * 0.5);
       this.backoff = Math.min(this.backoff * 2, 10_000);
       setTimeout(() => this.open(), wait);
     };

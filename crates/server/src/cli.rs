@@ -77,11 +77,25 @@ impl Listen {
                 anyhow::anyhow!("invalid --listen {s:?}: expected unix:PATH or tcp:PORT")
             })?;
             match kind {
-                "unix" => unix = Some(std::path::PathBuf::from(rest)),
+                "unix" => {
+                    if unix.is_some() {
+                        anyhow::bail!("duplicate --listen unix spec (last-wins would silently drop the first)");
+                    }
+                    unix = Some(std::path::PathBuf::from(rest));
+                }
                 "tcp" => {
                     let port: u16 = rest
                         .parse()
                         .map_err(|_| anyhow::anyhow!("invalid --listen tcp port {rest:?}"))?;
+                    if port == 0 {
+                        // Ephemeral: --print_socket would print the
+                        // SPEC ("tcp:0"), not the bound port — the
+                        // caller's discovery would be a lie.
+                        anyhow::bail!("--listen tcp:0 is invalid: an explicit port is required (ephemeral ports break --print_socket discovery)");
+                    }
+                    if tcp.is_some() {
+                        anyhow::bail!("duplicate --listen tcp spec (last-wins would silently drop the first)");
+                    }
                     tcp = Some(port);
                 }
                 other => anyhow::bail!("invalid --listen kind {other:?}: expected unix or tcp"),
@@ -121,6 +135,30 @@ mod tests {
             args.listen_spec().unwrap(),
             Listen::Unix("/tmp/x.sock".into())
         );
+    }
+
+    #[test]
+    fn tcp_zero_is_rejected() {
+        // Ephemeral port would break --print_socket discovery: it
+        // prints the SPEC, not the bound port.
+        let err = Listen::parse(&["tcp:0".to_string()]).unwrap_err();
+        assert!(err.to_string().contains("ephemeral"), "{err}");
+    }
+
+    #[test]
+    fn duplicate_kind_is_rejected() {
+        let err = Listen::parse(&[
+            "tcp:8420".to_string(),
+            "tcp:8421".to_string(),
+        ])
+        .unwrap_err();
+        assert!(err.to_string().contains("duplicate"), "{err}");
+        let err = Listen::parse(&[
+            "unix:/a.sock".to_string(),
+            "unix:/b.sock".to_string(),
+        ])
+        .unwrap_err();
+        assert!(err.to_string().contains("duplicate"), "{err}");
     }
 
     #[test]

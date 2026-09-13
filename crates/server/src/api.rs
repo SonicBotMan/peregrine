@@ -318,3 +318,39 @@ async fn remove_task(
         .map_err(map_err)?;
     Ok((StatusCode::OK, Json(serde_json::json!({"removed": true}))))
 }
+
+/// TCP-only DNS-rebinding guard (M3-a R2 P1-5): the loopback bind
+/// keeps other MACHINES out, but a malicious page can rebind its
+/// origin to 127.0.0.1 and POST "same-origin" (no CORS involved).
+/// Rejecting any Host that isn't a loopback name kills the rebind.
+/// Layer this on the TCP listener ONLY — the UDS surface's boundary
+/// is filesystem permissions (0700), where Host is meaningless.
+pub fn with_host_guard(app: axum::Router) -> axum::Router {
+    use axum::response::IntoResponse;
+    app.layer(axum::middleware::from_fn(
+        |req: axum::extract::Request, next: axum::middleware::Next| async move {
+            let ok = req
+                .headers()
+                .get(axum::http::header::HOST)
+                .and_then(|h| h.to_str().ok())
+                .map(|h| {
+                    let host = h.rsplit_once(':').map(|(n, _)| n).unwrap_or(h);
+                    matches!(host, "127.0.0.1" | "localhost" | "[::1]")
+                })
+                .unwrap_or(false); // HTTP/1.1 requires Host; absence = hostile
+            if ok {
+                next.run(req).await
+            } else {
+                tracing::warn!(
+                    host = ?req.headers().get(axum::http::header::HOST),
+                    "tcp: non-loopback Host rejected (DNS rebinding guard)"
+                );
+                (
+                    axum::http::StatusCode::FORBIDDEN,
+                    "forbidden: loopback Host required",
+                )
+                    .into_response()
+            }
+        },
+    ))
+}

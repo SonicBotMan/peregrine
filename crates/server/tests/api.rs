@@ -556,3 +556,69 @@ async fn segments_alias_same_url_sink_shares_engine_row() {
         assert_eq!(segs[0]["len"], 10);
     }
 }
+
+// ---- TCP Host guard (DNS rebinding defense, M3-a R2 P1-5) ------
+// The guard layers on the TCP listener only; these tests pin its
+// behavior through the same router the daemon serves.
+
+#[tokio::test]
+async fn host_guard_rejects_rebound_and_foreign_hosts() {
+    use peregrine_server::api::with_host_guard;
+    let rig = rig().await;
+    let guarded = with_host_guard(rig.app.clone());
+
+    for evil in ["evil.attacker.example:8420", "evil.attacker.example", "192.168.1.5:8420"] {
+        let res = guarded
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/health")
+                    .header("host", evil)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status().as_u16(), 403, "Host {evil:?} must be rejected");
+    }
+}
+
+#[tokio::test]
+async fn host_guard_passes_loopback_hosts() {
+    use peregrine_server::api::with_host_guard;
+    let rig = rig().await;
+    let guarded = with_host_guard(rig.app.clone());
+
+    for ok in ["127.0.0.1:8420", "localhost:8420", "localhost", "[::1]:8420"] {
+        let res = guarded
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/health")
+                    .header("host", ok)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status().as_u16(), 200, "Host {ok:?} must pass");
+    }
+}
+
+#[tokio::test]
+async fn host_guard_rejects_missing_host() {
+    use peregrine_server::api::with_host_guard;
+    let rig = rig().await;
+    let guarded = with_host_guard(rig.app.clone());
+    // No Host header at all (raw socket client) — hostile by default.
+    let res = guarded
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status().as_u16(), 403);
+}
