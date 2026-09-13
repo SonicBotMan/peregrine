@@ -41,19 +41,34 @@ use url::Url;
 /// Downloads are long; probes must not be.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 
-type HttpsClient = Client<hyper_rustls::HttpsConnector<HttpConnector>, Full<Bytes>>;
+/// Shared client type — `pub` so sibling engines (engine-hls) reuse
+/// the SAME stack and pooling policy instead of dragging a second
+/// HTTP implementation into the tree (workspace rule: one HTTP
+/// stack; the engine IS the HTTP story).
+pub type HttpsClient = Client<hyper_rustls::HttpsConnector<HttpConnector>, Full<Bytes>>;
 
-/// An HTTP(S) engine with a shared, pooled client.
-pub struct HttpEngine {
-    client: HttpsClient,
-    max_redirects: usize,
+/// Build the standard pooled HTTPS-or-HTTP client.
+pub fn https_client() -> Result<HttpsClient, ApiError> {
+    let https = hyper_rustls::HttpsConnectorBuilder::new()
+        .with_native_roots()
+        .map_err(|e| ApiError::Internal(format!("load native TLS roots: {e}")))?
+        .https_or_http()
+        .enable_http1()
+        .build();
+    Ok(Client::builder(TokioExecutor::new()).build(https))
 }
 
 /// Identify ourselves on every request (probe, single, segments).
 /// Real-world smoke finding (M2-d R3): mirrors like tuna 403 a
 /// request with no User-Agent — anti-scraping default. A downloader
 /// MUST announce itself; same policy as aria2/curl.
-pub(crate) const USER_AGENT: &str = concat!("peregrine/", env!("CARGO_PKG_VERSION"));
+pub const USER_AGENT: &str = concat!("peregrine/", env!("CARGO_PKG_VERSION"));
+
+/// An HTTP(S) engine with a shared, pooled client.
+pub struct HttpEngine {
+    client: HttpsClient,
+    max_redirects: usize,
+}
 
 impl HttpEngine {
     /// Follow at most this many 3xx hops before giving up.
@@ -66,15 +81,8 @@ impl HttpEngine {
 
     /// Engine with a custom redirect budget (0 = don't follow).
     pub fn with_max_redirects(max_redirects: usize) -> Result<Self, ApiError> {
-        let https = hyper_rustls::HttpsConnectorBuilder::new()
-            .with_native_roots()
-            .map_err(|e| ApiError::Internal(format!("load native TLS roots: {e}")))?
-            .https_or_http()
-            .enable_http1()
-            .build();
-        let client = Client::builder(TokioExecutor::new()).build(https);
         Ok(Self {
-            client,
+            client: https_client()?,
             max_redirects,
         })
     }

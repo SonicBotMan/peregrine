@@ -1,0 +1,30 @@
+[package]
+name = "peregrine-engine-hls"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "HLS (RFC 8216) merge downloader: playlist parsing, AES-128 segments, part-file pipeline"
+
+[dependencies]
+peregrine-api = { workspace = true }
+peregrine-engine-http = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+hyper = { workspace = true }
+http-body-util = { workspace = true }
+futures = { workspace = true }
+url = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+aes = { version = "0.8" }
+cbc = { version = "0.1", features = ["alloc", "block-padding"] }
+
+[dev-dependencies]
+axum = { workspace = true }
+tempfile = { workspace = true }
+aes = "0.8"
+cbc = { version = "0.1", features = ["alloc", "block-padding"] }
+http-body-util = { workspace = true }
+hyper = { workspace = true }

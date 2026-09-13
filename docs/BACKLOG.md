@@ -47,3 +47,12 @@ milestone noted. (R1 review, 2026-02-27)
 | B40 | 桌面壳固定端口 8420：被占时 daemon 立死，GUI 只显示连接断开。改进：spawn 前 probe 端口，冲突时换端口号或弹通知 | M3-c3+ | M3-c2 R2 P2-5（单用户本地应用，接受现状） |
 | B41 | sidecar stdout/stderr 在发布 GUI 二进制里进 void（无控制台）。发布前转 log 文件（app_data_dir/peregrined.log） | M6 发布轮 | M3-c2 R2 P2-7 |
 | B42 | CI desktop workflow 产物未验证 deb 依赖完整性：补 `dpkg-deb -I bundle/**.deb` 打印 Depends 确认 webkit 运行时依赖在列 | CI 首跑后 | M3-c2 R2 P1-3 残余 |
+
+## M4-a 遗留（R2/R3 处置）
+
+- B45: engine-hls connect 级超时（hyper legacy client 无 per-request 机制；stall
+  已覆盖 body 阶段，connect 阶段靠 OS TCP 超时兜底）
+- B46: AttrIter 反斜杠转义剥离（真实世界 HLS 属性值几乎无转义引号；检测已有，值未剥）
+- B47: HlsEngine::probe 生产接线（daemon 不 probe；M5 MCP probe 工具 / CLI 用）
+- B48: hls_port.rs port 级测试（cancel→Cancelled 映射、purge parts 目录）
+- B43/B44 （既有）: HLS 段级遥测与 per-task throttle

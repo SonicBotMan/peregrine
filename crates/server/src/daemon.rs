@@ -21,15 +21,82 @@
 //! HTTP details (engine crate), persistence shape (storage crate).
 
 use std::path::{Path, PathBuf};
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use peregrine_api::TaskStatus;
 use peregrine_api::bus::EventBus;
 use peregrine_engine_http::{HttpEngine, SegmentConfig};
-use peregrine_scheduler::{DownloadPort, HttpAutoPort, Scheduler, SchedulerConfig};
+use peregrine_scheduler::{DownloadPort, HlsAutoPort, HttpAutoPort, Scheduler, SchedulerConfig};
 use peregrine_storage::Store;
 use peregrine_task_manager::TaskManager;
+
+/// URL-routed port (M4-a): `.m3u8` targets go to the HLS merge
+/// engine, everything else to the HTTP auto port. Same trait, so
+/// the scheduler is oblivious — protocol selection is an assembly
+/// concern, exactly like the PROPOSAL's "protocol = trait" rule.
+struct RoutingPort {
+    hls: Arc<dyn DownloadPort>,
+    http: Arc<dyn DownloadPort>,
+}
+
+impl RoutingPort {
+    fn route(&self, url: &str) -> &Arc<dyn DownloadPort> {
+        // Single definition (R2 P2-1): the engine owns the heuristic;
+        // routing and supports() can never diverge.
+        if peregrine_engine_hls::is_hls_url(url) {
+            &self.hls
+        } else {
+            &self.http
+        }
+    }
+}
+
+impl DownloadPort for RoutingPort {
+    fn auto_download(
+        &self,
+        job: peregrine_api::DownloadJob,
+        progress: peregrine_api::SharedProgressSink,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<peregrine_api::DownloadOutcome, peregrine_api::ApiError>,
+                > + Send
+                + '_,
+        >,
+    > {
+        self.route(&job.url).auto_download(job, progress, cancel)
+    }
+
+    fn purge(
+        &self,
+        url: &str,
+        sink: &std::path::Path,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + '_>> {
+        // Purge BOTH sides: a URL that routes to HLS today may have
+        // HTTP engine rows from a pre-M4 attempt (or vice versa after
+        // a heuristic flip). Purging is idempotent — no downside.
+        let a = self.http.purge(url, sink);
+        let b = self.hls.purge(url, sink);
+        Box::pin(async move {
+            // BOTH sides must run even if one fails (R2 P2-4):
+            // short-circuiting the second leaves stale engine state.
+            let (ra, rb) = tokio::join!(a, b);
+            match (ra, rb) {
+                (Ok(()), Ok(())) => Ok(()),
+                (Err(e), Ok(())) | (Ok(()), Err(e)) => Err(e),
+                (Err(a), Err(b)) => Err(anyhow::anyhow!("purge failed on both engines: {a}; {b}")),
+            }
+        })
+    }
+
+    fn set_task_limit(&self, url: &str, sink: &std::path::Path, bps: Option<u64>) {
+        self.http.set_task_limit(url, sink, bps);
+        self.hls.set_task_limit(url, sink, bps);
+    }
+}
 
 /// The wired daemon: everything the REST/WS surface needs, nothing it
 /// doesn't. `sched` is the facade clients drive; `bus` feeds `/events`.
@@ -85,7 +152,10 @@ impl Daemon {
     ) -> anyhow::Result<Self> {
         Self::assemble(db_path, sched_cfg, |store, global| {
             let engine = Arc::new(HttpEngine::new()?);
-            Ok(Arc::new(HttpAutoPort::new(engine, seg_cfg, store, global)))
+            let http: Arc<dyn DownloadPort> =
+                Arc::new(HttpAutoPort::new(engine, seg_cfg, store, global.clone()));
+            let hls: Arc<dyn DownloadPort> = Arc::new(HlsAutoPort::new(global.clone())?);
+            Ok(Arc::new(RoutingPort { http, hls }))
         })
     }
 

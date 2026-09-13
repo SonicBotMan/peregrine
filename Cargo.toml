@@ -8,6 +8,7 @@ members = [
     "crates/storage",
     "crates/task-manager",
     "crates/scheduler",
+    "crates/engine-hls",
 ]
 
 [workspace.package]
@@ -52,6 +53,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 peregrine-task-manager = { path = "crates/task-manager" }
 peregrine-engine-http = { path = "crates/engine-http" }
+peregrine-engine-hls = { path = "crates/engine-hls" }
 # unix primitives (real uid for socket paths). This environment's index no
 # longer carries the 0.3 line; 1.0.0-alpha.4 keeps the stable getuid binding.
 libc = "1.0.0-alpha.4"

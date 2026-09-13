@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 peregrine-api = { workspace = true }
 peregrine-engine-http = { workspace = true }
+peregrine-engine-hls = { workspace = true }
 peregrine-storage = { workspace = true }
 peregrine-task-manager = { workspace = true }
 tokio = { workspace = true, features = ["sync", "rt", "time", "macros"] }
