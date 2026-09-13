@@ -33,6 +33,15 @@ pub enum EngineEvent {
         id: TaskId,
         reason: String,
     },
+    /// Task row removed (any status; terminal or not). Carries the
+    /// row snapshot because the row is already gone by the time this
+    /// fires — M2-b's scheduler needs url/save_path to find engine
+    /// residue and partial files to clean.
+    TaskRemoved {
+        id: TaskId,
+        url: String,
+        save_path: String,
+    },
 }
 
 /// Broadcast hub. Lagging subscribers drop oldest events

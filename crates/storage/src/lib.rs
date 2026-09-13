@@ -31,6 +31,8 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 
+mod downloads;
+
 /// Durable identifier of a download task row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TaskId(pub i64);
@@ -106,6 +108,7 @@ impl Store {
             .context("enabling foreign keys")?;
         conn.execute_batch(SCHEMA)
             .context("running schema migration")?;
+        downloads::migrate(&conn)?;
         Ok(Store(Arc::new(Mutex::new(conn))))
     }
 
@@ -116,6 +119,7 @@ impl Store {
             .context("enabling foreign keys")?;
         conn.execute_batch(SCHEMA)
             .context("running schema migration")?;
+        downloads::migrate(&conn)?;
         Ok(Store(Arc::new(Mutex::new(conn))))
     }
 

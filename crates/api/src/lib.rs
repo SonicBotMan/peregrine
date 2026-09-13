@@ -23,7 +23,7 @@ pub use engine::{ProbeFuture, ProbeInfo, ProtocolEngine};
 pub use error::ApiError;
 pub use health::HealthInfo;
 pub use registry::EngineRegistry;
-pub use task::{Task, TaskId, TaskStatus};
+pub use task::{Priority, Task, TaskId, TaskStatus, unix_now};
 pub use transport::{default_socket_path, socket_path};
 
 /// Crate version, surfaced by `/health` and `pg --version`.

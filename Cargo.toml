@@ -1,6 +1,13 @@
 [workspace]
 resolver = "2"
-members = ["crates/api", "crates/server", "crates/cli", "crates/engine-http", "crates/storage"]
+members = [
+    "crates/api",
+    "crates/server",
+    "crates/cli",
+    "crates/engine-http",
+    "crates/storage",
+    "crates/task-manager",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -37,6 +44,7 @@ anyhow = "1"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+peregrine-task-manager = { path = "crates/task-manager" }
 # unix primitives (real uid for socket paths). This environment's index no
 # longer carries the 0.3 line; 1.0.0-alpha.4 keeps the stable getuid binding.
 libc = "1.0.0-alpha.4"

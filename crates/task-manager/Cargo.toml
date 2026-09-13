@@ -1,0 +1,19 @@
+[package]
+name = "peregrine-task-manager"
+description = "Task lifecycle: state machine guard + durable queue (M2-a)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+peregrine-api = { workspace = true }
+peregrine-storage = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

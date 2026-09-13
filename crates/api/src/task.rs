@@ -29,8 +29,20 @@ impl fmt::Display for TaskId {
 
 /// Lifecycle states of a download task.
 ///
-/// State machine (M2 formalizes transitions):
-/// `Queued -> Running -> (Paused <-> Running) -> Completed | Failed`
+/// State machine (formalized M2-a; PROPOSAL §3/§7):
+/// ```text
+///             add                 start
+///  (new) ─────────▶ Queued ────────────▶ Running ────▶ Completed
+///                    ▲  │ pause           │  │            ▲
+///                    │  ▼                 │  │ fail       │ complete
+///                    │  Paused ──resume───┘  ▼            │
+///                    │   (re-queue)        Failed         │
+///                    └────────── remove (any non-terminal,
+///                               or terminal with its row) ──┘
+/// ```
+/// Cancellation is `remove`, not a state: a cancelled task leaves no
+/// row to transition (the frozen scope has no Cancelled status, and a
+/// tombstone state would only serve UI history we do not have yet).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskStatus {
@@ -39,6 +51,49 @@ pub enum TaskStatus {
     Paused,
     Completed,
     Failed,
+}
+
+impl TaskStatus {
+    /// Terminal states never transition again (M2-a state machine).
+    pub fn is_terminal(self) -> bool {
+        matches!(self, TaskStatus::Completed | TaskStatus::Failed)
+    }
+
+    /// The single legal transition table. Everything else is a
+    /// state-machine violation the manager must refuse, not repair.
+    pub fn can_transition(self, next: TaskStatus) -> bool {
+        use TaskStatus::*;
+        matches!(
+            (self, next),
+            (Queued, Running)
+                // Pause covers queued tasks too: "don't touch this
+                // yet" is one intent regardless of whether a worker
+                // ever started (aria2/IDM semantics).
+                | (Queued, Paused)
+                | (Running, Paused)
+                | (Running, Completed)
+                | (Running, Failed)
+                | (Paused, Queued)
+                // Failed tasks may be retried by the user.
+                //
+                // Crash recovery (running -> queued) deliberately has
+                // NO entry here: `boot()` recovers via its own SQL
+                // bypassing this table, and keeping the pair user-
+                // reachable would let `resume()` silently re-queue a
+                // task an engine is still downloading (aria2 refuses
+                // unpause on non-paused tasks; so do we).
+                | (Failed, Queued)
+        )
+    }
+}
+
+/// Queue priority: higher runs first when slots free up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Priority {
+    Low,
+    Normal,
+    High,
 }
 
 /// A download task — the unit of user intent.
@@ -53,14 +108,21 @@ pub struct Task {
     /// Bytes announced by the server, if known (`None` for chunked/unknown).
     pub total_bytes: Option<u64>,
     pub received_bytes: u64,
+    /// Queue ordering weight (M2-a).
+    pub priority: Priority,
+    /// Last error, kept for `Failed` tasks (user-facing; cleared on retry).
+    pub error: Option<String>,
     /// Unix epoch seconds.
     pub created_at: u64,
+    /// Unix epoch seconds of the last persisted change.
+    pub updated_at: u64,
 }
 
 impl Task {
     /// Convenience constructor for tests and callers that do not care about
     /// the remaining fields yet.
     pub fn new(id: TaskId, url: impl Into<String>, save_path: impl Into<String>) -> Self {
+        let now = unix_now();
         Self {
             id,
             url: url.into(),
@@ -68,7 +130,10 @@ impl Task {
             status: TaskStatus::Queued,
             total_bytes: None,
             received_bytes: 0,
-            created_at: unix_now(),
+            priority: Priority::Normal,
+            error: None,
+            created_at: now,
+            updated_at: now,
         }
     }
 }
