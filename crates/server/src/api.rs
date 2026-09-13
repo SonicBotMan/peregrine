@@ -25,7 +25,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use peregrine_api::task::{Task, TaskId, TaskStatus};
+use peregrine_api::task::{SegmentView, Task, TaskId, TaskStatus};
 use peregrine_api::{AddTaskRequest, ApiErrorBody};
 use peregrine_task_manager::TaskError;
 
@@ -41,6 +41,7 @@ pub fn router(state: AppState) -> Router {
         .route("/tasks/{id}/pause", post(pause_task))
         .route("/tasks/{id}/resume", post(resume_task))
         .route("/tasks/{id}/limit", put(set_task_limit))
+        .route("/tasks/{id}/segments", get(get_task_segments))
         .route("/settings", get(get_settings).put(put_settings))
         .route("/events", get(crate::ws::handler))
         // Wire contract (R2 P1-3): EVERY non-2xx is an ApiErrorBody.
@@ -210,6 +211,22 @@ async fn create_task(
         .await
         .map_err(map_err)?;
     Ok((StatusCode::CREATED, Json(task)))
+}
+
+/// Telemetry (M3-c1): the planned segment rows of a segmented
+/// download. 404 for an unknown id; `[]` for a single-stream task
+/// (no plan). Not part of the WS event stream — cursors churn at
+/// worker speed; a client that wants the live view polls this
+/// while its panel is open.
+async fn get_task_segments(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<SegmentView>>, (StatusCode, Json<ApiErrorBody>)> {
+    let id = TaskId::new(id);
+    match state.0.segments_of(&id).await.map_err(map_err)? {
+        Some(views) => Ok(Json(views)),
+        None => Err(map_err(TaskError::NotFound(id))),
+    }
 }
 
 async fn pause_task(State(state): State<AppState>, Path(id): Path<String>) -> ApiResult<Task> {

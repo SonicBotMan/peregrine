@@ -116,6 +116,20 @@ export function createStore(daemon: Daemon, stream: EventStream) {
         tasks.delete(e.id);
         break;
       }
+      case 'task_limit_changed': {
+        // Another window (or MCP, M5) changed the throttle — fold it
+        // in or this tab's select would keep showing a stale value.
+        const cur = tasks.get(e.id);
+        if (!cur) {
+          void resync();
+          break;
+        }
+        tasks.set(
+          e.id,
+          view({ ...cur, speed_limit_bps: e.speed_limit_bps, updated_at: new Date().toISOString() }, cur),
+        );
+        break;
+      }
     }
   }
 
@@ -147,6 +161,20 @@ export function createStore(daemon: Daemon, stream: EventStream) {
     async remove(id: string) {
       await daemon.remove(id);
       tasks.delete(id);
+    },
+    /** Optimistic: the daemon echoes the full Task back, so a
+     * success replaces the row with truth (no rollback window). A
+     * failure leaves the row untouched — the select re-reads the
+     * still-old value on the next render. */
+    async setTaskLimit(id: string, bps: number) {
+      const t = await daemon.setTaskLimit(id, bps);
+      tasks.set(id, view(t, tasks.get(id)));
+    },
+    async setGlobalLimit(bps: number) {
+      return daemon.setGlobalLimit(bps);
+    },
+    async getSettings() {
+      return daemon.getSettings();
     },
   };
 }

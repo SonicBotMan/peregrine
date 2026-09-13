@@ -14,8 +14,9 @@ HTTP/HTTPS · FTP · HLS/DASH · BitTorrent/Magnet
 
 ## 状态
 
-🚧 **设计阶段** — 技术方案见 [docs/design/PROPOSAL.md](docs/design/PROPOSAL.md)，
-实现尚未开始，欢迎在 Discussions 里聊需求。
+🚧 **积极开发中** — 内核（分段/续传/取消/调度/限速）与 headless daemon（REST/WS）已落地，
+Web GUI 与 Tauri 桌面端在 M3。里程碑计划见 [docs/design/PROPOSAL.md](docs/design/PROPOSAL.md)，
+代码评审记录见 [docs/reviews/](docs/reviews/)。
 
 ## 技术栈
 

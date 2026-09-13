@@ -40,6 +40,9 @@ pub struct Daemon {
     /// engine consults it through its `BudgetChain`; the settings
     /// endpoint pokes it live via `set_bps`.
     pub global_budget: peregrine_api::budget::SharedRateBudget,
+    /// The single store (B32): kept for telemetry reads (segment
+    /// cursors) that bypass the task-manager's lifecycle surface.
+    pub store: peregrine_storage::Store,
     /// The db file we opened (diagnostics, tests).
     pub db_path: PathBuf,
     /// Double-boot guard: `start()` twice is a wiring bug, not a
@@ -59,6 +62,7 @@ impl Clone for Daemon {
         Self {
             sched: Arc::clone(&self.sched),
             bus: self.bus.clone(),
+            store: self.store.clone(),
             global_budget: self.global_budget.clone(),
             db_path: self.db_path.clone(),
             booted: std::sync::atomic::AtomicBool::new(
@@ -116,7 +120,7 @@ impl Daemon {
         let bus = EventBus::default();
         let tm = Arc::new(TaskManager::new(store.clone(), bus.clone()));
         let global_budget = peregrine_api::budget::RateBudget::unlimited();
-        let port = port_factory(store, global_budget.clone())?;
+        let port = port_factory(store.clone(), global_budget.clone())?;
         let sched = Arc::new(Scheduler::new(
             tm,
             bus.clone(),
@@ -127,6 +131,7 @@ impl Daemon {
         Ok(Self {
             sched,
             bus,
+            store,
             global_budget,
             db_path: path,
             booted: AtomicBool::new(false),
@@ -201,6 +206,57 @@ impl Daemon {
     /// policy methods).
     pub fn tasks(&self) -> &TaskManager {
         self.sched.tasks()
+    }
+
+    /// Telemetry read (M3-c1): the task's planned segment rows as
+    /// wire views. `Ok(None)` = no such task (404); `Ok(vec![])` =
+    /// task exists, single-stream (no plan rows). Reads the store
+    /// DIRECTLY — segment cursors are engine bookkeeping, not task
+    /// lifecycle state, so the task-manager (whose every method is
+    /// a state-machine transition or a task-shaped read) is the
+    /// wrong surface for them.
+    /// Telemetry read (M3-c1): the task's planned segment rows as
+    /// wire views. `Ok(None)` = no such task (404); `Ok(vec![])` =
+    /// task exists, single-stream (no plan rows). Resolves the wire
+    /// id through the task row (url, sink) into the ENGINE table's
+    /// row id — two id spaces by design: the wire id is a string the
+    /// client holds; the engine tables key on their own i64 rows
+    /// (v1 rule: storage ids never leak past the engine).
+    pub async fn segments_of(
+        &self,
+        id: &peregrine_api::TaskId,
+    ) -> Result<Option<Vec<peregrine_api::SegmentView>>, peregrine_task_manager::TaskError> {
+        let Some(task) = self.tasks().get(id).await? else {
+            return Ok(None);
+        };
+        // No engine row = never segmented (single-stream, or the
+        // engine hasn't planned yet): the task EXISTS, so the panel
+        // shows "single stream", not an error. `[]`, never 404.
+        Ok(Some(
+            self.store
+                .get_task(&task.url, std::path::Path::new(&task.save_path))
+                .await
+                .map_err(peregrine_task_manager::TaskError::Storage)?
+                .map(|t| {
+                    t.segments
+                        .into_iter()
+                        .map(|s| peregrine_api::SegmentView {
+                            idx: s.idx,
+                            start: s.start,
+                            end: s.end,
+                            len: s.len(),
+                            done: s.done,
+                            frontier: s.frontier(),
+                            pct: if s.is_empty() {
+                                1.0
+                            } else {
+                                s.done as f64 / s.len() as f64
+                            },
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        ))
     }
 }
 

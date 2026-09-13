@@ -213,6 +213,29 @@ pub fn unix_now() -> u64 {
         .unwrap_or_default()
 }
 
+/// Wire view of one planned segment (M3-c1 telemetry). Derived
+/// numbers are computed server-side so every client (GUI, CLI,
+/// future MCP) renders identically without re-implementing the
+/// segment math. `pct` is `done/len` in `[0,1]` (a `u64` fraction
+/// loses resolution on multi-GB segments). The conversion from the
+/// storage row lives in the server crate (storage depends on api,
+/// never the reverse — v1 layering rule).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SegmentView {
+    pub idx: u32,
+    /// Byte range `[start, end]`, inclusive.
+    pub start: u64,
+    pub end: u64,
+    /// Segment length in bytes.
+    pub len: u64,
+    /// Bytes of THIS segment confirmed on disk.
+    pub done: u64,
+    /// Next byte to fetch (resume frontier).
+    pub frontier: u64,
+    /// `done / len` in `[0,1]`.
+    pub pct: f64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

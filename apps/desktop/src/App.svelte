@@ -3,6 +3,7 @@
   import { createStore, type TaskStore } from './lib/store.svelte';
   import TaskRow from './lib/TaskRow.svelte';
   import AddDialog from './lib/AddDialog.svelte';
+  import { LIMIT_PRESETS, presetFor } from './lib/format';
   import type { Conn } from './lib/store.svelte';
 
   // Dev: Vite proxies /api + /ws to the daemon's loopback TCP.
@@ -28,6 +29,46 @@
     active.reduce((sum, t) => sum + (t.speed ?? 0), 0),
   );
 
+  // ---- global limit (settings domain, not task truth) ----------
+  let globalLimit = $state(0);
+  let customGlobal = $state<number | null>(null);
+
+  $effect(() => {
+    // One-shot bootstrap; live changes by OTHER clients are
+    // out of scope for v1 (B37 family: events carry task deltas only).
+    void store
+      .getSettings()
+      .then((s) => (globalLimit = s.global_limit_bps))
+      .catch(() => {});
+  });
+
+  const globalSel = $derived(
+    customGlobal !== null ? 'custom' : (presetFor(globalLimit) ?? 'custom'),
+  );
+
+  function pickGlobal(ev: Event) {
+    const v = (ev.currentTarget as HTMLSelectElement).value;
+    if (v === 'custom') {
+      customGlobal = globalLimit;
+      return;
+    }
+    customGlobal = null;
+    void store
+      .setGlobalLimit(Number(v))
+      .then((s) => (globalLimit = s.global_limit_bps))
+      .catch((e) => console.warn('global limit failed', e));
+  }
+
+  function commitCustomGlobal() {
+    if (customGlobal !== null && Number.isFinite(customGlobal) && customGlobal >= 0) {
+      void store
+        .setGlobalLimit(Math.round(customGlobal))
+        .then((s) => (globalLimit = s.global_limit_bps))
+        .catch((e) => console.warn('global limit failed', e));
+    }
+    customGlobal = null;
+  }
+
   function fmtSpeed(n: number): string {
     const units = ['B/s', 'KB/s', 'MB/s', 'GB/s'];
     let v = n;
@@ -47,8 +88,7 @@
       // M3-c adds toast + retry UX.
       console.warn('action failed', e);
     }
-  }
-</script>
+  }</script>
 
 <main>
   <header>
@@ -58,6 +98,25 @@
       {conn}
     </span>
     <span class="speed">{fmtSpeed(totalSpeed)}</span>
+    <span class="global-limit" title="Global speed limit">
+      {#if customGlobal !== null}
+        <input
+          type="number"
+          min="0"
+          bind:value={customGlobal}
+          onblur={commitCustomGlobal}
+          onkeydown={(e) => e.key === 'Enter' && commitCustomGlobal()}
+        />
+      {:else}
+        <select value={globalSel} onchange={pickGlobal}>
+          {#each LIMIT_PRESETS as p (p.bps)}
+            <option value={String(p.bps)}>{p.label}</option>
+          {/each}
+          <option value="custom">custom…</option>
+        </select>
+      {/if}
+      <span class="unit">B/s</span>
+    </span>
     <button class="primary" onclick={() => (showAdd = true)}>＋ Add</button>
   </header>
 
@@ -69,9 +128,11 @@
       {#each active as task (task.id)}
         <TaskRow
           {task}
+          {daemon}
           onPause={(id) => void act(store.pause(id))}
           onResume={(id) => void act(store.resume(id))}
           onRemove={(id) => void act(store.remove(id))}
+          onLimit={(id, bps) => void act(store.setTaskLimit(id, bps))}
         />
       {/each}
     {/if}
@@ -82,9 +143,11 @@
     {#each done as task (task.id)}
       <TaskRow
         {task}
+        {daemon}
         onPause={(id) => void act(store.pause(id))}
         onResume={(id) => void act(store.resume(id))}
         onRemove={(id) => void act(store.remove(id))}
+        onLimit={(id, bps) => void act(store.setTaskLimit(id, bps))}
       />
     {/each}
   </section>

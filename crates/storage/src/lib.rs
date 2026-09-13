@@ -207,6 +207,7 @@ impl Store {
         .context("join get_task")?
     }
 
+
     /// Atomically replace the segment set — used both for a fresh plan
     /// and for the "validator changed, wipe everything" path. One
     /// transaction: partial plans never become visible.

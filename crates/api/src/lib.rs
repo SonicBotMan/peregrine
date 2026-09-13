@@ -24,7 +24,7 @@ pub use engine::{ProbeFuture, ProbeInfo, ProtocolEngine};
 pub use error::ApiError;
 pub use health::HealthInfo;
 pub use registry::EngineRegistry;
-pub use task::{Priority, Task, TaskId, TaskStatus, unix_now};
+pub use task::{Priority, SegmentView, Task, TaskId, TaskStatus, unix_now};
 pub use transport::{
     AddTaskRequest, ApiErrorBody, default_db_path, default_socket_path, socket_path,
 };

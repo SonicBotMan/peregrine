@@ -369,3 +369,190 @@ async fn settings_global_limit_roundtrip_and_persistence() {
         "persisted global limit must survive a daemon restart"
     );
 }
+
+// --- M3-c1: segment telemetry endpoint --------------------------------
+
+#[tokio::test]
+async fn segments_of_unknown_task_is_404() {
+    let rig = rig().await;
+    let (status, body) = json_req(&rig.app, "GET", "/tasks/nope-0000/segments", None).await;
+    assert_eq!(status, 404, "{body}");
+    assert_eq!(body["error"], "not_found");
+}
+
+#[tokio::test]
+async fn segments_of_single_stream_task_is_empty_list() {
+    // A task the fake port never segmented: the engine tables hold
+    // no plan rows for it → `[]`, not 404 and not null (the GUI's
+    // per-connection panel renders "single stream" off the empty
+    // list; null would be a third state to handle).
+    let rig = rig().await;
+    let (status, task) = json_req(
+        &rig.app,
+        "POST",
+        "/tasks",
+        Some(serde_json::json!({
+            "url": "https://example.com/f.bin",
+            "save_path": "/tmp/seg-empty.bin",
+        })),
+    )
+    .await;
+    assert_eq!(status, 201, "{task}");
+    let id = task["id"].as_str().unwrap().to_string();
+
+    let (status, body) = json_req(&rig.app, "GET", &format!("/tasks/{id}/segments"), None).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body, serde_json::json!([]), "no plan rows → empty list");
+}
+
+#[tokio::test]
+async fn segments_view_reflects_stored_plan_rows() {
+    // Seed the ENGINE table directly (url, sink → plan + cursors):
+    // the daemon's segments_of must resolve the WIRE id through the
+    // task row into the engine row and map every cursor with derived
+    // numbers. 100 bytes, [0,49]+[50,99]; the second half done.
+    let rig = rig().await;
+    let (status, task) = json_req(
+        &rig.app,
+        "POST",
+        "/tasks",
+        Some(serde_json::json!({
+            "url": "https://example.com/seg.bin",
+            "save_path": "/tmp/seg-plan.bin",
+        })),
+    )
+    .await;
+    assert_eq!(status, 201, "{task}");
+    let id = task["id"].as_str().unwrap().to_string();
+
+    use peregrine_storage::Store;
+    let store = Store::open(&rig.dir.path().join("tasks.db")).unwrap();
+    let row = store
+        .upsert_task(
+            "https://example.com/seg.bin",
+            std::path::Path::new("/tmp/seg-plan.bin"),
+            Some(100),
+            None,
+        )
+        .await
+        .unwrap();
+    store
+        .replace_segments(row, &[(0, 49), (50, 99)])
+        .await
+        .unwrap();
+    store.update_cursor(row, 1, 50).await.unwrap();
+
+    let (status, body) = json_req(&rig.app, "GET", &format!("/tasks/{id}/segments"), None).await;
+    assert_eq!(status, 200, "{body}");
+    let segs = body.as_array().unwrap();
+    assert_eq!(segs.len(), 2);
+    assert_eq!(segs[0]["idx"], 0);
+    assert_eq!(segs[0]["start"], 0);
+    assert_eq!(segs[0]["end"], 49);
+    assert_eq!(segs[0]["done"], 0);
+    assert_eq!(segs[0]["len"], 50);
+    assert_eq!(segs[0]["pct"], 0.0);
+    assert_eq!(segs[1]["idx"], 1);
+    assert_eq!(segs[1]["done"], 50);
+    assert_eq!(segs[1]["frontier"], 100);
+    assert_eq!(segs[1]["pct"], 1.0);
+}
+
+#[tokio::test]
+async fn segments_pct_is_fractional_in_flight() {
+    // In-flight (the panel's primary state): done < len must yield
+    // a true float fraction, never integer division and never > 1.
+    // 4-byte segment, 1 byte confirmed → pct 0.25.
+    let rig = rig().await;
+    let (status, task) = json_req(
+        &rig.app,
+        "POST",
+        "/tasks",
+        Some(serde_json::json!({
+            "url": "https://example.com/frac.bin",
+            "save_path": "/tmp/frac.bin",
+        })),
+    )
+    .await;
+    assert_eq!(status, 201, "{task}");
+    let id = task["id"].as_str().unwrap().to_string();
+
+    use peregrine_storage::Store;
+    let store = Store::open(&rig.dir.path().join("tasks.db")).unwrap();
+    let row = store
+        .upsert_task(
+            "https://example.com/frac.bin",
+            std::path::Path::new("/tmp/frac.bin"),
+            Some(4),
+            None,
+        )
+        .await
+        .unwrap();
+    store.replace_segments(row, &[(0, 3)]).await.unwrap();
+    store.update_cursor(row, 0, 1).await.unwrap();
+
+    let (status, body) = json_req(&rig.app, "GET", &format!("/tasks/{id}/segments"), None).await;
+    assert_eq!(status, 200, "{body}");
+    let seg = &body.as_array().unwrap()[0];
+    assert_eq!(seg["done"], 1);
+    assert_eq!(seg["len"], 4);
+    assert_eq!(seg["frontier"], 1);
+    let pct = seg["pct"].as_f64().unwrap();
+    assert!((pct - 0.25).abs() < f64::EPSILON, "pct={pct}");
+}
+
+#[tokio::test]
+async fn segments_alias_same_url_sink_shares_engine_row() {
+    // Two wire tasks aliasing one (url, sink) resolve to the SAME
+    // engine row — current contract: the store keys on (url, sink),
+    // so telemetry is shared, not per-wire-id. This test LOCKS that
+    // (no silent leak onto a different task's numbers); changing
+    // the aliasing rule later must update this pin.
+    let rig = rig().await;
+    let (status, task) = json_req(
+        &rig.app,
+        "POST",
+        "/tasks",
+        Some(serde_json::json!({
+            "url": "https://example.com/alias.bin",
+            "save_path": "/tmp/alias.bin",
+        })),
+    )
+    .await;
+    assert_eq!(status, 201, "{task}");
+    let id1 = task["id"].as_str().unwrap().to_string();
+    // The duplicate guard blocks a second add while the first row is
+    // non-terminal, but terminal-then-re-add IS legal — the alias
+    // window is real. Bypassing the API guard here (direct row
+    // insert) because this test pins the TELEMETRY contract, not
+    // the guard (add_duplicate_active_is_409 already covers that).
+    use peregrine_api::task::{Task, TaskId};
+    use peregrine_storage::Store;
+    let store = Store::open(&rig.dir.path().join("tasks.db")).unwrap();
+    let id2 = TaskId::new(format!("{id1}-alias"));
+    let mut t2 = Task::new(id2.clone(), "https://example.com/alias.bin", "/tmp/alias.bin");
+    t2.status = TaskStatus::Failed;
+    store.insert_download(&t2).await.unwrap();
+
+    let row = store
+        .upsert_task(
+            "https://example.com/alias.bin",
+            std::path::Path::new("/tmp/alias.bin"),
+            Some(10),
+            None,
+        )
+        .await
+        .unwrap();
+    store.replace_segments(row, &[(0, 9)]).await.unwrap();
+    store.update_cursor(row, 0, 3).await.unwrap();
+
+    for id in [&id1, id2.as_str()] {
+        let (status, body) =
+            json_req(&rig.app, "GET", &format!("/tasks/{id}/segments"), None).await;
+        assert_eq!(status, 200, "{body}");
+        let segs = body.as_array().unwrap();
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0]["done"], 3);
+        assert_eq!(segs[0]["len"], 10);
+    }
+}

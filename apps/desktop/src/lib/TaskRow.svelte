@@ -1,36 +1,61 @@
 <script lang="ts">
   /**
    * One task row: name, progress bar (or spinner for unknown size),
-   * derived speed, status chip, and the action cluster (pause /
-   * resume / remove). Dumb by design — all truth lives in the store.
+   * derived speed, status chip, throttle select, and the action
+   * cluster (pause / resume / remove). Nearly dumb by design — all
+   * list truth lives in the store; the row owns only its expand
+   * toggle + throttle select state.
    */
-  import type { TaskView } from '../lib/store.svelte';
+  import SegmentPanel from './SegmentPanel.svelte';
+  import { LIMIT_PRESETS, presetFor, formatBytes } from './format';
+  import type { TaskView } from './store.svelte';
 
-  let { task, onPause, onResume, onRemove }: {
+  let {
+    task,
+    daemon,
+    onPause,
+    onResume,
+    onRemove,
+    onLimit,
+  }: {
     task: TaskView;
+    daemon: import('./daemon').Daemon;
     onPause: (id: string) => void;
     onResume: (id: string) => void;
     onRemove: (id: string) => void;
+    onLimit: (id: string, bps: number) => void;
   } = $props();
+
+  let open = $state(false);
+  let custom = $state<number | null>(null); // non-preset value being typed
 
   const name = $derived(task.url.split('/').filter(Boolean).pop() ?? task.url);
   const size = $derived(formatBytes(task.total_bytes));
   const done = $derived(formatBytes(task.received_bytes));
   const pct = $derived(task.fraction !== null ? Math.round(task.fraction * 100) : null);
+  const statusClass = $derived(task.status);
 
-  function formatBytes(n: number | null): string {
-    if (n === null) return '—';
-    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-    let v = n;
-    let i = 0;
-    while (v >= 1024 && i < units.length - 1) {
-      v /= 1024;
-      i++;
+  /** Select value: preset bps as string, or 'custom'. */
+  const limitSel = $derived(
+    custom !== null ? 'custom' : (presetFor(task.speed_limit_bps) ?? 'custom'),
+  );
+
+  function pickLimit(ev: Event) {
+    const v = (ev.currentTarget as HTMLSelectElement).value;
+    if (v === 'custom') {
+      custom = task.speed_limit_bps; // start editing from current
+      return;
     }
-    return `${v >= 100 || i === 0 ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
+    custom = null;
+    onLimit(task.id, Number(v));
   }
 
-  const statusClass = $derived(task.status);
+  function commitCustom() {
+    if (custom !== null && Number.isFinite(custom) && custom >= 0) {
+      onLimit(task.id, Math.round(custom));
+    }
+    custom = null;
+  }
 </script>
 
 <div class="row" data-status={statusClass}>
@@ -49,6 +74,16 @@
     </div>
 
     <div class="meta">
+      <button
+        class="chevron"
+        class:open
+        aria-expanded={open}
+        aria-label="Toggle segment details"
+        onclick={() => (open = !open)}
+        title="Details"
+      >
+        {open ? '▾' : '▸'}
+      </button>
       <span class="chip" data-kind={task.status}>{task.status}</span>
       <span>{done}{size !== '—' ? ` / ${size}` : ''}</span>
       {#if pct !== null}
@@ -60,6 +95,31 @@
       {#if task.error}
         <span class="err" title={task.error}>{task.error}</span>
       {/if}
+      <span class="limit">
+        {#if custom !== null}
+          <input
+            type="number"
+            min="0"
+            bind:value={custom}
+            onblur={commitCustom}
+            onkeydown={(e) => e.key === 'Enter' && commitCustom()}
+            title="bytes/sec"
+          />
+        {:else}
+          <select
+            value={limitSel}
+            onchange={pickLimit}
+            title="Speed limit"
+            aria-label={`Speed limit for ${name}`}
+          >
+            {#each LIMIT_PRESETS as p (p.bps)}
+              <option value={String(p.bps)}>{p.label}</option>
+            {/each}
+            <option value="custom">custom…</option>
+          </select>
+        {/if}
+        <span class="unit">B/s</span>
+      </span>
     </div>
   </div>
 
@@ -73,3 +133,7 @@
     <button class="danger" onclick={() => onRemove(task.id)} title="Remove">✕</button>
   </div>
 </div>
+
+{#if open}
+  <SegmentPanel {task} {daemon} onLimit={onLimit} />
+{/if}

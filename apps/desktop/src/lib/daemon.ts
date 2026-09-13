@@ -4,7 +4,7 @@
  * can only speak http(s) — hence TCP. `base` comes from
  * `VITE_DAEMON_URL` (dev: the Vite proxy; tauri: direct).
  */
-import type { EngineEvent, Health, Task, TaskStatus } from './types';
+import type { EngineEvent, Health, SegmentView, Settings, Task, TaskStatus } from './types';
 
 export class ApiError extends Error {
   constructor(
@@ -68,6 +68,23 @@ export class Daemon {
 
   remove(id: string): Promise<{ removed: boolean }> {
     return this.call('DELETE', `/tasks/${id}`);
+  }
+
+  segments(id: string): Promise<SegmentView[]> {
+    return this.call('GET', `/tasks/${id}/segments`);
+  }
+
+  /** Per-task throttle; 0 = unlimited. Persists + applies live. */
+  setTaskLimit(id: string, bps: number): Promise<Task> {
+    return this.call('PUT', `/tasks/${id}/limit`, { bps });
+  }
+
+  getSettings(): Promise<Settings> {
+    return this.call('GET', '/settings');
+  }
+
+  setGlobalLimit(bps: number): Promise<Settings> {
+    return this.call('PUT', '/settings', { global_limit_bps: bps });
   }
 }
 

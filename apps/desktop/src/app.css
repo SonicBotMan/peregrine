@@ -85,6 +85,45 @@ section h2 small { color: var(--line); }
 .actions { display: flex; gap: 6px; }
 .actions button { padding: 4px 10px; }
 
+/* ---- M3-c1: throttle selects + detail panel ----------------- */
+.limit { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }
+.limit select, .limit input {
+  background: var(--bg); color: var(--text); border: 1px solid var(--line);
+  border-radius: 6px; padding: 2px 6px; font-size: 12px; font: inherit;
+  max-width: 120px;
+}
+.limit .unit { color: var(--dim); }
+.chevron {
+  background: none; border: none; color: var(--dim); cursor: pointer;
+  padding: 0 2px; font-size: 12px; line-height: 1;
+}
+.chevron:hover { color: var(--text); }
+.detail {
+  border-top: 1px dashed var(--line); padding: 10px 2px 12px;
+  display: grid; gap: 8px;
+}
+.facts { display: flex; gap: 16px; font-size: 12px; color: var(--dim);
+  flex-wrap: wrap; align-items: baseline; font-variant-numeric: tabular-nums; }
+.kv b { color: var(--text); font-weight: 600; margin-right: 4px; }
+.kv .url { max-width: 420px; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; display: inline-block; vertical-align: bottom; }
+.muted { color: var(--dim); margin: 0; font-size: 12px; }
+.seggrid { display: grid; gap: 4px; }
+.seg { display: grid; grid-template-columns: 44px 1fr 40px; gap: 8px;
+  align-items: center; font-size: 11px; color: var(--dim);
+  font-variant-numeric: tabular-nums; }
+.seg .idx { text-align: right; }
+.seg .bar { height: 8px; border-radius: 4px; background: var(--bg);
+  overflow: hidden; border: 1px solid var(--line); }
+.seg .fill { height: 100%; background: var(--accent); transition: width 0.4s linear; }
+.seg .pct { text-align: right; }
+.global-limit { display: inline-flex; align-items: center; gap: 4px; }
+.global-limit select, .global-limit input {
+  background: var(--panel); color: var(--text); border: 1px solid var(--line);
+  border-radius: 6px; padding: 3px 6px; font-size: 12px;
+}
+.global-limit .unit { color: var(--dim); font-size: 12px; }
+
 .overlay {
   position: fixed; inset: 0; background: rgba(0, 0, 0, 0.55);
   display: flex; align-items: center; justify-content: center; z-index: 10;
