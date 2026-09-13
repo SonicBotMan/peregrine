@@ -6,6 +6,7 @@
 //! here may depend on any shell or engine crate (architecture rule #3/#1).
 
 pub mod bus;
+pub mod download;
 pub mod engine;
 pub mod error;
 pub mod health;
@@ -14,6 +15,10 @@ pub mod task;
 pub mod transport;
 
 pub use bus::{EngineEvent, EventBus};
+pub use download::{
+    DownloadFuture, DownloadJob, DownloadOutcome, DownloadProgress, IfRangeValidator, NoProgress,
+    ProgressSink, ResumeContext, SharedProgressSink,
+};
 pub use engine::{ProbeFuture, ProbeInfo, ProtocolEngine};
 pub use error::ApiError;
 pub use health::HealthInfo;

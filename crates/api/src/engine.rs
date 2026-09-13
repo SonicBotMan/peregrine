@@ -3,6 +3,7 @@
 //! A new protocol (HTTP, BT, HLS, FTP, …) is a new crate implementing
 //! [`ProtocolEngine`] and registering itself. Zero intrusion into the core.
 
+use crate::download::{DownloadFuture, DownloadJob, DownloadOutcome, SharedProgressSink};
 use crate::error::ApiError;
 use serde::{Deserialize, Serialize};
 use std::future::Future;
@@ -46,10 +47,9 @@ pub struct ProbeInfo {
     pub filename: Option<String>,
 }
 
-/// A protocol engine. Async surface will grow in M1 (download/segment APIs);
-/// `probe` is the minimal contract every engine can already honor.
-///
-/// Engines are registered in a registry (M1) and addressed by [`Self::name`].
+/// A protocol engine. `probe` inspects; `download` executes. Engines that
+/// cannot yet download (future FTP/BT crates) inherit the `Unsupported`
+/// default and implement it in their own milestone.
 pub trait ProtocolEngine: Send + Sync {
     /// Unique engine name, e.g. `"http"`, `"bt"`, `"hls"`.
     fn name(&self) -> &'static str;
@@ -59,6 +59,26 @@ pub trait ProtocolEngine: Send + Sync {
 
     /// Inspect a URL without downloading the body.
     fn probe(&self, url: &str) -> ProbeFuture<Result<ProbeInfo, ApiError>>;
+
+    /// Move bytes into `job.sink`. Single connection, resumable, streaming:
+    /// returns `Ok` only when the body ended cleanly (`completed` is
+    /// always true in `Ok`); a SHORT body relative to the announced
+    /// total is `Err`. Cancellation is future-drop, which leaves a valid
+    /// partial file on disk for the next resume.
+    ///
+    /// Default: this engine does not implement download yet (M1+ engines
+    /// override; returns `ApiError::Internal`).
+    fn download(
+        &self,
+        _job: DownloadJob,
+        _progress: SharedProgressSink,
+    ) -> DownloadFuture<Result<DownloadOutcome, ApiError>> {
+        Box::pin(async {
+            Err(ApiError::Internal(
+                "engine does not implement download".into(),
+            ))
+        })
+    }
 }
 
 #[cfg(test)]

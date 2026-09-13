@@ -15,6 +15,8 @@
 //! The engine owns one pooled client; probes reuse connections. TLS via
 //! rustls (ring provider) — no system OpenSSL dependency.
 
+pub(crate) mod download;
+
 use http_body_util::Full;
 use hyper::Request;
 use hyper::body::Bytes;
@@ -77,6 +79,16 @@ impl ProtocolEngine for HttpEngine {
         Url::parse(url)
             .map(|u| matches!(u.scheme(), "http" | "https"))
             .unwrap_or(false)
+    }
+
+    fn download(
+        &self,
+        job: peregrine_api::DownloadJob,
+        progress: peregrine_api::SharedProgressSink,
+    ) -> peregrine_api::DownloadFuture<Result<peregrine_api::DownloadOutcome, ApiError>> {
+        let client = self.client.clone();
+        let max_redirects = self.max_redirects;
+        Box::pin(download::run_download(client, max_redirects, job, progress))
     }
 
     fn probe(&self, url: &str) -> ProbeFuture<Result<ProbeInfo, ApiError>> {
@@ -409,5 +421,32 @@ mod tests {
             hyper::header::HeaderValue::from_static("garbage"),
         );
         assert_eq!(content_range_total(&m), None);
+    }
+
+    #[test]
+    fn download_content_range_start_and_total() {
+        let range = |v: &str| -> hyper::HeaderMap {
+            let mut m = hyper::HeaderMap::new();
+            m.insert(
+                hyper::header::CONTENT_RANGE,
+                hyper::header::HeaderValue::from_str(v).unwrap(),
+            );
+            m
+        };
+        assert_eq!(
+            HttpEngine::parse_content_range(&range("bytes 500-999/1000")),
+            Some((500, Some(1000)))
+        );
+        assert_eq!(
+            HttpEngine::parse_content_range(&range("bytes 500-999/*")),
+            Some((500, None))
+        );
+        // Malformed variants all refuse.
+        assert_eq!(HttpEngine::parse_content_range(&range("bytes -/")), None);
+        assert_eq!(HttpEngine::parse_content_range(&range("items 1-2/3")), None);
+        assert_eq!(
+            HttpEngine::parse_content_range(&range("bytes x-9/10")),
+            None
+        );
     }
 }
