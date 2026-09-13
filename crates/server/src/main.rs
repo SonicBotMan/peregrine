@@ -1,16 +1,19 @@
 //! `peregrined` — the headless daemon.
 //!
-//! M0: axum Router served over a Unix domain socket, `GET /health` only.
-//! Architecture rules honored from line one:
-//! - default transport = Unix socket (never TCP, never 0.0.0.0)
-//! - clients share the api types; the daemon is the only privileged process
+//! Composition (M2-d): `Daemon::build` wires store → task manager →
+//! scheduler → HTTP engine; this binary owns only the OS boundary —
+//! socket lifecycle, signals, tracing — plus the one ordering rule
+//! that matters: the scheduler loop starts only after crash recovery
+//! (`start()`), and stops before the socket file is removed.
 
 mod cli;
 
 use anyhow::Context;
 use clap::Parser;
 use peregrine_api::transport::socket_path;
-use peregrine_server::{health, uds};
+use peregrine_engine_http::SegmentConfig;
+use peregrine_scheduler::SchedulerConfig;
+use peregrine_server::{daemon::Daemon, uds};
 
 use crate::cli::Args;
 
@@ -23,15 +26,39 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
+    // Bind FIRST, start SECOND (P0 from R2 review): a second
+    // `peregrined` against the same socket must fail BEFORE
+    // `daemon.start()` runs crash recovery against a db another
+    // daemon owns, or before its scheduler can double-claim tasks
+    // (the busy-path guard is per-process and cannot cross the
+    // process boundary).
     let path = socket_path(args.socket.as_deref())?;
-    let started = std::time::Instant::now();
-    let app = health::router(health::Health {
-        started,
-        pid: std::process::id(),
-    });
-
     let (listener, socket_id) = uds::bind(&path).await?;
-    tracing::info!(path = %path.display(), version = peregrine_api::VERSION, "peregrined listening");
+
+    // Wire the daemon, then start it: crash recovery re-queues
+    // interrupted tasks BEFORE the loop can claim anything. Socket
+    // ownership is already proven — this instance is THE daemon.
+    let daemon = std::sync::Arc::new(Daemon::build(
+        args.db.as_deref(),
+        SchedulerConfig::default(),
+        SegmentConfig::default(),
+    )?);
+    let requeued = daemon.start().await?;
+    if requeued > 0 {
+        tracing::info!(
+            count = requeued,
+            "crash recovery: interrupted tasks requeued"
+        );
+    }
+
+    let app = daemon.router();
+
+    tracing::info!(
+        path = %path.display(),
+        db = %daemon.db_path.display(),
+        version = peregrine_api::VERSION,
+        "peregrined listening"
+    );
 
     // Clean shutdown removes the socket file; ^C is the normal exit path.
     axum::serve(listener, app)
@@ -39,6 +66,10 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("server run loop")?;
 
+    // Drain engines before the socket goes: a client that reconnects
+    // after this point must find either nothing or a clean next boot,
+    // never a daemon still writing files.
+    daemon.sched.shutdown().await;
     uds::remove_socket_file(&path, socket_id).await;
     tracing::info!("peregrined stopped, socket cleaned");
     Ok(())

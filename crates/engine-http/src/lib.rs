@@ -49,6 +49,12 @@ pub struct HttpEngine {
     max_redirects: usize,
 }
 
+/// Identify ourselves on every request (probe, single, segments).
+/// Real-world smoke finding (M2-d R3): mirrors like tuna 403 a
+/// request with no User-Agent — anti-scraping default. A downloader
+/// MUST announce itself; same policy as aria2/curl.
+pub(crate) const USER_AGENT: &str = concat!("peregrine/", env!("CARGO_PKG_VERSION"));
+
 impl HttpEngine {
     /// Follow at most this many 3xx hops before giving up.
     pub const DEFAULT_MAX_REDIRECTS: usize = 5;
@@ -141,6 +147,7 @@ impl ProtocolEngine for HttpEngine {
                 let req = Request::builder()
                     .method(hyper::Method::HEAD)
                     .uri(current.as_str())
+                    .header(hyper::header::USER_AGENT, crate::USER_AGENT)
                     .body(Full::new(Bytes::new()))
                     .map_err(|e| ApiError::Network(format!("build request: {e}")))?;
 
@@ -253,6 +260,7 @@ async fn confirm_range_support(
         .method(hyper::Method::GET)
         .uri(&info.url)
         .header(RANGE, "bytes=0-0")
+        .header(hyper::header::USER_AGENT, crate::USER_AGENT)
         .body(Full::new(Bytes::new()));
     let req = match req {
         Ok(req) => req,

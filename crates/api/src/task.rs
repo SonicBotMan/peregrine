@@ -57,6 +57,37 @@ pub enum TaskStatus {
     Failed,
 }
 
+/// CLI parsing (clap value_parser), matching the wire names.
+impl std::str::FromStr for TaskStatus {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "queued" => Ok(Self::Queued),
+            "running" => Ok(Self::Running),
+            "paused" => Ok(Self::Paused),
+            "completed" => Ok(Self::Completed),
+            "failed" => Ok(Self::Failed),
+            _ => Err(format!(
+                "unknown status {s:?} (queued | running | paused | completed | failed)"
+            )),
+        }
+    }
+}
+
+/// Wire/display names (match serde rename_all). Used by CLI table
+/// output; `to_string()` mirrors exactly what JSON emits.
+impl std::fmt::Display for TaskStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            TaskStatus::Queued => "queued",
+            TaskStatus::Running => "running",
+            TaskStatus::Paused => "paused",
+            TaskStatus::Completed => "completed",
+            TaskStatus::Failed => "failed",
+        })
+    }
+}
+
 impl TaskStatus {
     /// Terminal states never transition again (M2-a state machine).
     pub fn is_terminal(self) -> bool {
@@ -92,12 +123,39 @@ impl TaskStatus {
 }
 
 /// Queue priority: higher runs first when slots free up.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum Priority {
     Low,
+    #[default]
     Normal,
     High,
+}
+
+/// CLI parsing (clap value_parser): lowercase to match the wire
+/// format (serde rename_all). The daemon never parses these — only
+/// the CLI does.
+impl std::str::FromStr for Priority {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "low" => Ok(Self::Low),
+            "normal" => Ok(Self::Normal),
+            "high" => Ok(Self::High),
+            _ => Err(format!("unknown priority {s:?} (low | normal | high)")),
+        }
+    }
+}
+
+/// Wire/display names (match serde rename_all).
+impl std::fmt::Display for Priority {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Priority::Low => "low",
+            Priority::Normal => "normal",
+            Priority::High => "high",
+        })
+    }
 }
 
 /// A download task — the unit of user intent.

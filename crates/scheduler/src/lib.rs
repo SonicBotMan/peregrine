@@ -63,6 +63,20 @@ pub trait DownloadPort: Send + Sync {
         progress: SharedProgressSink,
         cancel: CancellationToken,
     ) -> Pin<Box<dyn Future<Output = Result<DownloadOutcome, ApiError>> + Send + '_>>;
+
+    /// Drop any engine-side resume state for (url, sink) — the
+    /// segment rows / cursors a previous run left behind (B31).
+    /// Called after a task row is removed so the SAME target can be
+    /// re-added fresh: without this, `download_auto` route 1 sees a
+    /// stale "live segments" row for a file the user deleted and
+    /// resumes into a sparse mismatch. Failures are logged by the
+    /// caller and never block the removal — a stale resume row is a
+    /// degraded next-download, not a lost one.
+    fn purge(
+        &self,
+        url: &str,
+        sink: &std::path::Path,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>>;
 }
 
 /// Production port over `HttpEngine::download_auto` (PROPOSAL §5:
@@ -97,6 +111,26 @@ impl DownloadPort for HttpAutoPort {
             self.engine
                 .download_auto(job, &self.cfg, &self.store, progress, cancel),
         )
+    }
+
+    fn purge(
+        &self,
+        url: &str,
+        sink: &std::path::Path,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
+        // Own the inputs before the async block: the elided
+        // param lifetimes and the return `'_` can disagree when the
+        // block captures them by reference.
+        let url = url.to_string();
+        let sink = sink.to_path_buf();
+        // Engine rows are keyed (url, sink); segment rows cascade on
+        // task delete (storage invariant, tested there).
+        Box::pin(async move {
+            if let Some(state) = self.store.get_task(&url, &sink).await? {
+                self.store.delete_task(state.id).await?;
+            }
+            Ok(())
+        })
     }
 }
 
@@ -244,17 +278,29 @@ impl Scheduler {
     /// caller's (IPC command's) explicit choice, not the scheduler's
     /// default.
     pub async fn remove(&self, id: &TaskId) -> Result<(), TaskError> {
+        // Row first (url/sink needed for the engine purge below).
+        let Some(row) = self.tm.get(id).await? else {
+            return Ok(()); // idempotent (R2 review)
+        };
         if let Some(r) = self.running.lock().unwrap().get(id) {
             r.cancel.cancel();
         }
-        let removed = self.tm.remove(id).await;
+        self.tm.remove(id).await?;
+        // Engine-side resume rows (B31): stale segment rows keyed
+        // (url, sink) must not outlive the task — a re-add of the
+        // same target would resume into a mismatched sparse file.
+        // Best-effort: failure logs and never blocks removal.
+        if let Err(e) = self
+            .port
+            .purge(&row.url, std::path::Path::new(&row.save_path))
+            .await
+        {
+            tracing::warn!(task = %id, error = %e, "engine purge after remove failed");
+        }
         // Removing a running task frees a slot; removing a queued one
         // changes the pick order. Either way, wake.
         self.wake.notify_one();
-        match removed {
-            Err(TaskError::NotFound(_)) => Ok(()),
-            other => other,
-        }
+        Ok(())
     }
 
     /// Graceful shutdown: stop accepting work, cancel every worker,

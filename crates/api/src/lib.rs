@@ -24,7 +24,9 @@ pub use error::ApiError;
 pub use health::HealthInfo;
 pub use registry::EngineRegistry;
 pub use task::{Priority, Task, TaskId, TaskStatus, unix_now};
-pub use transport::{default_socket_path, socket_path};
+pub use transport::{
+    AddTaskRequest, ApiErrorBody, default_db_path, default_socket_path, socket_path,
+};
 
 /// Crate version, surfaced by `/health` and `pg --version`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

@@ -31,10 +31,13 @@ hyper-rustls = { version = "0.27", default-features = false, features = [
     "logging",
 ] }
 # server stack
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 hyper = "1"
 hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
 http-body-util = "0.1"
+futures = "0.3"
+tokio-tungstenite = "0.29"
+tungstenite = "0.29"
 tower = { version = "0.5", features = ["util"] }
 # serialization
 serde = { version = "1", features = ["derive"] }
@@ -54,6 +57,8 @@ libc = "1.0.0-alpha.4"
 
 # internal crates
 peregrine-api = { path = "crates/api" }
+peregrine-scheduler = { path = "crates/scheduler" }
+peregrine-server = { path = "crates/server" }
 peregrine-storage = { path = "crates/storage" }
 # sqlite (WAL): segment table for byte-exact resume (PROPOSAL §5.2)
 rusqlite = { version = "0.37", features = ["bundled"] }

@@ -22,3 +22,10 @@ tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
+
+[dev-dependencies]
+peregrine-scheduler = { workspace = true }
+peregrine-server = { workspace = true }
+tokio-util = { workspace = true }
+tempfile = { workspace = true }
+axum = { workspace = true }

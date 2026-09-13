@@ -71,14 +71,52 @@ impl DaemonClient {
         self.get_json("/health").await
     }
 
-    async fn get_json<T: DeserializeOwned>(&self, path: &str) -> anyhow::Result<T> {
+    /// POST a JSON body, expect a JSON body back (task CRUD).
+    pub async fn request_json<Req: serde::Serialize, Res: DeserializeOwned>(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&Req>,
+    ) -> anyhow::Result<Res> {
         let uri = format!("http://{DAEMON_AUTHORITY}{path}");
-        let req = Request::get(uri)
+        let mut builder = hyper::Request::builder().method(method).uri(uri);
+        let full = match body {
+            Some(v) => {
+                builder = builder.header("content-type", "application/json");
+                Full::new(Bytes::from(serde_json::to_vec(v)?))
+            }
+            None => Full::new(Bytes::new()),
+        };
+        let req = builder.body(full).context("build request")?;
+        let (status, bytes) = self.roundtrip(req).await?;
+        anyhow::ensure!(
+            status.is_success(),
+            "daemon returned {status}: {}",
+            String::from_utf8_lossy(&bytes)
+        );
+        serde_json::from_slice(&bytes).context("parse daemon response")
+    }
+
+    async fn get_json<T: DeserializeOwned>(&self, path: &str) -> anyhow::Result<T> {
+        let req = Request::get(format!("http://{DAEMON_AUTHORITY}{path}"))
             .body(Full::new(Bytes::new()))
             .context("build request")?;
-        let (status, bytes) = match tokio::time::timeout(REQUEST_TIMEOUT, async {
-            // Both halves — request AND body collection — sit inside the one
-            // hard deadline; a daemon that stalls mid-body must fail fast too.
+        let (status, bytes) = self.roundtrip(req).await?;
+        anyhow::ensure!(
+            status.is_success(),
+            "daemon returned {status}: {}",
+            String::from_utf8_lossy(&bytes)
+        );
+        serde_json::from_slice(&bytes).context("parse daemon response")
+    }
+
+    /// One hard deadline around request AND body collection — a
+    /// daemon that stalls mid-body must fail fast too.
+    async fn roundtrip(
+        &self,
+        req: Request<Full<Bytes>>,
+    ) -> anyhow::Result<(hyper::StatusCode, Bytes)> {
+        match tokio::time::timeout(REQUEST_TIMEOUT, async {
             let res = self
                 .http
                 .request(req)
@@ -95,14 +133,8 @@ impl DaemonClient {
         })
         .await
         {
-            Ok(inner) => inner?,
+            Ok(inner) => inner,
             Err(_elapsed) => anyhow::bail!("request timed out (daemon hung?)"),
-        };
-        anyhow::ensure!(
-            status.is_success(),
-            "daemon returned {status}: {}",
-            String::from_utf8_lossy(&bytes)
-        );
-        serde_json::from_slice(&bytes).context("parse daemon response")
+        }
     }
 }

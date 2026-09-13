@@ -59,6 +59,9 @@ struct ScriptedPort {
     jobs: Mutex<Vec<DownloadJob>>,
     active: AtomicUsize,
     peak_active: AtomicUsize,
+    /// (url, sink) pairs the scheduler asked the engine to purge
+    /// (B31: remove must drop engine-side resume rows).
+    purged: Mutex<Vec<(String, std::path::PathBuf)>>,
 }
 
 impl ScriptedPort {
@@ -68,11 +71,16 @@ impl ScriptedPort {
             jobs: Mutex::new(Vec::new()),
             active: AtomicUsize::new(0),
             peak_active: AtomicUsize::new(0),
+            purged: Mutex::new(Vec::new()),
         })
     }
 
     fn jobs(&self) -> Vec<DownloadJob> {
         self.jobs.lock().unwrap().clone()
+    }
+
+    fn purged(&self) -> Vec<(String, std::path::PathBuf)> {
+        self.purged.lock().unwrap().clone()
     }
 }
 
@@ -107,6 +115,18 @@ impl DownloadPort for ScriptedPort {
             let _guard = ActiveGuard(active);
             run_script(script, &progress, cancel).await
         })
+    }
+
+    fn purge(
+        &self,
+        url: &str,
+        sink: &std::path::Path,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
+        self.purged
+            .lock()
+            .unwrap()
+            .push((url.to_string(), sink.to_path_buf()));
+        Box::pin(async { Ok(()) })
     }
 }
 
@@ -222,6 +242,40 @@ async fn add(s: &Scheduler, dir: &std::path::Path, name: &str, p: Priority) -> T
 
 // ---------------------------------------------------------------------
 // 1. Happy path.
+
+#[tokio::test]
+async fn remove_purges_engine_rows_and_is_idempotent() {
+    let dir = tempfile::tempdir().unwrap();
+    let rig = rig(
+        vec![Script::AwaitCancel {
+            partial: 10,
+            total: Some(100),
+        }],
+        2,
+    );
+    tokio::spawn(rig.sched.clone().run());
+
+    let t = add(&rig.sched, dir.path(), "f.bin", Priority::Normal).await;
+    wait_for("engine entered", || {
+        Box::pin(async { rig.port.peak_active.load(Ordering::SeqCst) >= 1 })
+    })
+    .await;
+
+    rig.sched.remove(&t.id).await.unwrap();
+    // Engine-side resume rows dropped for exactly (url, sink) (B31).
+    let purged = rig.port.purged();
+    assert_eq!(
+        purged,
+        vec![("http://test/file".to_string(), dir.path().join("f.bin"))]
+    );
+
+    // Idempotent: a second remove succeeds and does NOT re-purge
+    // (the row is gone; nothing to purge).
+    rig.sched.remove(&t.id).await.unwrap();
+    assert_eq!(rig.port.purged().len(), 1);
+
+    rig.sched.shutdown().await;
+}
 
 #[tokio::test]
 async fn completes_a_task_end_to_end() {

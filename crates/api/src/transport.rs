@@ -5,6 +5,51 @@
 
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
+
+use crate::task::Priority;
+
+/// REST request body for `POST /tasks` — the one write DTO clients
+/// (CLI, future MCP bridge, UI dev-mode) share with the daemon.
+/// `priority` defaults to Normal when absent (serde default keeps
+/// the JSON minimal for humans).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AddTaskRequest {
+    pub url: String,
+    pub save_path: String,
+    #[serde(default)]
+    pub priority: Priority,
+}
+
+/// Wire shape of every error the REST API returns: a machine code
+/// plus a human message, never a bare string body.
+#[derive(Debug, Serialize)]
+pub struct ApiErrorBody {
+    pub error: String,
+    pub message: String,
+}
+
+/// Default daemon database path: `$XDG_DATA_HOME/peregrine/tasks.db`,
+/// falling back to `~/.local/share/peregrine/tasks.db` — the SAME
+/// single source the daemon opens and clients print in diagnostics.
+pub fn default_db_path() -> std::io::Result<PathBuf> {
+    let base = match std::env::var_os("XDG_DATA_HOME").filter(|s| !s.is_empty()) {
+        Some(dir) => PathBuf::from(dir),
+        None => {
+            let home = std::env::var_os("HOME").ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "neither XDG_DATA_HOME nor HOME set",
+                )
+            })?;
+            PathBuf::from(home).join(".local/share")
+        }
+    };
+    let dir = base.join("peregrine");
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir.join("tasks.db"))
+}
+
 #[cfg(unix)]
 fn current_uid() -> u32 {
     // SAFETY: `getuid` takes no arguments and cannot fail. We use the real OS

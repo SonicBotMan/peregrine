@@ -144,7 +144,8 @@ pub(crate) async fn fetch_get(
     for hop in 0..=max_redirects {
         let mut builder = Request::builder()
             .method(hyper::Method::GET)
-            .uri(current.as_str());
+            .uri(current.as_str())
+            .header(hyper::header::USER_AGENT, crate::USER_AGENT);
         if let Some(range) = range {
             builder = builder.header(RANGE, range);
         }
