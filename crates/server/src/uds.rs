@@ -3,26 +3,51 @@
 //! (single source).
 
 use anyhow::Context;
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use tokio::net::UnixListener;
 
-/// Bind a Unix listener.
+/// How long the liveness probe may wait. A live listener with a full accept
+/// backlog makes `connect` queue (EAGAIN) instead of failing fast; without a
+/// deadline that manifests as startup hanging forever.
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The `(dev, inode)` identity of the socket file we bound, captured right
+/// after bind. Shutdown cleanup unlinks the path only if it still points at
+/// this exact file — between our shutdown and cleanup, another daemon may
+/// have probed our dead socket, removed the stale file, and bound its own.
+#[derive(Clone, Copy, Debug)]
+pub struct SocketIdentity {
+    dev: u64,
+    ino: u64,
+}
+
+/// Bind a Unix listener, returning it with the socket file's identity for
+/// safe cleanup later.
 ///
 /// If a socket file already exists at `path`, probe it first: a *live* daemon
 /// answers `connect()` and we must refuse (never steal another daemon's
 /// socket); a refused connection means the file is stale from an unclean exit
 /// and is removed before rebinding.
-pub async fn bind(path: &Path) -> anyhow::Result<UnixListener> {
+pub async fn bind(path: &Path) -> anyhow::Result<(UnixListener, SocketIdentity)> {
     if path.exists() {
-        match tokio::net::UnixStream::connect(path).await {
-            Ok(_) => anyhow::bail!("another daemon is already listening on {}", path.display()),
-            Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
+        match tokio::time::timeout(PROBE_TIMEOUT, tokio::net::UnixStream::connect(path)).await {
+            // Timed out: most plausibly a live daemon with a full backlog.
+            // Fail safe — assume a daemon owns the socket rather than delete
+            // a live daemon's file.
+            Err(_elapsed) => anyhow::bail!(
+                "socket probe timed out; assuming another daemon is listening on {}",
+                path.display()
+            ),
+            Ok(Ok(_)) => anyhow::bail!("another daemon is already listening on {}", path.display()),
+            Ok(Err(e)) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
+                ensure_socket_file(path).await?;
                 tracing::warn!(path = %path.display(), "removing stale socket file");
                 tokio::fs::remove_file(path)
                     .await
                     .with_context(|| format!("remove stale socket {}", path.display()))?;
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 // Not refused (e.g. ENOENT raced away, or a permission error):
                 // let the bind itself surface the real problem.
                 tracing::debug!(path = %path.display(), error = %e, "socket probe failed");
@@ -32,7 +57,14 @@ pub async fn bind(path: &Path) -> anyhow::Result<UnixListener> {
     let listener = UnixListener::bind(path)
         .with_context(|| format!("bind unix socket at {}", path.display()))?;
     restrict_permissions(path)?;
-    Ok(listener)
+    let meta = std::fs::metadata(path).context("stat socket for cleanup identity")?;
+    Ok((
+        listener,
+        SocketIdentity {
+            dev: meta.dev(),
+            ino: meta.ino(),
+        },
+    ))
 }
 
 /// Security default: the socket is a control channel to the daemon —
@@ -42,7 +74,33 @@ fn restrict_permissions(path: &Path) -> std::io::Result<()> {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
 }
 
-/// Best-effort socket cleanup on shutdown.
-pub async fn remove_socket_file(path: &Path) {
-    tokio::fs::remove_file(path).await.ok();
+/// Only remove the stale candidate if it really is a socket file: `connect`
+/// to an ordinary file also fails with ECONNREFUSED, and a user pointing
+/// `--socket` at one of their files must not get it deleted.
+async fn ensure_socket_file(path: &Path) -> anyhow::Result<()> {
+    use std::os::unix::fs::FileTypeExt;
+    let meta = tokio::fs::metadata(path)
+        .await
+        .with_context(|| format!("stat stale socket candidate {}", path.display()))?;
+    anyhow::ensure!(
+        meta.file_type().is_socket(),
+        "refusing to remove {}: not a socket file",
+        path.display()
+    );
+    Ok(())
+}
+
+/// Best-effort socket cleanup on shutdown: unlink only when the path still
+/// points at the exact file we bound (same device and inode). If another
+/// daemon has since taken the path over, leave its file alone.
+pub async fn remove_socket_file(path: &Path, id: SocketIdentity) {
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.dev() == id.dev && meta.ino() == id.ino => {
+            tokio::fs::remove_file(path).await.ok();
+        }
+        _ => tracing::debug!(
+            path = %path.display(),
+            "socket file changed hands since bind; not removing"
+        ),
+    }
 }

@@ -44,7 +44,9 @@ pub struct EventBus {
 
 impl EventBus {
     /// `capacity` = number of queued events before oldest are dropped.
+    /// Must be non-zero: `broadcast::channel(0)` panics deep inside tokio.
     pub fn new(capacity: usize) -> Self {
+        assert!(capacity > 0, "EventBus capacity must be non-zero");
         let (tx, _) = broadcast::channel(capacity);
         Self { tx }
     }

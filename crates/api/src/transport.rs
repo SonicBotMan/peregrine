@@ -18,8 +18,10 @@ fn current_uid() -> u32 {
 }
 
 /// Default socket path: `$XDG_RUNTIME_DIR/peregrine/peregrine.sock`,
-/// falling back to `/tmp/peregrine-<uid>.sock` when XDG_RUNTIME_DIR is unset
-/// or empty.
+/// falling back to a 0700 directory `/tmp/peregrine-<uid>/peregrine.sock`
+/// when XDG_RUNTIME_DIR is unset or empty. A bare file directly in /tmp
+/// would sit in a world-traversable directory during the
+/// bind→chmod window; an owner-only directory closes that.
 pub fn default_socket_path() -> std::io::Result<PathBuf> {
     let xdg = std::env::var_os("XDG_RUNTIME_DIR").filter(|s| !s.is_empty());
     if let Some(runtime_dir) = xdg {
@@ -27,10 +29,18 @@ pub fn default_socket_path() -> std::io::Result<PathBuf> {
         std::fs::create_dir_all(&dir)?;
         return Ok(dir.join("peregrine.sock"));
     }
-    Ok(PathBuf::from(format!(
-        "/tmp/peregrine-{}.sock",
-        current_uid()
-    )))
+    Ok(tmp_fallback_dir()?.join("peregrine.sock"))
+}
+
+/// XDG-less fallback directory: owned by this uid, permissions pinned to
+/// 0700 on every start (create_dir_all alone would honor a pre-existing
+/// looser mode).
+fn tmp_fallback_dir() -> std::io::Result<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = PathBuf::from(format!("/tmp/peregrine-{}", current_uid()));
+    std::fs::create_dir_all(&dir)?;
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+    Ok(dir)
 }
 
 /// Effective socket path: explicit flag wins, else default.

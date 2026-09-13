@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/api", "crates/server", "crates/cli"]
+members = ["crates/api", "crates/server", "crates/cli", "crates/engine-http"]
 
 [workspace.package]
 version = "0.1.0"
@@ -12,6 +12,15 @@ authors = ["SonicBotMan"]
 [workspace.dependencies]
 # async runtime
 tokio = { version = "1", features = ["full"] }
+# url handling (parse/route/join redirects)
+url = "2"
+# https for engines (ring provider: pure-rust build, no system openssl)
+hyper-rustls = { version = "0.27", default-features = false, features = [
+    "ring",
+    "native-tokio",
+    "http1",
+    "logging",
+] }
 # server stack
 axum = "0.8"
 hyper = "1"

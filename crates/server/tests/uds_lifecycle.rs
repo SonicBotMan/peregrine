@@ -52,3 +52,47 @@ async fn socket_file_is_owner_only() {
     assert_eq!(mode & 0o777, 0o700, "socket must be owner-only");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test]
+async fn delayed_cleanup_never_unlinks_a_successors_socket() {
+    let dir = tempdir("takeover-race");
+    let path = dir.join("race.sock");
+
+    // Daemon A binds, then dies uncleanly (no cleanup, file goes stale).
+    let (_listener_a, id_a) = peregrine_server::uds::bind(&path).await.unwrap();
+    drop(_listener_a);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Daemon B probes the stale file, removes it, binds its own socket
+    // (new inode) at the same path.
+    let (_listener_b, id_b) = peregrine_server::uds::bind(&path)
+        .await
+        .expect("stale takeover must succeed");
+
+    // Daemon A's shutdown cleanup finally runs (the race window). It must
+    // NOT unlink the file — that is B's socket now.
+    peregrine_server::uds::remove_socket_file(&path, id_a).await;
+    assert!(path.exists(), "A's cleanup must not unlink B's socket");
+
+    // And B's own cleanup still works: same inode, unlink succeeds.
+    peregrine_server::uds::remove_socket_file(&path, id_b).await;
+    assert!(!path.exists(), "B's cleanup removes its own socket");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn stale_cleanup_refuses_to_delete_ordinary_files() {
+    let dir = tempdir("not-a-socket");
+    let path = dir.join("precious.txt");
+    std::fs::write(&path, "user data").unwrap();
+
+    // connect() to a plain file fails ECONNREFUSED, which is the stale-
+    // socket signal; bind must refuse rather than delete the user's file.
+    let err = peregrine_server::uds::bind(&path).await.unwrap_err();
+    assert!(
+        err.to_string().contains("not a socket file"),
+        "must refuse with explicit reason, got: {err}"
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "user data");
+    let _ = std::fs::remove_dir_all(&dir);
+}

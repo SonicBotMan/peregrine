@@ -19,8 +19,7 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "peregrine_server=info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
@@ -31,7 +30,7 @@ async fn main() -> anyhow::Result<()> {
         pid: std::process::id(),
     });
 
-    let listener = uds::bind(&path).await?;
+    let (listener, socket_id) = uds::bind(&path).await?;
     tracing::info!(path = %path.display(), version = peregrine_api::VERSION, "peregrined listening");
 
     // Clean shutdown removes the socket file; ^C is the normal exit path.
@@ -40,7 +39,7 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("server run loop")?;
 
-    uds::remove_socket_file(&path).await;
+    uds::remove_socket_file(&path, socket_id).await;
     tracing::info!("peregrined stopped, socket cleaned");
     Ok(())
 }

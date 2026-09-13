@@ -1,0 +1,54 @@
+# M0 gate: format, lint, tests on every push/PR (BACKLOG B3).
+# Toolchain is pinned by rust-toolchain.toml (1.96.1) — CI must not drift.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege: CI only needs to read the repo it checks out.
+permissions:
+  contents: read
+
+# Same-PR pushes supersede each other; a fast-follow push on main must
+# still run to completion (never cancel the branch's final state check).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: fmt + clippy + test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain (pinned to match rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@1.96.1
+        with:
+          components: rustfmt, clippy
+
+      - name: Assert toolchain matches rust-toolchain.toml (drift guard)
+        run: |
+          CHANNEL=$(grep -oP 'channel = "\K[^"]+' rust-toolchain.toml)
+          rustc --version | grep -q "rustc $CHANNEL " || {
+            echo "toolchain drift: rust-toolchain.toml says $CHANNEL, CI uses $(rustc --version)"
+            exit 1
+          }
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Lint (deny warnings)
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace

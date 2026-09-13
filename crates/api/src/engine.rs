@@ -22,10 +22,28 @@ pub struct ProbeInfo {
     pub url: String,
     /// Announced content length in bytes, if the server says so.
     pub content_length: Option<u64>,
-    /// Server honors `Range` requests → segmentation is possible.
+    /// Server honors `Range` requests → segmentation is possible. The HTTP
+    /// engine CONFIRMS this with a real ranged GET whenever HEAD doesn't
+    /// advertise it — servers that claim `bytes` but ignore `Range` are
+    /// downgraded to single-segment here.
     pub accept_ranges: bool,
-    /// Entity tag for resumption validation.
+    /// Entity tag for resumption validation. Only a STRONG etag may back
+    /// `If-Range` (RFC 7233): a weak tag (`W/…`) cannot prove the resource
+    /// is unchanged, and `If-Range` with it returns the FULL body — gluing
+    /// that onto a partial file corrupts it silently. Check
+    /// [`Self::etag_strong`] before using.
     pub etag: Option<String>,
+    /// True iff `etag` is a strong validator (no `W/` prefix).
+    #[serde(default)]
+    pub etag_strong: bool,
+    /// `Last-Modified` header — the standard `If-Range` fallback validator
+    /// when no strong etag exists.
+    #[serde(default)]
+    pub last_modified: Option<String>,
+    /// Filename from `Content-Disposition`, if present — lets MCP clients
+    /// pre-name tasks before any bytes are downloaded.
+    #[serde(default)]
+    pub filename: Option<String>,
 }
 
 /// A protocol engine. Async surface will grow in M1 (download/segment APIs);
@@ -66,6 +84,9 @@ mod tests {
                     content_length: None,
                     accept_ranges: false,
                     etag: None,
+                    etag_strong: false,
+                    last_modified: None,
+                    filename: None,
                 })
             })
         }

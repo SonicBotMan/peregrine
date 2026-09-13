@@ -76,17 +76,28 @@ impl DaemonClient {
         let req = Request::get(uri)
             .body(Full::new(Bytes::new()))
             .context("build request")?;
-        let res = tokio::time::timeout(REQUEST_TIMEOUT, self.http.request(req))
-            .await
-            .context("request timed out (daemon hung?)")?
-            .context("request daemon over unix socket (is peregrined running?)")?;
-        let status = res.status();
-        let bytes = res
-            .into_body()
-            .collect()
-            .await
-            .context("read response")?
-            .to_bytes();
+        let (status, bytes) = match tokio::time::timeout(REQUEST_TIMEOUT, async {
+            // Both halves — request AND body collection — sit inside the one
+            // hard deadline; a daemon that stalls mid-body must fail fast too.
+            let res = self
+                .http
+                .request(req)
+                .await
+                .context("request daemon over unix socket (is peregrined running?)")?;
+            let status = res.status();
+            let bytes = res
+                .into_body()
+                .collect()
+                .await
+                .context("read response")?
+                .to_bytes();
+            Ok::<_, anyhow::Error>((status, bytes))
+        })
+        .await
+        {
+            Ok(inner) => inner?,
+            Err(_elapsed) => anyhow::bail!("request timed out (daemon hung?)"),
+        };
         anyhow::ensure!(
             status.is_success(),
             "daemon returned {status}: {}",

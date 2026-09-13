@@ -8,6 +8,12 @@ pub enum ApiError {
     TaskNotFound(String),
     #[error("no engine supports url: {0}")]
     UnsupportedUrl(String),
+    #[error("duplicate engine: {0}")]
+    DuplicateEngine(String),
+    #[error("http {status} from {url}")]
+    Http { status: u16, url: String },
+    #[error("too many redirects chasing {0}")]
+    TooManyRedirects(String),
     #[error("network error: {0}")]
     Network(String),
     #[error("io error: {0}")]

@@ -9,6 +9,7 @@ pub mod bus;
 pub mod engine;
 pub mod error;
 pub mod health;
+pub mod registry;
 pub mod task;
 pub mod transport;
 
@@ -16,6 +17,7 @@ pub use bus::{EngineEvent, EventBus};
 pub use engine::{ProbeFuture, ProbeInfo, ProtocolEngine};
 pub use error::ApiError;
 pub use health::HealthInfo;
+pub use registry::EngineRegistry;
 pub use task::{Task, TaskId, TaskStatus};
 pub use transport::{default_socket_path, socket_path};
 

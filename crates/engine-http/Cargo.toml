@@ -1,0 +1,22 @@
+[package]
+name = "peregrine-engine-http"
+description = "Peregrine HTTP/HTTPS protocol engine: probe (HEAD) and, from M1 on, segmented download"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+peregrine-api = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+hyper-rustls = { workspace = true }
+http-body-util = { workspace = true }
+tokio = { workspace = true }
+url = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+axum = { workspace = true }
+futures = "0.3"
