@@ -562,18 +562,17 @@ async fn run_segment(
         //    task from zero (P0-2, one level up);
         //  - no validator was sent and the server just ignores Range
         //    → gluing at `frontier` would corrupt, restarting inside
-        //    a worker would double-download → downgrade hint, caller
-        //    retries single-stream.
+        //    a worker would double-download → structured downgrade
+        //    signal; the auto-router restarts single-stream.
         200 if validator.is_some() => {
             return Err(restart(ApiError::Network(format!(
                 "resource changed: server rejected If-Range for {final_url}"
             ))));
         }
         200 => {
-            return Err(fatal(ApiError::Network(format!(
-                "server ignored Range ({want_range}) for a confirmed-ranged resource — \
-                 restart as single stream: {final_url}"
-            ))));
+            return Err(fatal(ApiError::SingleStreamRequired {
+                reason: format!("server ignored Range ({want_range}) for {final_url}"),
+            }));
         }
         206 => {}
         other if status.is_success() => {
@@ -593,9 +592,12 @@ async fn run_segment(
     // must echo exactly [frontier, seg.end].
     let headers = res.headers().clone();
     let (start, end, total_hint) = HttpEngine::parse_content_range(&headers).ok_or_else(|| {
-        fatal(ApiError::Network(format!(
-            "206 without parseable Content-Range: {final_url}"
-        )))
+        // Broken-CDN shape (P2-2, M1-c2 R2): a 206 we cannot parse is
+        // the same betrayal family — single-stream (which sends no
+        // Range at all) would succeed here.
+        fatal(ApiError::SingleStreamRequired {
+            reason: format!("206 without parseable Content-Range: {final_url}"),
+        })
     })?;
     if start != frontier || end != seg.end {
         return Err(fatal(ApiError::Network(format!(
@@ -660,14 +662,20 @@ async fn run_segment(
             // Over-serve guard (P1-2, M1-c1 R2): a body longer than
             // the requested range must NEVER spill into the next
             // segment's territory — truncate-hard, not silently.
+            // Downgrade-able (P1-3, M1-c2 R2): a 206 that echoes the
+            // right Content-Range but streams past it is the same
+            // "stopped honoring Range" betrayal — retry-segmented
+            // hits the same wall, single-stream succeeds.
             if written + n > seg.len() {
-                return Err(fatal(ApiError::Network(format!(
-                    "segment {} over-serve: {} bytes served for a {}-byte range — \
-                     refusing to spill into the next segment",
-                    seg.idx,
-                    written + n,
-                    seg.len()
-                ))));
+                return Err(fatal(ApiError::SingleStreamRequired {
+                    reason: format!(
+                        "segment {} over-serve: {} bytes served for a {}-byte range — \
+                         refusing to spill into the next segment",
+                        seg.idx,
+                        written + n,
+                        seg.len()
+                    ),
+                }));
             }
             file.write_all(chunk)
                 .await

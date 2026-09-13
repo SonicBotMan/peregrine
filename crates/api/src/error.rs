@@ -20,6 +20,13 @@ pub enum ApiError {
     Io(String),
     #[error("storage error: {0}")]
     Storage(String),
+    /// Not a failure — a routing directive: the segmented engine
+    /// cannot proceed (server ignores Range) and the caller should
+    /// restart the job as a single stream. Structural, not string-
+    /// matched, so the auto-router (M1-c2) and the M2 task layer can
+    /// both act on it deterministically.
+    #[error("single stream required: {reason}")]
+    SingleStreamRequired { reason: String },
     #[error("internal: {0}")]
     Internal(String),
 }
@@ -40,6 +47,13 @@ mod tests {
         assert_eq!(e.to_string(), "task not found: t1");
         let io: ApiError = std::io::Error::other("boom").into();
         assert_eq!(io.to_string(), "io error: boom");
+        let d = ApiError::SingleStreamRequired {
+            reason: "server ignores Range".into(),
+        };
+        assert_eq!(
+            d.to_string(),
+            "single stream required: server ignores Range"
+        );
     }
 
     #[test]

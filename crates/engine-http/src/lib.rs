@@ -15,6 +15,7 @@
 //! The engine owns one pooled client; probes reuse connections. TLS via
 //! rustls (ring provider) — no system OpenSSL dependency.
 
+pub(crate) mod auto;
 pub(crate) mod download;
 pub mod segment;
 

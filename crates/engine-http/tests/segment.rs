@@ -6,7 +6,9 @@ use axum::Router;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use peregrine_api::{DownloadJob, DownloadProgress, IfRangeValidator, ProgressSink, ResumeContext};
+use peregrine_api::{
+    ApiError, DownloadJob, DownloadProgress, IfRangeValidator, ProgressSink, ResumeContext,
+};
 use peregrine_engine_http::{HttpEngine, SegmentConfig};
 use peregrine_storage::Store;
 use std::net::SocketAddr;
@@ -345,7 +347,12 @@ async fn ignored_range_hints_single_stream_downgrade() {
         .unwrap_err();
 
     let msg = format!("{err}");
-    assert!(msg.contains("restart as single stream"), "got: {msg}");
+    assert!(
+        msg.contains("single stream required"),
+        "structured downgrade signal, got: {msg}"
+    );
+    // It IS the dedicated variant, not a stringly-typed network error.
+    assert!(matches!(err, ApiError::SingleStreamRequired { .. }));
 }
 
 #[tokio::test]
