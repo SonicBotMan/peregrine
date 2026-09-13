@@ -18,7 +18,7 @@ use peregrine_api::error::ApiError;
 use peregrine_api::task::{Priority, Task, TaskId, TaskStatus};
 use peregrine_scheduler::{DownloadPort, Scheduler, SchedulerConfig};
 use peregrine_storage::Store;
-use peregrine_task_manager::TaskManager;
+use peregrine_task_manager::{TaskError, TaskManager};
 use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
@@ -48,6 +48,10 @@ enum Script {
     RaceOk { bytes: u64, total: Option<u64> },
     /// Fail immediately.
     Fail(ApiError),
+    /// Panic inside the engine future (a misbehaving port): the
+    /// supervisor must log, move the row to Failed, and free the
+    /// slot (R2 review F8/F10).
+    Panic,
 }
 
 struct ScriptedPort {
@@ -153,6 +157,9 @@ async fn run_script(
             Ok(outcome(bytes, total))
         }
         Script::Fail(e) => Err(e),
+        Script::Panic => {
+            panic!("scripted port panic");
+        }
     }
 }
 
@@ -292,19 +299,18 @@ async fn concurrency_budget_is_enforced_and_frees_up() {
     );
     tokio::spawn(rig.sched.clone().run());
 
-    let a = add(&rig.sched, dir.path(), "a", Priority::Normal).await;
+    let _a = add(&rig.sched, dir.path(), "a", Priority::Normal).await;
     let b = add(&rig.sched, dir.path(), "b", Priority::Normal).await;
     let c = add(&rig.sched, dir.path(), "c", Priority::Normal).await;
 
-    // a and b run; c stays queued.
-    wait_for("a+b running", || {
-        Box::pin(async {
-            status_is(&rig.sched, &a.id, TaskStatus::Running).await
-                && status_is(&rig.sched, &b.id, TaskStatus::Running).await
-        })
+    // a and b run; c stays queued. `Running` is the state-machine
+    // view — poll until the ENGINES are actually active (two hops of
+    // spawn + pre-flight store read sit between claim and the
+    // port's counter).
+    wait_for("a+b engines active", || {
+        Box::pin(async { rig.port.peak_active.load(Ordering::SeqCst) == 2 })
     })
     .await;
-    assert_eq!(rig.port.peak_active.load(Ordering::SeqCst), 2);
     assert!(matches!(
         rig.sched.tasks().get(&c.id).await,
         Ok(Some(t)) if t.status == TaskStatus::Queued
@@ -671,4 +677,247 @@ async fn shutdown_cancels_and_drains_running_workers() {
     let drained = tokio::time::timeout(Duration::from_secs(3), rig.sched.shutdown()).await;
     assert!(drained.is_ok(), "shutdown must not hang");
     assert_eq!(rig.port.active.load(Ordering::SeqCst), 0);
+}
+
+// ---------------------------------------------------------------------
+// R2 final-report regressions.
+
+/// F9 rewrite: paced frames so drainer ticks deterministically
+/// interleave with the flood — the old version (500 yield-only
+/// frames) finished before a single tick and asserted nothing about
+/// interval-paced merging.
+#[tokio::test]
+async fn coalescing_ticks_merge_paced_flood() {
+    let dir = tempfile::tempdir().unwrap();
+    // 150 frames × 2 ms ≈ 300 ms flood, 30 ms interval → expect
+    // ~10 merged events (>=2 proves real mid-flood merging, <25
+    // proves the interval ceiling held).
+    let rig = rig_cfg(
+        vec![Script::Ok {
+            bytes: 15_000,
+            total: Some(15_000),
+            frames: 150,
+            frame_pause: Some(Duration::from_millis(2)),
+        }],
+        SchedulerConfig {
+            max_concurrent: 1,
+            progress_interval: Duration::from_millis(30),
+            poll_interval: Duration::from_millis(10),
+        },
+    );
+    let mut rx = rig.bus.subscribe();
+    tokio::spawn(rig.sched.clone().run());
+
+    let t = add(&rig.sched, dir.path(), "f.bin", Priority::Normal).await;
+    wait_for("completed", || {
+        Box::pin(status_is(&rig.sched, &t.id, TaskStatus::Completed))
+    })
+    .await;
+
+    let row = rig.sched.tasks().get(&t.id).await.unwrap().unwrap();
+    assert_eq!(row.received_bytes, 15_000, "final reading must land");
+
+    let mut progress_events = 0;
+    while let Ok(ev) = rx.try_recv() {
+        if matches!(ev, EngineEvent::TaskProgress { .. }) {
+            progress_events += 1;
+        }
+    }
+    assert!(
+        (2..25).contains(&progress_events),
+        "paced 150-frame flood should merge to ~10 events, got {progress_events}"
+    );
+
+    let drained = rig.sched.shutdown().await;
+    assert_eq!(drained, 0);
+}
+
+/// F1: the most common user action — double-adding the same link.
+/// The second add must be rejected while the first is active, and
+/// allowed again once the row is terminal.
+#[tokio::test]
+async fn duplicate_active_target_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let rig = rig(
+        vec![
+            Script::AwaitCancel {
+                partial: 1,
+                total: Some(10),
+            },
+            Script::Ok {
+                bytes: 10,
+                total: Some(10),
+                frames: 1,
+                frame_pause: None,
+            },
+        ],
+        2,
+    );
+    tokio::spawn(rig.sched.clone().run());
+
+    let target = abs_path(dir.path(), "dup.bin");
+    let a = rig
+        .sched
+        .add("http://test/file", target.clone(), Priority::Normal)
+        .await
+        .unwrap();
+    wait_for("a running", || {
+        Box::pin(status_is(&rig.sched, &a.id, TaskStatus::Running))
+    })
+    .await;
+
+    // Same (url, save_path) while active → rejected.
+    match rig
+        .sched
+        .add("http://test/file", target.clone(), Priority::Normal)
+        .await
+    {
+        Err(TaskError::DuplicateActive { .. }) => {}
+        other => panic!("expected DuplicateActive, got {other:?}"),
+    }
+
+    // Remove → terminal → the same target is addable again.
+    rig.sched.remove(&a.id).await.unwrap();
+    // Remove is idempotent (F11): a second remove reports success.
+    rig.sched.remove(&a.id).await.unwrap();
+    let b = rig
+        .sched
+        .add("http://test/file", target, Priority::Normal)
+        .await
+        .unwrap();
+    wait_for("b completes", || {
+        Box::pin(status_is(&rig.sched, &b.id, TaskStatus::Completed))
+    })
+    .await;
+
+    rig.sched.shutdown().await;
+}
+
+/// F1 (path mutex): a DIFFERENT url to the SAME file must not run
+/// concurrently with the first — the claim loop skips it while the
+/// path is busy and picks it up after the path frees.
+#[tokio::test]
+async fn same_save_path_tasks_serialize() {
+    let dir = tempfile::tempdir().unwrap();
+    let rig = rig(
+        vec![
+            Script::AwaitCancel {
+                partial: 1,
+                total: Some(10),
+            },
+            Script::Ok {
+                bytes: 5,
+                total: Some(5),
+                frames: 1,
+                frame_pause: None,
+            },
+        ],
+        2, // budget 2 — only the path blocks them
+    );
+    tokio::spawn(rig.sched.clone().run());
+
+    let target = abs_path(dir.path(), "same.bin");
+    let a = rig
+        .sched
+        .add("http://one/file", target.clone(), Priority::Normal)
+        .await
+        .unwrap();
+    wait_for("a running", || {
+        Box::pin(status_is(&rig.sched, &a.id, TaskStatus::Running))
+    })
+    .await;
+
+    let b = rig
+        .sched
+        .add("http://two/file", target, Priority::Normal)
+        .await
+        .unwrap();
+    // Give the loop every chance to (wrongly) start b.
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(
+        rig.port.peak_active.load(Ordering::SeqCst),
+        1,
+        "two engines must never write one file concurrently"
+    );
+    assert_eq!(b.status, TaskStatus::Queued);
+
+    // Free the path; b must now run and complete.
+    rig.sched.pause(&a.id).await.unwrap();
+    rig.sched.remove(&a.id).await.unwrap();
+    wait_for("b completes after path freed", || {
+        Box::pin(status_is(&rig.sched, &b.id, TaskStatus::Completed))
+    })
+    .await;
+
+    rig.sched.shutdown().await;
+}
+
+/// F8/F10-C: a panicking port must not wedge anything — the row goes
+/// to Failed with a diagnostic, the slot frees, later tasks run.
+#[tokio::test]
+async fn panicking_port_fails_task_and_frees_slot() {
+    let dir = tempfile::tempdir().unwrap();
+    let rig = rig(
+        vec![Script::Panic, Script::Fail(ApiError::Io("after".into()))],
+        1,
+    );
+    tokio::spawn(rig.sched.clone().run());
+
+    let a = add(&rig.sched, dir.path(), "a.bin", Priority::Normal).await;
+    wait_for("a failed via panic supervisor", || {
+        Box::pin(status_is(&rig.sched, &a.id, TaskStatus::Failed))
+    })
+    .await;
+    let row = rig.sched.tasks().get(&a.id).await.unwrap().unwrap();
+    assert!(
+        row.error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("panicked"),
+        "panic must land a diagnostic, got {:?}",
+        row.error
+    );
+
+    // The slot freed: a second task runs immediately (would starve
+    // forever if the panic leaked the slot).
+    let b = add(&rig.sched, dir.path(), "b.bin", Priority::Normal).await;
+    wait_for("b failed (second script)", || {
+        Box::pin(status_is(&rig.sched, &b.id, TaskStatus::Failed))
+    })
+    .await;
+
+    let drained = rig.sched.shutdown().await;
+    assert_eq!(drained, 0);
+}
+
+/// F3: shutdown must not churn never-started tasks to Running.
+#[tokio::test]
+async fn shutdown_leaves_unstarted_tasks_queued() {
+    let dir = tempfile::tempdir().unwrap();
+    let rig = rig(
+        vec![Script::AwaitCancel {
+            partial: 1,
+            total: Some(10),
+        }],
+        1,
+    );
+    tokio::spawn(rig.sched.clone().run());
+
+    let a = add(&rig.sched, dir.path(), "a.bin", Priority::Normal).await;
+    wait_for("a running", || {
+        Box::pin(status_is(&rig.sched, &a.id, TaskStatus::Running))
+    })
+    .await;
+    // b sits queued behind the budget; shutdown fires mid-queue.
+    let b = add(&rig.sched, dir.path(), "b.bin", Priority::Normal).await;
+
+    let drained = rig.sched.shutdown().await;
+    assert_eq!(drained, 0);
+    let row = rig.sched.tasks().get(&b.id).await.unwrap().unwrap();
+    assert_eq!(
+        row.status,
+        TaskStatus::Queued,
+        "never-started task must stay Queued across shutdown, got {:?}",
+        row.status
+    );
 }

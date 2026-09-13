@@ -180,6 +180,39 @@ impl Store {
         .context("join list_downloads")?
     }
 
+    /// The id of the ACTIVE (non-terminal) task already bound to
+    /// this (url, save_path) pair, if any — the duplicate guard for
+    /// `add()`. Double-adding the same link is a download manager's
+    /// most common user action, and letting it through would point
+    /// two engines at one file (silent corruption), or worse, map
+    /// both sessions onto one engine task row via its
+    /// `UNIQUE(url, sink)`.
+    pub async fn find_active_download_by_target(
+        &self,
+        url: &str,
+        save_path: &str,
+    ) -> Result<Option<TaskId>> {
+        let url = url.to_string();
+        let save_path = save_path.to_string();
+        let this = self.0.clone();
+        let hit = tokio::task::spawn_blocking(move || {
+            let conn = this.lock().unwrap();
+            conn.query_row(
+                "SELECT id FROM downloads
+                 WHERE url = ?1 AND save_path = ?2
+                   AND status NOT IN ('completed', 'failed')
+                 LIMIT 1",
+                params![url, save_path],
+                |row| row.get::<_, String>("id"),
+            )
+            .optional()
+            .context("finding active download by target")
+        })
+        .await
+        .context("join find_active_download_by_target")??;
+        Ok(hit.map(TaskId::new))
+    }
+
     /// Compare-and-set status transition: lands only if the row
     /// still shows `from`. Returns `false` when zero rows matched —
     /// either the id is gone or the status moved underneath us; the

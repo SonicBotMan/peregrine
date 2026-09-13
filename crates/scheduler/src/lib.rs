@@ -129,6 +129,9 @@ struct Running {
     /// shutdown). The worker maps the resulting `Cancelled` to
     /// "already transitioned, do nothing".
     cancel: CancellationToken,
+    /// The file this worker is writing — the claim loop's
+    /// path-level mutex key (two engines on one file corrupt it).
+    save_path: String,
 }
 
 pub struct Scheduler {
@@ -234,10 +237,12 @@ impl Scheduler {
         Ok(task)
     }
 
-    /// Remove a task: cancel any live engine call, then drop the row
-    /// (worker outcomes lose the CAS and self-discard). Partial files
-    /// stay on disk — deleting user data is the caller's (IPC
-    /// command's) explicit choice, not the scheduler's default.
+    /// Remove a task. Idempotent (R2 review): a second remove — or
+    /// one racing the worker's terminal write — reports success, so
+    /// IPC callers can retry safely instead of parsing `NotFound`.
+    /// Partial files stay on disk — deleting user data is the
+    /// caller's (IPC command's) explicit choice, not the scheduler's
+    /// default.
     pub async fn remove(&self, id: &TaskId) -> Result<(), TaskError> {
         if let Some(r) = self.running.lock().unwrap().get(id) {
             r.cancel.cancel();
@@ -246,7 +251,10 @@ impl Scheduler {
         // Removing a running task frees a slot; removing a queued one
         // changes the pick order. Either way, wake.
         self.wake.notify_one();
-        removed
+        match removed {
+            Err(TaskError::NotFound(_)) => Ok(()),
+            other => other,
+        }
     }
 
     /// Graceful shutdown: stop accepting work, cancel every worker,
@@ -255,19 +263,27 @@ impl Scheduler {
     /// non-terminal state `pause`/removal left them — and a task
     /// cancelled mid-engine still `Running` is re-queued by the next
     /// boot's crash recovery. The durable queue IS the shutdown state.
-    pub async fn shutdown(&self) {
+    pub async fn shutdown(&self) -> usize {
         self.shutdown.cancel();
         self.wake.notify_one();
         let pendings: Vec<Arc<Running>> = self.running.lock().unwrap().values().cloned().collect();
         for r in pendings {
             r.cancel.cancel();
         }
-        self.drain().await;
+        self.drain().await
     }
 
     /// Pull queued tasks (priority first) until the budget is full.
+    /// Stops immediately once shutdown fires (R2 review: a mid-pass
+    /// `fill_slots` would otherwise keep flipping never-started
+    /// tasks to `Running` — churn whose biased-select workers then
+    /// resolve Cancelled without a terminal write, leaving rows
+    /// `Running` until the next boot).
     async fn fill_slots(self: &Arc<Self>) {
         loop {
+            if self.shutdown.is_cancelled() {
+                return;
+            }
             let free = self
                 .cfg
                 .max_concurrent
@@ -276,23 +292,21 @@ impl Scheduler {
                 return;
             }
             let Some(task) = self.claim_next_queued().await else {
-                return; // queue empty
+                return; // queue empty (or every candidate blocked)
             };
             self.spawn_worker(task);
         }
     }
 
     /// Highest-priority queued task, claimed via CAS `Queued →
-    /// Running`. The CAS makes double-claims impossible even if two
-    /// loops raced (they cannot — one loop — but the store guard is
-    /// the invariant that survives refactors). Returns `None` both on
-    /// empty queue and on a lost race, so the caller treats them the
-    /// same: stop and wait for the next wake.
-    /// Highest-priority queued task, claimed via CAS `Queued →
     /// Running`. A lost CAS (task paused/removed between the list
     /// and the claim) falls through to the NEXT candidate instead of
     /// abandoning the whole pass (R2 review: the old code skipped
     /// every other runnable task until the next wake/poll floor).
+    /// A candidate whose `save_path` is already being written by a
+    /// running task is skipped (path-level mutual exclusion — two
+    /// engines on one file corrupt it); the next wake/poll pass
+    /// retries it once the path frees up.
     async fn claim_next_queued(&self) -> Option<Task> {
         let queued = match self.tm.list(Some(TaskStatus::Queued)).await {
             Ok(q) => q,
@@ -306,7 +320,21 @@ impl Scheduler {
         // order, which the store sorts chronologically by id).
         let mut candidates: Vec<Task> = queued;
         candidates.sort_by_key(|t| (std::cmp::Reverse(t.priority), t.created_at));
+        // Paths currently being written — path-level mutual
+        // exclusion (R2 P1: two engines on one file corrupt it; the
+        // (url, path) duplicate is already rejected at add(), this
+        // catches same-path-different-url).
+        let busy_paths: Vec<String> = self
+            .running
+            .lock()
+            .unwrap()
+            .values()
+            .map(|r| r.save_path.clone())
+            .collect();
         for pick in candidates {
+            if busy_paths.contains(&pick.save_path) {
+                continue; // retry on a later wake, path is busy
+            }
             match self.tm.mark_running(&pick.id).await {
                 Ok(task) => return Some(task),
                 Err(TaskError::NotFound(_) | TaskError::IllegalTransition { .. }) => continue,
@@ -316,13 +344,19 @@ impl Scheduler {
                 }
             }
         }
-        None // queue drained
+        None // queue drained (or every remaining candidate path-blocked)
     }
 
     /// Spawn one worker for a claimed (already `Running`) task.
+    /// The JoinHandle is supervised (R2 review F8): a panicking
+    /// worker's future never returns, so the slot frees via
+    /// `WorkerGuard` but the panic itself would be invisible and the
+    /// row would sit `Running` forever — the supervisor awaits the
+    /// handle, logs, and moves the row to `Failed`.
     fn spawn_worker(self: &Arc<Self>, task: Task) {
         let running = Arc::new(Running {
             cancel: CancellationToken::new(),
+            save_path: task.save_path.clone(),
         });
         self.running
             .lock()
@@ -330,31 +364,47 @@ impl Scheduler {
             .insert(task.id.clone(), running.clone());
 
         let sched = Arc::clone(self);
-        tokio::spawn(async move { Worker::new(sched, task, running).run().await });
+        let tm = Arc::clone(&self.tm);
+        let id = task.id.clone();
+        let handle = tokio::spawn(async move { Worker::new(sched, task, running).run().await });
+        tokio::spawn(async move {
+            if let Err(panic) = handle.await {
+                tracing::error!(task = %id, panic = ?panic, "worker PANICKED");
+                // Best-effort terminal write so the row does not sit
+                // `Running` until the next boot; a lost CAS here
+                // (row already moved) is fine.
+                let _ = tm.fail(&id, "internal error: worker panicked").await;
+            }
+        });
     }
 
-    /// Wait for every spawned worker to finish. Polled on a short
-    /// interval with an explicit deadline (R2 review): sharing the
-    /// run-loop's `wake` Notify made drain latency depend on which
-    /// waiter won the permit (flaky), and a leaked slot (worker
-    /// panic before the guard existed) would hang it forever. On
-    /// deadline we log loudly and return — the durable queue is the
-    /// shutdown truth either way (M2-a crash recovery re-queues
-    /// whatever was still Running).
-    async fn drain(&self) {
+    /// Wait for every spawned worker to finish, returning the number
+    /// still in flight when we gave up (0 = fully drained). Polled on
+    /// a short interval with an explicit deadline (R2 review):
+    /// sharing the run-loop's `wake` Notify made drain latency depend
+    /// on which waiter won the permit (flaky), and a leaked slot
+    /// would hang it forever. Callers that need "no engine is writing
+    /// files" (DB compaction, file moves, process exit) must check
+    /// the return — the deadline is a ceiling on the drain contract,
+    /// not a guarantee. The durable queue is the shutdown truth
+    /// either way (M2-a crash recovery re-queues whatever was still
+    /// Running).
+    async fn drain(&self) -> usize {
         const DRAIN_POLL: Duration = Duration::from_millis(20);
         const DRAIN_DEADLINE: Duration = Duration::from_secs(30);
         let started = std::time::Instant::now();
         loop {
-            if self.running.lock().unwrap().is_empty() {
-                return;
+            let stuck = self.running.lock().unwrap().len();
+            if stuck == 0 {
+                return 0;
             }
             if started.elapsed() >= DRAIN_DEADLINE {
                 tracing::error!(
                     elapsed = ?started.elapsed(),
+                    stuck,
                     "drain deadline exceeded; workers may still be in flight"
                 );
-                return;
+                return stuck;
             }
             tokio::time::sleep(DRAIN_POLL).await;
         }
@@ -547,6 +597,10 @@ struct CoalescingSink {
     /// every update keeps it monotone even if an engine ever
     /// reported a regression.
     state: Mutex<(u64, Option<u64>)>,
+    /// Last value published to the BUS (monotone guard, R2 review):
+    /// the store write is unconditional, but a late drainer tick
+    /// must not emit a smaller `TaskProgress` after the final one.
+    last_published: Mutex<(u64, Option<u64>)>,
     /// New data since the last flush. Cleared before flushing; a
     /// concurrent frame re-arms it, so the next tick writes again —
     /// no frame is ever silently swallowed.
@@ -564,6 +618,7 @@ impl CoalescingSink {
             id,
             interval,
             state: Mutex::new((0, None)),
+            last_published: Mutex::new((0, None)),
             dirty: AtomicBool::new(false),
             stop: CancellationToken::new(),
         });
@@ -580,7 +635,6 @@ impl CoalescingSink {
     fn stop_token(&self) -> CancellationToken {
         self.stop.clone()
     }
-
     fn spawn_drainer(self: &Arc<Self>) {
         let sink = Arc::clone(self);
         tokio::spawn(async move {
@@ -601,10 +655,26 @@ impl CoalescingSink {
     /// after the swap re-arms it), then snapshot and write. A frame
     /// landing between the snapshot and the write is picked up by
     /// the next tick — no reading is ever silently swallowed.
+    ///
+    /// Bus events are regression-guarded (R2 review): a drainer tick
+    /// already past its `select!` when `finish` runs can publish a
+    /// SMALLER reading after the final one — a raw-event UI would
+    /// show progress going backwards after completion. The store
+    /// write stays unconditional (its SQL is `MAX`-clamped); only
+    /// the bus skip is monotone.
     async fn flush(&self) {
         let (received, total) = *self.state.lock().unwrap();
         if let Err(e) = self.tm.update_progress(&self.id, received, total).await {
             tracing::warn!(task = %self.id, error = %e, "progress flush failed");
+        }
+        {
+            let mut lp = self.last_published.lock().unwrap();
+            let regresses =
+                received < lp.0 || lp.1.is_some_and(|known| total.is_some_and(|t| t < known));
+            if regresses {
+                return;
+            }
+            *lp = (received, total);
         }
         self.bus.publish(EngineEvent::TaskProgress {
             id: self.id.clone(),
@@ -655,7 +725,15 @@ impl ProgressSink for CoalescingSink {
     fn on_progress(&self, p: &peregrine_api::download::DownloadProgress) {
         let mut st = self.state.lock().unwrap();
         st.0 = st.0.max(p.bytes_done);
-        st.1 = p.total.or(st.1);
+        // Total only ever GROWS (R2 review: `p.total.or(st.1)` would
+        // let a later frame's smaller/absent total shrink it, and the
+        // finish-time min-clamp would then clamp received below
+        // what was already stored).
+        st.1 = match (st.1, p.total) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (None, t) => t,
+            (t, None) => t,
+        };
         drop(st);
         self.dirty.store(true, Ordering::Release);
     }

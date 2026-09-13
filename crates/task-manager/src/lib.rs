@@ -40,6 +40,12 @@ pub enum TaskError {
     EmptyUrl,
     #[error("save_path must be a non-empty absolute path, got {0:?}")]
     InvalidSavePath(String),
+    #[error("an active task {id} already targets {url} to {save_path}; remove or finish it first")]
+    DuplicateActive {
+        id: TaskId,
+        url: String,
+        save_path: String,
+    },
     #[error(transparent)]
     Storage(#[from] anyhow::Error),
 }
@@ -111,6 +117,18 @@ impl TaskManager {
         let save_path = save_path.into();
         if !std::path::Path::new(&save_path).is_absolute() {
             return Err(TaskError::InvalidSavePath(save_path));
+        }
+        // Duplicate guard (R2 P1): two ACTIVE tasks on one (url,
+        // path) pair would point two engines at one file — and via
+        // the engine table's UNIQUE(url, sink), one shared task row
+        // whose segment plan each session would keep wiping. A
+        // terminal (completed/failed/removed) row does not block.
+        if let Some(id) = self
+            .store
+            .find_active_download_by_target(&url, &save_path)
+            .await?
+        {
+            return Err(TaskError::DuplicateActive { id, url, save_path });
         }
         let now = unix_now();
         let task = Task {
