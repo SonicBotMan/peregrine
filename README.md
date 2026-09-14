@@ -11,7 +11,7 @@
 ## v2.0.0-alpha.1 交付清单
 
 | 能力 | 状态 |
-|---|---|
+| --- | --- |
 | HTTP/HTTPS 多段下载 + 续传 + 限速 | ✅ M1 |
 | 任务系统（队列/优先级/全局预算/WS 事件） | ✅ M2 |
 | Web GUI + Tauri 2 桌面壳（托盘/单实例） | ✅ M3 |
@@ -21,6 +21,22 @@
 
 263 项测试 · clippy 零告警 · 每里程碑三轮审查（自查→独立复审→反思），
 全部记录在 [docs/reviews/](docs/reviews/)。
+
+## 界面
+
+深色单栏布局（860px 居中，Inter 字体）：顶栏是品牌 + 实时连接灯（● live / ◌ connecting / ✕ down，WS 断线秒级感知）+ 全局速度与限速预设（off / 512K / 1M / 2M / 4M / 自定义，改完全局即时生效）+ ＋ Add；下方 Active / Completed 两组任务卡片。
+
+每张卡片：文件名 + 保存路径 + 状态胶囊（running 蓝 / completed 绿 / failed 红 / paused 黄）、进度条（probing 阶段滑动动画）、实时速度与百分比、任务级限速下拉、⏸ / ▶ / ✕ 操作。点行尾 ▸ 展开详情：完整 URL / 引擎 / 重试次数等事实行 + **段级实时网格**——每个 Range 一条独立进度条，多段并行的内部视角一目了然（IDM 的招牌视图）。
+
+GUI 是纯薄客户端（Svelte 5，约 1100 行）：零业务逻辑，全部走 daemon 的 REST + WS，所以 CLI / MCP / GUI 三端能力永远一致。桌面形态为 Tauri 2 壳：系统托盘、下载完成原生通知、sidecar 自动拉起 daemon、单实例守护。
+
+**下载中**（8 段并行 + 全局 512 KB/s 限速 + 段面板展开）：
+
+![GUI downloading with segment panel](assets/gui-active.png)
+
+**完成后**（Completed 区 + 100% 终态）：
+
+![GUI completed tasks](assets/gui-completed.png)
 
 ## 真机基准（v2.0.0-alpha.1）
 
