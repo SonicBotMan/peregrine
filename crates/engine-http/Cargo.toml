@@ -13,6 +13,7 @@ peregrine-storage = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
 hyper-rustls = { workspace = true }
+rustls = { workspace = true }
 http-body-util = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }

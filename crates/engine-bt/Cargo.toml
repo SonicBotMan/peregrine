@@ -1,0 +1,24 @@
+[package]
+name = "peregrine-engine-bt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "BitTorrent/magnet engine (librqbit embed): magnet and .torrent sources with verify-based resume"
+
+[dependencies]
+peregrine-api = { workspace = true }
+librqbit = { workspace = true }
+rustls = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+url = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+peregrine-scheduler = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+tokio-util = { workspace = true }
+peregrine-api = { workspace = true }

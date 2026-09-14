@@ -134,8 +134,15 @@ fn job(url: &str, sink: &std::path::Path) -> DownloadJob {
     }
 }
 
+/// Workspace feature unification links two rustls providers (see
+/// scheduler::tls); install ours before any TLS consumer runs.
+fn init_tls() {
+    peregrine_scheduler::tls::init_tls();
+}
+
 #[tokio::test]
 async fn merges_master_aes_and_map_end_to_end() {
+    init_tls();
     let (base, expected) = origin().await;
     let dir = TempDir::new().unwrap();
     let sink = dir.path().join("out.ts");
@@ -169,6 +176,7 @@ async fn merges_master_aes_and_map_end_to_end() {
 
 #[tokio::test]
 async fn cancel_midway_leaves_resumable_parts_and_no_tmp() {
+    init_tls();
     let (base, expected) = origin().await;
     let dir = TempDir::new().unwrap();
     let sink = dir.path().join("out.ts");
@@ -390,6 +398,7 @@ fn seg_bytes(n: u64) -> Vec<u8> {
 /// cleaned up.
 #[tokio::test]
 async fn live_stream_recorded_until_endlist() {
+    init_tls();
     let base = live_origin(LiveSpec {
         end_after: 4,
         ..live_default()
@@ -433,6 +442,7 @@ async fn live_stream_recorded_until_endlist() {
 /// fired after 6 polls regardless of td.
 #[tokio::test]
 async fn live_stall_fails_loudly() {
+    init_tls();
     let base = live_origin(LiveSpec {
         frozen: true,
         td: 1.0,
@@ -469,6 +479,7 @@ async fn live_stall_fails_loudly() {
 /// emitting a corrupt file.
 #[tokio::test]
 async fn live_gap_from_window_slide_detected() {
+    init_tls();
     let base = live_origin(LiveSpec {
         end_after: 5,
         skip_to: Some(4),
@@ -498,6 +509,7 @@ async fn live_gap_from_window_slide_detected() {
 /// already-recorded parts stay for resume.
 #[tokio::test]
 async fn live_cancel_stops_promptly() {
+    init_tls();
     let base = live_origin(live_default()).await;
     let dir = TempDir::new().unwrap();
     let sink = dir.path().join("cancel.ts");
@@ -547,6 +559,7 @@ fn fetch_is_cancel(e: &peregrine_engine_hls::HlsError) -> bool {
 /// guard for R2 P1-2 — the old 6-poll counter killed it at 48s.
 #[tokio::test]
 async fn live_slow_stream_td60_not_stall_killed() {
+    init_tls();
     let base = live_origin(LiveSpec {
         td: 60.0,
         advance_every: 3,
@@ -586,6 +599,7 @@ async fn live_slow_stream_td60_not_stall_killed() {
 /// dead CDN forever.
 #[tokio::test]
 async fn live_poll_failures_three_consecutive_fail_loudly() {
+    init_tls();
     let base = live_origin(LiveSpec {
         fail_from: 2, // every reload 500s; join (poll 1) still OK
         ..live_default()
@@ -616,6 +630,7 @@ async fn live_poll_failures_three_consecutive_fail_loudly() {
 /// still owes us 5s of bytes. No `.tmp` debris may remain.
 #[tokio::test]
 async fn live_cancel_during_segment_download() {
+    init_tls();
     let base = live_origin(LiveSpec {
         seg_delay: std::time::Duration::from_secs(5),
         ..live_default()
@@ -665,6 +680,7 @@ async fn live_cancel_during_segment_download() {
 /// memory at merge. No explicit IV → seq-derived IVs.
 #[tokio::test]
 async fn live_aes128_roundtrip() {
+    init_tls();
     let base = live_origin(LiveSpec {
         end_after: 4,
         aes: true,
@@ -697,6 +713,7 @@ async fn live_aes128_roundtrip() {
 /// single poll failures must not kill a live recording).
 #[tokio::test]
 async fn live_survives_transient_playlist_failures() {
+    init_tls();
     use axum::Router;
     use axum::http::StatusCode;
     use axum::routing::get;
@@ -787,6 +804,7 @@ async fn live_survives_transient_playlist_failures() {
 
 #[tokio::test]
 async fn probe_validates_m3u8_and_names_output() {
+    init_tls();
     use peregrine_api::engine::ProtocolEngine;
     let (base, _) = origin().await;
     let info = HlsEngine::new().unwrap().probe(&base).await.unwrap();
@@ -801,6 +819,7 @@ async fn probe_validates_m3u8_and_names_output() {
 /// enforcement).
 #[tokio::test]
 async fn range_ignoring_server_is_rejected() {
+    init_tls();
     use axum::Router;
     use axum::routing::get;
     let app = Router::new()
@@ -840,6 +859,7 @@ async fn range_ignoring_server_is_rejected() {
 /// playlist (exercises the redirect loop end-to-end).
 #[tokio::test]
 async fn playlist_redirects_are_followed() {
+    init_tls();
     use axum::Router;
     use axum::http::StatusCode;
     use axum::routing::get;
@@ -891,6 +911,7 @@ async fn playlist_redirects_are_followed() {
 /// with DECRYPTED init bytes.
 #[tokio::test]
 async fn encrypted_map_is_decrypted_at_merge() {
+    init_tls();
     use axum::Router;
     use axum::routing::get;
     let init_plain: Vec<u8> = (200u8..216).collect();

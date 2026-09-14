@@ -11,10 +11,11 @@ members = [
     "crates/scheduler",
     "crates/engine-hls",
     "crates/engine-ftp",
+    "crates/engine-bt",
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "2.0.0-alpha.1"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/SonicBotMan/peregrine"
@@ -27,6 +28,8 @@ tokio-util = { version = "0.7", features = ["rt"] }
 # url handling (parse/route/join redirects)
 url = "2"
 # https for engines (ring provider: pure-rust build, no system openssl)
+librqbit = { version = "9", default-features = false, features = ["rust-tls"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 hyper-rustls = { version = "0.27", default-features = false, features = [
     "ring",
     "native-tokio",
@@ -57,6 +60,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 peregrine-task-manager = { path = "crates/task-manager" }
 peregrine-engine-http = { path = "crates/engine-http" }
 peregrine-engine-hls = { path = "crates/engine-hls" }
+peregrine-engine-bt = { path = "crates/engine-bt" }
 peregrine-engine-ftp = { path = "crates/engine-ftp" }
 # unix primitives (real uid for socket paths). This environment's index no
 # longer carries the 0.3 line; 1.0.0-alpha.4 keeps the stable getuid binding.

@@ -6,6 +6,11 @@ use serde::{Deserialize, Serialize};
 pub enum ApiError {
     #[error("task not found: {0}")]
     TaskNotFound(String),
+    /// The task's parameters are self-contradictory (e.g. the same
+    /// torrent already downloading into a different folder — the
+    /// engine refuses rather than silently rerouting data).
+    #[error("invalid task input: {0}")]
+    InvalidInput(String),
     #[error("no engine supports url: {0}")]
     UnsupportedUrl(String),
     #[error("duplicate engine: {0}")]

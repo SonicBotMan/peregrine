@@ -52,12 +52,15 @@ use std::time::Duration;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
+mod bt_port;
+mod ftp_port;
+mod hls_port;
 /// The engine boundary the scheduler talks to. One method: hand it a
 /// fully-formed job (the scheduler derives resume context from disk
 /// state), get an outcome or an `ApiError` (`Cancelled` = paused, not
 /// failed — see the module docs).
-mod ftp_port;
-mod hls_port;
+pub mod tls;
+pub use bt_port::BtAutoPort;
 pub use ftp_port::FtpAutoPort;
 pub use hls_port::HlsAutoPort;
 

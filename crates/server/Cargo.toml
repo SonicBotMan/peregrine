@@ -14,6 +14,7 @@ path = "src/main.rs"
 [dependencies]
 peregrine-api = { workspace = true }
 peregrine-engine-http = { workspace = true }
+peregrine-engine-bt = { workspace = true }
 peregrine-engine-hls = { workspace = true }
 peregrine-scheduler = { workspace = true }
 peregrine-storage = { workspace = true }
@@ -37,3 +38,29 @@ tempfile = { workspace = true }
 futures = { workspace = true }
 tokio-tungstenite = { workspace = true }
 tungstenite = { workspace = true }
+
+# Headless deb packaging (M6-a). cargo-deb builds from THIS package
+# (the daemon) but ships all three headless binaries; the GUI keeps
+# its own Tauri bundle (.github/workflows/desktop.yml).
+[package.metadata.deb]
+name = "peregrine"
+maintainer = "Peregrine contributors"
+license-file = ["../../LICENSE", "0"]
+section = "net"
+priority = "optional"
+extended-description = """\
+Peregrine download manager daemon, CLI and MCP server. HTTP(S) with \
+dynamic segmentation, resume, per-task/global rate limits; FTP; HLS \
+(VOD + live); BitTorrent/magnet via librqbit; JSON-RPC over UDS; \
+WebSocket event stream."""
+depends = "$auto"
+# No GUI dependency on purpose: servers install this without a desktop.
+assets = [
+    ["target/release/peregrined", "usr/bin/", "755"],
+    ["target/release/peregrine", "usr/bin/", "755"],
+    ["target/release/peregrine-mcp", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/peregrine/README.md", "644"],
+    ["packaging/peregrined.service", "usr/lib/systemd/user/peregrined.service", "644"],
+    ["packaging/peregrined.socket", "usr/lib/systemd/user/peregrined.socket", "644"],
+]
+maintainer-scripts = "packaging/debian"

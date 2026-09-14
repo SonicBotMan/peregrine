@@ -31,6 +31,7 @@ use crate::cli::{Args, Listen};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    peregrine_scheduler::tls::init_tls();
     let args = Args::parse();
     tracing_subscriber::fmt()
         .with_env_filter(

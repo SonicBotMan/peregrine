@@ -39,6 +39,7 @@ use peregrine_task_manager::TaskManager;
 struct RoutingPort {
     hls: Arc<dyn DownloadPort>,
     ftp: Arc<dyn DownloadPort>,
+    bt: Arc<dyn DownloadPort>,
     http: Arc<dyn DownloadPort>,
 }
 
@@ -54,6 +55,8 @@ impl RoutingPort {
             .unwrap_or(false)
         {
             &self.ftp
+        } else if peregrine_engine_bt::is_bt_source(url) {
+            &self.bt
         } else if peregrine_engine_hls::is_hls_url(url) {
             &self.hls
         } else {
@@ -84,7 +87,14 @@ impl DownloadPort for RoutingPort {
         url: &str,
         sink: &std::path::Path,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + '_>> {
-        // Purge BOTH sides: a URL that routes to HLS today may have
+        // BT is DIRECTED, not fanned out: its purge deletes the sink
+        // path itself (torrent data), which would nuke a live
+        // HTTP/HLS target if sprayed blindly. A BT source routes
+        // deterministically, so route-then-purge is correct here.
+        if peregrine_engine_bt::is_bt_source(url) {
+            return self.bt.purge(url, sink);
+        }
+        // Purge ALL sides: a URL that routes to HLS today may have
         // HTTP engine rows from a pre-M4 attempt (or vice versa after
         // a heuristic flip). Purging is idempotent — no downside.
         let a = self.http.purge(url, sink);
@@ -112,6 +122,14 @@ impl DownloadPort for RoutingPort {
     }
 
     fn set_task_limit(&self, url: &str, sink: &std::path::Path, bps: Option<u64>) {
+        if peregrine_engine_bt::is_bt_source(url) {
+            // Loud, not silent (R2 F4): pretending to throttle a BT
+            // task would violate the REST contract every other
+            // engine honors. Runtime BT limits need librqbit's
+            // limits API — tracked in BACKLOG.
+            tracing::warn!(url, bps = ?bps, "BT rate limit not supported yet (BACKLOG); ignoring");
+            return;
+        }
         self.http.set_task_limit(url, sink, bps);
         self.hls.set_task_limit(url, sink, bps);
         self.ftp.set_task_limit(url, sink, bps);
@@ -177,7 +195,8 @@ impl Daemon {
             let hls: Arc<dyn DownloadPort> = Arc::new(HlsAutoPort::new(global.clone())?);
             let ftp: Arc<dyn DownloadPort> =
                 Arc::new(peregrine_scheduler::FtpAutoPort::new(global.clone()));
-            Ok(Arc::new(RoutingPort { http, hls, ftp }))
+            let bt: Arc<dyn DownloadPort> = Arc::new(peregrine_scheduler::BtAutoPort::new());
+            Ok(Arc::new(RoutingPort { http, hls, ftp, bt }))
         })
     }
 

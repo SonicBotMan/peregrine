@@ -54,6 +54,7 @@ struct Args {
 }
 
 fn main() -> anyhow::Result<()> {
+    peregrine_scheduler::tls::init_tls();
     let args = Args::parse();
     tracing_subscriber::fmt()
         .with_max_level(args.log_level)

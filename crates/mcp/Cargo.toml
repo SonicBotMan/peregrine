@@ -8,6 +8,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+peregrine-scheduler = { workspace = true }
 peregrine-api = { path = "../api" }
 rmcp = { version = "3.3", features = [
     "server",
@@ -28,7 +29,6 @@ tracing-subscriber = { workspace = true }
 clap = { workspace = true }
 
 [dev-dependencies]
-peregrine-scheduler = { path = "../scheduler" }
 peregrine-server = { path = "../server" }
 peregrine-api = { path = "../api" }
 tempfile = { workspace = true }

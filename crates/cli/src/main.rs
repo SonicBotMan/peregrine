@@ -71,6 +71,8 @@ enum Cmd {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // No TLS here: `pg` is a thin UDS client (R2' P2-4) — the
+    // daemon owns the engine side and its TLS setup.
     let args = Args::parse();
     let socket = peregrine_api::transport::socket_path(args.socket.as_deref())?;
     let client = DaemonClient::new(socket);

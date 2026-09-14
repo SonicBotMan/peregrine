@@ -48,7 +48,16 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 pub type HttpsClient = Client<hyper_rustls::HttpsConnector<HttpConnector>, Full<Bytes>>;
 
 /// Build the standard pooled HTTPS-or-HTTP client.
+///
+/// Also installs the process-wide rustls CryptoProvider (ring) —
+/// workspace feature unification links BOTH ring and aws-lc-rs
+/// (librqbit → reqwest/rustls has no ring variant), defeating
+/// rustls's auto-detection; without an explicit install the first
+/// TLS consumer panics. Centralizing it HERE means every binary
+/// and test that builds an HTTP client gets the provider for
+/// free — no per-entrypoint discipline to forget.
 pub fn https_client() -> Result<HttpsClient, ApiError> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let https = hyper_rustls::HttpsConnectorBuilder::new()
         .with_native_roots()
         .map_err(|e| ApiError::Internal(format!("load native TLS roots: {e}")))?
