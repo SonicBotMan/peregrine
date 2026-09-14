@@ -119,11 +119,15 @@ async fn main() -> anyhow::Result<()> {
     // signal. (Multiple `shutdown_signal()` futures are fine —
     // tokio broadcasts signals to every subscriber.)
     let mut unix_tasks = Vec::new();
+    // Clone BEFORE the move-closures below; the TCP branch (and the
+    // post-loop teardown) still needs `daemon`.
+    let shutdown_token = daemon.cancel.clone();
     for l in unix_listeners {
         let app = app.clone();
+        let sig = shutdown_token.clone();
         unix_tasks.push(tokio::spawn(async move {
             axum::serve(l, app)
-                .with_graceful_shutdown(shutdown_signal())
+                .with_graceful_shutdown(shutdown_signal(sig))
                 .await
         }));
     }
@@ -138,7 +142,7 @@ async fn main() -> anyhow::Result<()> {
         let app = peregrine_server::api::with_host_guard(app);
         let app = peregrine_server::api::with_tcp_cors(app);
         serve_result = axum::serve(l, app)
-            .with_graceful_shutdown(shutdown_signal())
+            .with_graceful_shutdown(shutdown_signal(shutdown_token))
             .await
             .context("tcp server run loop");
     } else {
@@ -185,9 +189,12 @@ async fn main() -> anyhow::Result<()> {
 }
 
 /// Exit cleanly on SIGINT (^C, interactive) and SIGTERM (systemd/kill).
-/// Both paths funnel into axum's graceful shutdown, which drains in-flight
-/// requests before `remove_socket_file` runs.
-async fn shutdown_signal() {
+/// Both paths cancel the daemon-wide token FIRST (resident WS event
+/// streams exit immediately — `systemctl stop` no longer waits on
+/// upgraded connections until TimeoutStopSec), then funnel into
+/// axum's graceful shutdown, which drains in-flight requests before
+/// `remove_socket_file` runs.
+async fn shutdown_signal(cancel: tokio_util::sync::CancellationToken) {
     let ctrl_c = async {
         tokio::signal::ctrl_c()
             .await
@@ -206,4 +213,5 @@ async fn shutdown_signal() {
         _ = ctrl_c => {},
         _ = terminate => {},
     }
+    cancel.cancel();
 }

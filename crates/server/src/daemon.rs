@@ -142,6 +142,10 @@ impl DownloadPort for RoutingPort {
 pub struct Daemon {
     pub sched: Arc<Scheduler>,
     pub bus: EventBus,
+    /// Process-wide shutdown signal: fires when SIGINT/SIGTERM begins
+    /// axum's graceful drain. WS streams listen so resident event
+    /// connections don't park `systemctl stop` until SIGKILL (M6-c R2).
+    pub cancel: tokio_util::sync::CancellationToken,
     /// Daemon-wide download rate limit (M3-b). 0 = unlimited. Every
     /// engine consults it through its `BudgetChain`; the settings
     /// endpoint pokes it live via `set_bps`.
@@ -168,6 +172,7 @@ impl Clone for Daemon {
         Self {
             sched: Arc::clone(&self.sched),
             bus: self.bus.clone(),
+            cancel: self.cancel.clone(),
             store: self.store.clone(),
             global_budget: self.global_budget.clone(),
             db_path: self.db_path.clone(),
@@ -243,6 +248,7 @@ impl Daemon {
         Ok(Self {
             sched,
             bus,
+            cancel: tokio_util::sync::CancellationToken::new(),
             store,
             global_budget,
             db_path: path,

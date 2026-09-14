@@ -42,12 +42,18 @@ pub async fn handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> Res
 
 async fn stream(mut socket: WebSocket, daemon: Arc<Daemon>) {
     let mut rx = daemon.bus.subscribe();
+    // Daemon shutdown: close the frame BEFORE axum's graceful-shutdown
+    // waits on upgraded connections — a resident WS (GUI, MCP event
+    // bridge) would otherwise park `systemctl stop` until
+    // TimeoutStopSec SIGKILLs us mid-drain (M6-c R2 P1).
+    let shutdown = daemon.cancel.clone();
     loop {
         tokio::select! {
             // Outbound: bus events win the select so a chatty client
             // can't starve event delivery by... not talking (the
-            // other branch only fires on close).
+            // other branches only fire on close).
             biased;
+            _ = shutdown.cancelled() => break,
             recv = rx.recv() => match recv {
                 Ok(event) => {
                     let frame = match serde_json::to_string(&event) {

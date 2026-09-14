@@ -1,0 +1,40 @@
+[Unit]
+Description=Peregrine download daemon (per-user instance)
+Documentation=https://github.com/SonicBotMan/peregrine
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/peregrined
+Restart=on-failure
+RestartSec=3
+# Resident WS event connections close on SIGTERM (daemon-wide
+# token); 15s is a hard ceiling for the drain that follows.
+TimeoutStopSec=15
+# Sandboxing: the daemon needs its data dir, downloads and the
+# socket — everything else is off.
+# NOTE: the sandbox directives below (NoNewPrivileges, Protect*,
+# BindReadOnlyPaths) are standard systemd hardening for real
+# machines. Some CONTAINER user managers reject them
+# (status=218/CAPABILITIES "Failed to drop capabilities") — in such
+# environments comment them out; the daemon runs fine without.
+# Verified in-container: minimal unit (PrivateTmp only) reaches
+# active and serves pg ping.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=tmpfs
+# The binary itself lives under $HOME (.local/bin): tmpfs-protect
+# home, then bind the binary's dir back read-only.
+BindReadOnlyPaths=%h/.local/bin
+ReadWritePaths=%h/.local/share/peregrine %h/Downloads
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryDenyWriteExecute=true
+LockPersonality=true
+
+[Install]
+WantedBy=default.target

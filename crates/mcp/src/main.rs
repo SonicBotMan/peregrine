@@ -37,8 +37,10 @@ fn default_socket() -> std::io::Result<PathBuf> {
 #[derive(Parser)]
 #[command(name = "peregrine-mcp", about = "Peregrine MCP server")]
 struct Args {
-    /// Daemon UDS socket path (default: same resolution as the CLI —
-    /// PGRG_SOCKET, then XDG_RUNTIME_DIR, then /tmp fallback).
+    /// Daemon endpoint: UDS path, or `tcp:PORT` / `tcp:HOST:PORT`
+    /// (bare PORT = loopback) — same spec grammar as `pg --socket`.
+    /// Default: same resolution as the CLI (PGRG_SOCKET, then
+    /// XDG_RUNTIME_DIR, then /tmp fallback).
     /// R2' P2-4: NO `default_value_t` — clap builds Commands eagerly
     /// (the default would run on every parse, panicking without io
     /// context when XDG dirs are unwritable); the default resolves
@@ -70,26 +72,32 @@ fn main() -> anyhow::Result<()> {
 
     // R2' P2-4: lazy default — resolution errors propagate as
     // normal anyhow errors instead of a context-free panic from
-    // clap's eager `default_value_t` evaluation.
-    let socket = match args.socket {
-        Some(s) => PathBuf::from(s),
-        None => default_socket()?,
+    // clap's eager `default_value_t` evaluation. M6-c R2: `tcp:`
+    // specs route to the TCP endpoint (systemd TCP deployments have
+    // no UDS; the MCP layer must reach them too).
+    let endpoint = match args.socket.as_deref() {
+        Some(s) if s.starts_with("tcp:") => peregrine_api::uds_client::Endpoint::parse_checked(s)?,
+        Some(s) => peregrine_api::uds_client::Endpoint::Unix(std::path::PathBuf::from(s)),
+        None => peregrine_api::uds_client::Endpoint::Unix(default_socket()?),
     };
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
     rt.block_on(async move {
         if let Some(addr) = args.http {
-            serve_http(socket, &args.events, &addr).await
+            serve_http(endpoint, &args.events, &addr).await
         } else {
-            serve_stdio(socket, &args.events).await
+            serve_stdio(endpoint, &args.events).await
         }
     })
 }
 
-async fn serve_stdio(socket: PathBuf, events_url: &str) -> anyhow::Result<()> {
+async fn serve_stdio(
+    socket: peregrine_api::uds_client::Endpoint,
+    events_url: &str,
+) -> anyhow::Result<()> {
     tracing::info!(
-        "peregrine-mcp (stdio) starting, daemon socket {}",
+        "peregrine-mcp (stdio) starting, daemon endpoint {}",
         socket.display()
     );
     let service = serve_server(PeregrineMcp::new(socket, events_url), stdio()).await?;
@@ -97,7 +105,11 @@ async fn serve_stdio(socket: PathBuf, events_url: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn serve_http(socket: PathBuf, events_url: &str, addr: &str) -> anyhow::Result<()> {
+async fn serve_http(
+    socket: peregrine_api::uds_client::Endpoint,
+    events_url: &str,
+    addr: &str,
+) -> anyhow::Result<()> {
     use std::sync::Arc;
 
     tracing::info!("peregrine-mcp (http) listening on {addr}");

@@ -59,6 +59,25 @@ bash scripts/package.sh               # tarball + sha256（dist/）
 bash scripts/package.sh deb           # 另加 .deb（需 cargo-deb）
 ```
 
+### Shell 补全 / 手册页 / systemd（M6-c）
+
+```bash
+pg completions bash > ~/.local/share/bash-completion/completions/pg   # 或 zsh/fish
+sudo mkdir -p /usr/local/share/man/man1 && pg gen-man /usr/local/share/man/man1
+
+# 用户级（UDS，无需 root）：
+install -Dm644 assets/peregrined.service ~/.config/systemd/user/peregrined.service
+systemctl --user enable --now peregrined
+
+# 系统级（TCP 实例，@后是端口）：
+# 先建服务用户与下载目录（单元以 peregrine 运行，永不 root）：
+sudo useradd --system --home /var/lib/peregrine --shell /usr/sbin/nologin peregrine
+# ExecStart 需按环境修改（下载目录/二进制路径），先读单元内注释
+sudo cp assets/peregrined@.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now peregrined@8800
+pg --socket tcp:8800 ping            # 裸端口等价于 pg --socket tcp:127.0.0.1:8800
+```
+
 ## 协议支持
 
 HTTP/HTTPS（多段+镜像降级）· FTP（被动模式+REST 续传）· HLS（VOD 全量 +

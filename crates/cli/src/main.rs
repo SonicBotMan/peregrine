@@ -1,6 +1,6 @@
 //! `pg` — thin CLI client for the peregrine daemon (talks HTTP over UDS).
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use peregrine_api::AddTaskRequest;
 use peregrine_api::task::{Priority, Task, TaskStatus};
 
@@ -9,7 +9,9 @@ use peregrine_cli::DaemonClient;
 #[derive(Debug, Parser)]
 #[command(name = "pg", version, about)]
 struct Args {
-    /// Daemon socket path (default: same resolution as peregrined).
+    /// Daemon endpoint: UDS path, or `tcp:PORT` / `tcp:HOST:PORT`
+    /// (bare PORT = loopback). PGRG_SOCKET env honored for both
+    /// forms.
     #[arg(long, global = true)]
     socket: Option<String>,
 
@@ -71,6 +73,25 @@ enum Cmd {
         #[arg(long, short)]
         set: Option<String>,
     },
+
+    /// Generate shell completion for `pg` (M6-c).
+    ///
+    /// `pg completions bash > /usr/share/bash-completion/completions/pg`
+    /// or `pg completions zsh > "${fpath[1]}/_pg"` — emit to stdout,
+    /// the shell file is the caller's business.
+    Completions {
+        /// Target shell.
+        shell: clap_complete::Shell,
+    },
+
+    /// Hidden packaging helper: emit a roff man page for `pg(1)`
+    /// into the given directory. Used by scripts/package.sh; not
+    /// for end users.
+    #[command(hide = true)]
+    GenMan {
+        /// Output directory (gets pg.1 written into it).
+        dir: std::path::PathBuf,
+    },
 }
 
 #[tokio::main]
@@ -78,9 +99,43 @@ async fn main() -> anyhow::Result<()> {
     // No TLS here: `pg` is a thin UDS client (R2' P2-4) — the
     // daemon owns the engine side and its TLS setup.
     let args = Args::parse();
-    let socket = peregrine_api::transport::socket_path(args.socket.as_deref())?;
-    let client = DaemonClient::new(socket);
 
+    // Completions/man are pure-local: no socket resolution, no
+    // daemon needed — emit and exit before any I/O setup.
+    match &args.cmd {
+        Cmd::Completions { shell } => {
+            let mut out = std::io::stdout().lock();
+            let mut cmd = Args::command();
+            clap_complete::generate(*shell, &mut cmd, "pg", &mut out);
+            return Ok(());
+        }
+        Cmd::GenMan { dir } => {
+            std::fs::create_dir_all(dir)?;
+            let man = clap_mangen::Man::new(Args::command().name("pg"));
+            let mut file = std::fs::File::create(dir.join("pg.1"))?;
+            man.render(&mut file)?;
+            return Ok(());
+        }
+        _ => {}
+    }
+
+    // --socket / PGRG_SOCKET `tcp:…` → TCP endpoint (the spec must
+    // be checked BEFORE socket_path() — a tcp: value flowing into
+    // it would be treated as a literal UDS path and dial garbage).
+    let raw_spec = args.socket.clone().or_else(|| {
+        std::env::var_os("PGRG_SOCKET")
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string_lossy().into_owned())
+    });
+    let client = match raw_spec.as_deref() {
+        Some(s) if s.starts_with("tcp:") => {
+            DaemonClient::new(peregrine_api::uds_client::Endpoint::parse_checked(s)?)
+        }
+        _ => {
+            let socket = peregrine_api::transport::socket_path(args.socket.as_deref())?;
+            DaemonClient::new(socket)
+        }
+    };
     match args.cmd {
         Cmd::Ping => {
             let health = client.ping().await?;
@@ -183,6 +238,9 @@ async fn main() -> anyhow::Result<()> {
                 println!("global limit = {}", human_bps(now));
             }
         },
+        Cmd::Completions { .. } | Cmd::GenMan { .. } => {
+            unreachable!("handled before daemon setup")
+        }
     }
     Ok(())
 }

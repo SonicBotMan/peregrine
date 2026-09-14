@@ -27,7 +27,6 @@
 //! (unknown tool name) become protocol errors.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use peregrine_api::task::Task;
@@ -83,9 +82,12 @@ impl Drop for Inner {
 }
 
 impl PeregrineMcp {
-    pub fn new(socket: PathBuf, events_url: impl Into<String>) -> Self {
+    pub fn new(
+        endpoint: impl Into<peregrine_api::uds_client::Endpoint>,
+        events_url: impl Into<String>,
+    ) -> Self {
         Self {
-            http: DaemonClient::new(socket),
+            http: DaemonClient::new(endpoint),
             events_url: events_url.into(),
             inner: Arc::new(Inner {
                 peer: OnceLock::new(),

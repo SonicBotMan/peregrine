@@ -1,0 +1,43 @@
+[Unit]
+Description=Peregrine download daemon (%i instance, TCP)
+Documentation=https://github.com/SonicBotMan/peregrine
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# %i is the instance name: `systemctl start peregrined@8800`.
+# Never root: the API is unauthenticated and `pg add --out` takes
+# arbitrary write paths (M6-c R2 P1). StateDirectory handles the
+# data dir ownership for this user.
+User=peregrine
+Group=peregrine
+ExecStartPre=/usr/bin/install -d -o peregrine -g peregrine /srv/peregrine-downloads
+ExecStart=/usr/local/bin/peregrined --tcp %i --db /var/lib/peregrine/tasks.db
+StateDirectory=peregrine
+Restart=on-failure
+RestartSec=3
+# Resident WS event connections close on SIGTERM (daemon-wide
+# token); 15s is a hard ceiling for the drain that follows.
+TimeoutStopSec=15
+# NOTE: the sandbox directives below (NoNewPrivileges, Protect*,
+# BindReadOnlyPaths) are standard systemd hardening for real
+# machines. Some CONTAINER user managers reject them
+# (status=218/CAPABILITIES "Failed to drop capabilities") — in such
+# environments comment them out; the daemon runs fine without.
+# Verified in-container: minimal unit (PrivateTmp only) reaches
+# active and serves pg ping.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/peregrine /srv/peregrine-downloads
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryDenyWriteExecute=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
