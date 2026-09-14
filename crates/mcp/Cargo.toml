@@ -1,0 +1,36 @@
+[package]
+name = "peregrine-mcp"
+description = "MCP server exposing the peregrine daemon: tools, resources, push notifications (rmcp)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+peregrine-api = { path = "../api" }
+rmcp = { version = "3.3", features = [
+    "server",
+    "transport-io",
+    "transport-streamable-http-server",
+] }
+axum = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time"] }
+tokio-tungstenite = { workspace = true }
+tungstenite = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+
+[dev-dependencies]
+peregrine-scheduler = { path = "../scheduler" }
+peregrine-server = { path = "../server" }
+peregrine-api = { path = "../api" }
+tempfile = { workspace = true }
+tokio-util = { workspace = true }
+rmcp = { version = "3.3", features = ["client", "transport-async-rw"] }

@@ -67,7 +67,7 @@ impl DaemonClient {
     }
 
     /// GET /health, typed via the shared `HealthInfo`.
-    pub async fn ping(&self) -> anyhow::Result<peregrine_api::HealthInfo> {
+    pub async fn ping(&self) -> anyhow::Result<crate::health::HealthInfo> {
         self.get_json("/health").await
     }
 

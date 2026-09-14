@@ -14,6 +14,7 @@ pub mod health;
 pub mod registry;
 pub mod task;
 pub mod transport;
+pub mod uds_client;
 
 pub use bus::{EngineEvent, EventBus};
 pub use download::{
@@ -28,6 +29,7 @@ pub use task::{Priority, SegmentView, Task, TaskId, TaskStatus, unix_now};
 pub use transport::{
     AddTaskRequest, ApiErrorBody, default_db_path, default_socket_path, socket_path,
 };
+pub use uds_client::DaemonClient;
 
 /// Crate version, surfaced by `/health` and `pg --version`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

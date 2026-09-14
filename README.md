@@ -16,9 +16,20 @@ HTTP/HTTPS · FTP · HLS/DASH · BitTorrent/Magnet
 
 🚧 **积极开发中** — 内核（分段/续传/取消/调度/限速）与 headless daemon（REST/WS）已落地，
 Web GUI（任务列表/限速/分段遥测/完成通知）可用，Tauri 2 桌面壳（托盘/单实例/关窗后台）
-已搭建（本仓无 GUI 系统库，桌面包由 CI 构建）。M4 协议扩展（FTP/HLS/BT）进行中。
+已搭建（本仓无 GUI 系统库，桌面包由 CI 构建）。M4 协议扩展已交付 HTTP/HTTPS 分段 + FTP +
+HLS（VOD + live 录制）；M5 MCP 服务器（10 工具/3 资源/事件推送，stdio + streamable-HTTP）
+已可用。
 里程碑计划见 [docs/design/PROPOSAL.md](docs/design/PROPOSAL.md)，
 代码评审记录见 [docs/reviews/](docs/reviews/)。
+
+### MCP 服务器已知限制（M5）
+
+- 订阅用的是 legacy `resources/subscribe`（Claude Desktop 当前实际所说方言）；
+  2026-07-28 协议的 `subscriptions/listen` 在 BACKLOG。
+- `settings://` 资源只读无推送（daemon 的 settings 写不走事件总线）。
+- stdio / `--http` 模式无鉴权：`--http` 默认绑定 127.0.0.1，不要暴露到非回环地址。
+- 资源列表里 `task://{id}` 随任务累积（已删除任务的 URI 不再出现在列表，但客户端
+  缓存的 URI 会收到 RESOURCE_NOT_FOUND —— 重新读 `tasks://` 即可）。
 
 ## 技术栈
 

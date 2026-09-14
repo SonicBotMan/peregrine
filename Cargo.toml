@@ -4,6 +4,7 @@ members = [
     "crates/api",
     "crates/server",
     "crates/cli",
+    "crates/mcp",
     "crates/engine-http",
     "crates/storage",
     "crates/task-manager",
@@ -35,6 +36,7 @@ hyper-rustls = { version = "0.27", default-features = false, features = [
 # server stack
 axum = { version = "0.8", features = ["ws"] }
 hyper = "1"
+bytes = "1"
 hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
 http-body-util = "0.1"
 futures = "0.3"

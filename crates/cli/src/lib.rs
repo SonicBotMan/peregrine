@@ -1,7 +1,6 @@
-//! Library surface for the `pg` CLI: the UDS client lives here so
-//! integration tests can drive the exact client code the binary
-//! uses (no process spawning, no drift between tested and shipped).
+//! Library surface for the `pg` CLI: re-exports the daemon client
+//! from `peregrine-api` so integration tests drive the exact client
+//! code the binary uses (no process spawning, no drift between
+//! tested and shipped).
 
-pub mod uds_client;
-
-pub use uds_client::DaemonClient;
+pub use peregrine_api::uds_client::DaemonClient;

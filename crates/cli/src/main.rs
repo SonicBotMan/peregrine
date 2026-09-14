@@ -1,12 +1,10 @@
 //! `pg` — thin CLI client for the peregrine daemon (talks HTTP over UDS).
 
-mod uds_client;
-
 use clap::{Parser, Subcommand};
 use peregrine_api::AddTaskRequest;
 use peregrine_api::task::{Priority, Task, TaskStatus};
 
-use crate::uds_client::DaemonClient;
+use peregrine_cli::DaemonClient;
 /// Peregrine CLI.
 #[derive(Debug, Parser)]
 #[command(name = "pg", version, about)]
