@@ -56,3 +56,12 @@ milestone noted. (R1 review, 2026-02-27)
 - B47: HlsEngine::probe 生产接线（daemon 不 probe；M5 MCP probe 工具 / CLI 用）
 - B48: hls_port.rs port 级测试（cancel→Cancelled 映射、purge parts 目录）
 - B43/B44 （既有）: HLS 段级遥测与 per-task throttle
+
+## M4-b1.1 遗留（R2' 完整报告处置）
+
+- B49: download_merge 初始 resolve 与 EXT-X-KEY 循环未 select cancel——半开 origin
+  上取消延迟最长 60-120s（有界非挂死；follow_live 内已修，join 阶段未对齐）
+- B50: fetch_part_retry 对永久 4xx（404/410）同样 3 次退避（~450ms 浪费，有界）；
+  重试时已计费 bytes 二次计入 budget；EXT-X-MAP init 段无重试（与 segment 不对称）
+- B51: poll_cadence_override 生效期间 td 变化不刷新 stall_after（want 恒等短路）——
+  仅测试路径暴露，生产无 override
