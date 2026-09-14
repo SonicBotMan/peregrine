@@ -70,11 +70,18 @@ async fn delayed_cleanup_never_unlinks_a_successors_socket() {
         .expect("stale takeover must succeed");
 
     // Daemon A's shutdown cleanup finally runs (the race window). It must
-    // NOT unlink the file — that is B's socket now.
+    // NOT unlink the file — that is B's socket now. B is LIVE (its
+    // listener answers connect), and live successors are untouchable —
+    // inode reuse on some filesystems (overlayfs on CI runners) can
+    // hand B's fresh file the SAME inode number A captured, so the
+    // identity check alone cannot tell them apart.
     peregrine_server::uds::remove_socket_file(&path, id_a).await;
     assert!(path.exists(), "A's cleanup must not unlink B's socket");
 
     // And B's own cleanup still works: same inode, unlink succeeds.
+    // Real shutdown order — B's listener closes FIRST (daemon exits),
+    // THEN cleanup runs: connect() is refused, identity matches.
+    drop(_listener_b);
     peregrine_server::uds::remove_socket_file(&path, id_b).await;
     assert!(!path.exists(), "B's cleanup removes its own socket");
     let _ = std::fs::remove_dir_all(&dir);

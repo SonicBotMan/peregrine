@@ -90,10 +90,33 @@ async fn ensure_socket_file(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Best-effort socket cleanup on shutdown: unlink only when the path still
-/// points at the exact file we bound (same device and inode). If another
-/// daemon has since taken the path over, leave its file alone.
+/// Best-effort socket cleanup on shutdown: unlink only when the
+/// successor is DEAD and the path still points at the exact file
+/// we bound (same device and inode).
+///
+/// Liveness first, identity second — on overlayfs (CI runners)
+/// the successor's fresh socket file can land on the SAME inode
+/// number we captured (eager inode reuse right after the stale
+/// file is removed), which defeats the (dev, ino) comparison
+/// alone. A live successor answers `connect()`; that is the
+/// authoritative "leave it alone" signal.
 pub async fn remove_socket_file(path: &Path, id: SocketIdentity) {
+    match tokio::time::timeout(PROBE_TIMEOUT, tokio::net::UnixStream::connect(path)).await {
+        Ok(Ok(_stream)) => {
+            // Someone is listening — never unlink a live daemon's
+            // socket, even if the inode matches (it may be a
+            // reused number, not our file).
+            tracing::debug!(
+                path = %path.display(),
+                "socket path is served by a live successor; not removing"
+            );
+            return;
+        }
+        Ok(Err(_)) | Err(_) => {
+            // Refused/timed out/ENOENT: the path is dead (or gone) —
+            // fall through to the identity check.
+        }
+    }
     match std::fs::metadata(path) {
         Ok(meta) if meta.dev() == id.dev && meta.ino() == id.ino => {
             tokio::fs::remove_file(path).await.ok();
