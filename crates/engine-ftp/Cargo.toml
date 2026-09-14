@@ -1,0 +1,18 @@
+[package]
+name = "peregrine-engine-ftp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "FTP engine (suppaftp): passive-mode single-stream RETR with REST resume"
+
+[dependencies]
+peregrine-api = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+url = { workspace = true }
+suppaftp = { version = "12", default-features = false, features = ["tokio"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

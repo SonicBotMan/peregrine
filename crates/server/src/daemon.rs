@@ -38,14 +38,23 @@ use peregrine_task_manager::TaskManager;
 /// concern, exactly like the PROPOSAL's "protocol = trait" rule.
 struct RoutingPort {
     hls: Arc<dyn DownloadPort>,
+    ftp: Arc<dyn DownloadPort>,
     http: Arc<dyn DownloadPort>,
 }
 
 impl RoutingPort {
     fn route(&self, url: &str) -> &Arc<dyn DownloadPort> {
         // Single definition (R2 P2-1): the engine owns the heuristic;
-        // routing and supports() can never diverge.
-        if peregrine_engine_hls::is_hls_url(url) {
+        // routing and supports() can never diverge. Scheme is
+        // AUTHORITATIVE and judged first — the HLS heuristic below
+        // only looks for "m3u8" anywhere in the string and would
+        // otherwise swallow ftp://h/playlist.m3u8 (M4-c R2 P2-1).
+        if url::Url::parse(url)
+            .map(|u| u.scheme() == "ftp")
+            .unwrap_or(false)
+        {
+            &self.ftp
+        } else if peregrine_engine_hls::is_hls_url(url) {
             &self.hls
         } else {
             &self.http
@@ -80,14 +89,24 @@ impl DownloadPort for RoutingPort {
         // a heuristic flip). Purging is idempotent — no downside.
         let a = self.http.purge(url, sink);
         let b = self.hls.purge(url, sink);
+        let c = self.ftp.purge(url, sink);
         Box::pin(async move {
-            // BOTH sides must run even if one fails (R2 P2-4):
-            // short-circuiting the second leaves stale engine state.
-            let (ra, rb) = tokio::join!(a, b);
-            match (ra, rb) {
-                (Ok(()), Ok(())) => Ok(()),
-                (Err(e), Ok(())) | (Ok(()), Err(e)) => Err(e),
-                (Err(a), Err(b)) => Err(anyhow::anyhow!("purge failed on both engines: {a}; {b}")),
+            // ALL sides must run even if one fails (R2 P2-4):
+            // short-circuiting the rest leaves stale engine state.
+            let (ra, rb, rc) = tokio::join!(a, b, c);
+            let errs: Vec<anyhow::Error> =
+                [ra, rb, rc].into_iter().filter_map(|r| r.err()).collect();
+            match errs.len() {
+                0 => Ok(()),
+                1 => Err(errs.into_iter().next().unwrap()),
+                _ => Err(anyhow::anyhow!(
+                    "purge failed on {} engines: {}",
+                    errs.len(),
+                    errs.iter()
+                        .map(|e| e.to_string())
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                )),
             }
         })
     }
@@ -95,6 +114,7 @@ impl DownloadPort for RoutingPort {
     fn set_task_limit(&self, url: &str, sink: &std::path::Path, bps: Option<u64>) {
         self.http.set_task_limit(url, sink, bps);
         self.hls.set_task_limit(url, sink, bps);
+        self.ftp.set_task_limit(url, sink, bps);
     }
 }
 
@@ -155,7 +175,9 @@ impl Daemon {
             let http: Arc<dyn DownloadPort> =
                 Arc::new(HttpAutoPort::new(engine, seg_cfg, store, global.clone()));
             let hls: Arc<dyn DownloadPort> = Arc::new(HlsAutoPort::new(global.clone())?);
-            Ok(Arc::new(RoutingPort { http, hls }))
+            let ftp: Arc<dyn DownloadPort> =
+                Arc::new(peregrine_scheduler::FtpAutoPort::new(global.clone()));
+            Ok(Arc::new(RoutingPort { http, hls, ftp }))
         })
     }
 

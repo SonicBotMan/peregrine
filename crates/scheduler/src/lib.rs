@@ -56,7 +56,9 @@ use tokio_util::sync::CancellationToken;
 /// fully-formed job (the scheduler derives resume context from disk
 /// state), get an outcome or an `ApiError` (`Cancelled` = paused, not
 /// failed — see the module docs).
+mod ftp_port;
 mod hls_port;
+pub use ftp_port::FtpAutoPort;
 pub use hls_port::HlsAutoPort;
 
 pub trait DownloadPort: Send + Sync {
