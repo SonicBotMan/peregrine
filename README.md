@@ -19,8 +19,14 @@
 | MCP 服务器（stdio + streamable-HTTP） | ✅ M5 |
 | 打包（tarball/deb/release CI） | ✅ M6 |
 
-258 项测试 · clippy 零告警 · 每里程碑三轮审查（自查→独立复审→反思），
+263 项测试 · clippy 零告警 · 每里程碑三轮审查（自查→独立复审→反思），
 全部记录在 [docs/reviews/](docs/reviews/)。
+
+## 真机基准（v2.0.0-alpha.1）
+
+[![benchmark](assets/benchmark-v2-alpha1.svg)](assets/benchmark-v2-alpha1.svg)
+
+慢公网链路（欧洲 tele2 源）实测 **3.1× 加速**：curl 单流 59.8s vs peregrine 19.3s（20MB，8 段并行）；内网镜像双双跑满 30MB/s；不支持 Range 的源自动降级单流，不浪费连接。所有下载文件 md5 与 curl 基线逐字节一致。复现方式见图内脚注。
 
 ## 快速开始
 

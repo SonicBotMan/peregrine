@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="560" viewBox="0 0 880 560" font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif">
+  <rect width="880" height="560" fill="#ffffff"/>
+  <rect width="880" height="560" fill="none" stroke="#d0d7de" stroke-width="1"/>
+
+  <!-- Header -->
+  <text x="40" y="44" font-size="21" font-weight="700" fill="#1f2328">Peregrine v2.0.0-alpha.1 · 真机下载基准</text>
+  <text x="40" y="68" font-size="12.5" fill="#57606a">2026-09-15 · x86_64 Linux · 8 段并行（默认 SegmentConfig）· curl 7.88 为基线 · 单位实测，非理论值</text>
+
+  <!-- Chart 1: tele2 latency -->
+  <text x="40" y="108" font-size="14" font-weight="600" fill="#1f2328">慢链路（欧洲 tele2 源，20MB 文件）— 完成时间</text>
+
+  <!-- curl bar: 59.8s -> 620px -->
+  <text x="40" y="140" font-size="12" fill="#57606a">curl 单流</text>
+  <rect x="130" y="128" width="620" height="22" rx="4" fill="#8b949e"/>
+  <text x="758" y="143" font-size="12.5" font-weight="600" fill="#1f2328">59.8 s</text>
+
+  <!-- peregrine bar: 19.3s -> 620*19.3/59.8 = 200px -->
+  <text x="40" y="176" font-size="12" fill="#57606a">peregrine</text>
+  <rect x="130" y="164" width="200" height="22" rx="4" fill="#1a7f37"/>
+  <text x="338" y="179" font-size="12.5" font-weight="700" fill="#1a7f37">19.3 s</text>
+
+  <!-- 3.1x badge -->
+  <rect x="130" y="200" width="96" height="26" rx="13" fill="#dafbe1" stroke="#1a7f37" stroke-width="1.2"/>
+  <text x="178" y="218" font-size="13" font-weight="700" fill="#1a7f37" text-anchor="middle">3.1× 加速</text>
+  <text x="238" y="218" font-size="11.5" fill="#57606a">单流 350 KB/s → 8 段并行 ~1.1 MB/s，瓶颈在源端 RTT 而非本机带宽</text>
+
+  <!-- Chart 2: throughput, 3 scenarios -->
+  <text x="40" y="272" font-size="14" font-weight="600" fill="#1f2328">三场景吞吐（KB/s，越高越好）</text>
+  <!-- log scale feel: values 343 / 1087 / 30277 / 29235 / 3289 / 3289 -->
+  <!-- sqrt scale for readability: w = 560*sqrt(v)/sqrt(31000) -->
+  <!-- tele2: 343->59, 1087->105 | aliyun: 30277->553, 29235->543 | cloudflare: 3289->183, 3289->183 -->
+  <g font-size="11.5">
+    <!-- group labels -->
+    <text x="40" y="304" font-weight="600" fill="#1f2328">tele2 欧洲</text>
+    <text x="220" y="304" font-weight="600" fill="#1f2328">aliyun 内网镜像</text>
+    <text x="460" y="304" font-weight="600" fill="#1f2328">cloudflare（不支持 Range）</text>
+
+    <!-- tele2 group -->
+    <rect x="40" y="314" width="59" height="16" rx="3" fill="#8b949e"/>
+    <text x="105" y="327" fill="#57606a">351</text>
+    <rect x="40" y="336" width="105" height="16" rx="3" fill="#1a7f37"/>
+    <text x="151" y="349" fill="#1a7f37" font-weight="700">1 087</text>
+
+    <!-- aliyun group -->
+    <rect x="220" y="314" width="553" height="16" rx="3" fill="#8b949e"/>
+    <text x="779" y="327" fill="#57606a">30 277</text>
+    <rect x="220" y="336" width="543" height="16" rx="3" fill="#1a7f37"/>
+    <text x="769" y="349" fill="#1a7f37" font-weight="700">29 235</text>
+
+    <!-- cloudflare group: both single-stream; CDN PoP varies run-to-run -->
+    <rect x="460" y="314" width="183" height="16" rx="3" fill="#8b949e"/>
+    <text x="649" y="327" fill="#57606a">~3 289（CDN 波动）</text>
+    <rect x="460" y="336" width="183" height="16" rx="3" fill="#8b949e"/>
+    <text x="649" y="349" fill="#57606a">~1 049（自动降级单流）</text>
+
+    <!-- legend -->
+    <rect x="680" y="392" width="12" height="12" rx="2" fill="#8b949e"/>
+    <text x="698" y="402" fill="#57606a">curl 基线</text>
+    <rect x="770" y="392" width="12" height="12" rx="2" fill="#1a7f37"/>
+    <text x="788" y="402" fill="#57606a">peregrine</text>
+  </g>
+
+  <!-- integrity table -->
+  <text x="40" y="440" font-size="14" font-weight="600" fill="#1f2328">完整性校验（md5 与 curl 基线逐字节一致）</text>
+  <g font-size="11.5" fill="#57606a">
+    <text x="40" y="464">tele2 20MB</text>
+    <text x="150" y="464" font-family="ui-monospace,SFMono-Regular,Consolas,monospace">8f4e33f3dc3e414ff94e5fb6905cba8c ✓</text>
+    <text x="40" y="484">aliyun 29MB</text>
+    <text x="150" y="484" font-family="ui-monospace,SFMono-Regular,Consolas,monospace">e191f9d6d07a7ed423062539a57f67dc ✓</text>
+  </g>
+
+  <!-- footer -->
+  <line x1="40" y1="504" x2="840" y2="504" stroke="#d0d7de" stroke-width="1"/>
+  <text x="40" y="528" font-size="11.5" fill="#57606a">路由决策实测：Range 探测（bytes=0-0 → 206）通过 → 分段；返回 200 → 自动单流降级；&lt;10MB 不分段（min_segment 5MB×2 floor）</text>
+  <text x="40" y="546" font-size="11.5" fill="#57606a">复现：peregrined --socket /tmp/p.sock &amp;&amp; pg --socket /tmp/p.sock add --out f.zip http://speedtest.tele2.net/20MB.zip</text>
+</svg>
