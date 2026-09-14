@@ -185,7 +185,11 @@ pub fn parse(body: &str, base: &str) -> Result<Playlist, HlsError> {
             continue;
         }
         if let Some(rest) = line.strip_prefix("#EXT-X-TARGETDURATION:") {
-            target_duration = rest.trim().parse::<f64>().ok();
+            target_duration = rest
+                .trim()
+                .parse::<f64>()
+                .ok()
+                .filter(|d| d.is_finite() && *d > 0.0);
             continue;
         }
         if line.trim() == "#EXT-X-ENDLIST" {

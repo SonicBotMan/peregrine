@@ -239,15 +239,48 @@ impl peregrine_api::download::ProgressSink for CancelAfter {
 /// carries ENDLIST (normal event end). `skip_to` jumps the window
 /// start on poll #2 (gap scenario). Segments are 40 deterministic
 /// bytes each: seq n → [n*8, n*8+40).
+#[derive(Clone)]
 struct LiveSpec {
     end_after: usize,
     skip_to: Option<u64>,
     /// Never advance the window (stalled-stream scenario).
     frozen: bool,
+    /// `#EXT-X-TARGETDURATION` value — drives the engine's stall
+    /// budget and (absent an override) poll cadence.
+    td: f64,
+    /// Advance the window every Nth reload (1 = every reload).
+    /// `advance_every: 3` models a td=60 slow stream under a fast
+    /// test cadence: two empty polls between real segment arrivals.
+    advance_every: usize,
+    /// Serve HTTP 500 for every playlist reload from this poll
+    /// number on (join excluded — it must succeed). 0 = never.
+    fail_from: usize,
+    /// Artificial per-segment response delay (cancel tests).
+    seg_delay: std::time::Duration,
+    /// Serve AES-128 ciphertext with `#EXT-X-KEY` (no explicit IV →
+    /// seq-derived IVs, as RFC 8216 §5.2.1.1 defaults).
+    aes: bool,
 }
+
+fn live_default() -> LiveSpec {
+    LiveSpec {
+        end_after: usize::MAX,
+        skip_to: None,
+        frozen: false,
+        td: 4.0,
+        advance_every: 1,
+        fail_from: 0,
+        seg_delay: std::time::Duration::ZERO,
+        aes: false,
+    }
+}
+
+/// AES-128 key served by `live_origin` when `spec.aes`.
+const LIVE_KEY: [u8; 16] = [42u8; 16];
 
 async fn live_origin(spec: LiveSpec) -> String {
     use axum::Router;
+    use axum::http::StatusCode;
     use axum::routing::get;
     use std::sync::Mutex;
 
@@ -268,23 +301,32 @@ async fn live_origin(spec: LiveSpec) -> String {
             "/live.m3u8",
             get({
                 let live = live.clone();
-                let spec_end = spec.end_after;
-                let skip_to = spec.skip_to;
-                let frozen = spec.frozen;
+                let s = spec.clone();
                 move || {
                     let live = live.clone();
+                    let s = s.clone();
                     async move {
                         let mut st = live.lock().unwrap();
                         st.polls += 1;
-                        if !frozen && st.polls > 1 {
+                        if s.fail_from > 0 && st.polls > 1 && st.polls >= s.fail_from {
+                            drop(st);
+                            return (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "cdn hard-down".to_string(),
+                            );
+                        }
+                        let advance = !s.frozen
+                            && st.polls > 1
+                            && (st.polls - 1).is_multiple_of(s.advance_every.max(1));
+                        if advance {
                             st.window_start += 1;
                             if st.polls == 2
-                                && let Some(to) = skip_to
+                                && let Some(to) = s.skip_to
                             {
                                 st.window_start = to;
                             }
                         }
-                        if st.polls >= spec_end {
+                        if st.polls >= s.end_after {
                             st.ended = true;
                         }
                         let start = st.window_start;
@@ -297,27 +339,38 @@ async fn live_origin(spec: LiveSpec) -> String {
                         // the same seqs (first bug found by these
                         // tests was the mock, not the engine).
                         let mut body = format!(
-                            "#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:{start}\n"
+                            "#EXTM3U\n#EXT-X-TARGETDURATION:{}\n#EXT-X-MEDIA-SEQUENCE:{start}\n",
+                            s.td
                         );
-                        for s in start..start + 3 {
-                            body.push_str(&format!("#EXTINF:4.0,\nseg/{s}.ts\n"));
+                        if s.aes {
+                            body.push_str("#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin\"\n");
+                        }
+                        for seq in start..start + 3 {
+                            body.push_str(&format!("#EXTINF:{},\nseg/{seq}.ts\n", s.td));
                         }
                         if ended {
                             body.push_str("#EXT-X-ENDLIST\n");
                         }
-                        body
+                        (StatusCode::OK, body)
                     }
                 }
             }),
         )
+        .route("/key.bin", get(|| async move { LIVE_KEY.to_vec() }))
         .route(
             "/seg/{n}",
-            get(
-                |axum::extract::Path(n): axum::extract::Path<String>| async move {
+            get({
+                let s2 = spec.clone();
+                move |axum::extract::Path(n): axum::extract::Path<String>| async move {
                     let n: u64 = n.trim_end_matches(".ts").parse().unwrap();
-                    (n * 8..n * 8 + 40).map(|b| b as u8).collect::<Vec<u8>>()
-                },
-            ),
+                    tokio::time::sleep(s2.seg_delay).await;
+                    if s2.aes {
+                        encrypt(&seg_bytes(n), &LIVE_KEY, &iv(n))
+                    } else {
+                        seg_bytes(n)
+                    }
+                }
+            }),
         );
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -339,8 +392,7 @@ fn seg_bytes(n: u64) -> Vec<u8> {
 async fn live_stream_recorded_until_endlist() {
     let base = live_origin(LiveSpec {
         end_after: 4,
-        skip_to: None,
-        frozen: false,
+        ..live_default()
     })
     .await;
     let dir = TempDir::new().unwrap();
@@ -375,14 +427,16 @@ async fn live_stream_recorded_until_endlist() {
     assert!(!parts.exists(), "live merge must clean parts dir");
 }
 
-/// Frozen upstream (no new segments, no ENDLIST): fail loudly after
-/// STALL_POLLS instead of polling forever.
+/// Frozen upstream (no new segments, no ENDLIST): fail loudly
+/// once the TIME budget (3 × td=1s → 3s) runs out, instead of
+/// polling forever. With the pre-M4-b1.1 fixed poll count this
+/// fired after 6 polls regardless of td.
 #[tokio::test]
 async fn live_stall_fails_loudly() {
     let base = live_origin(LiveSpec {
-        end_after: usize::MAX,
-        skip_to: None,
         frozen: true,
+        td: 1.0,
+        ..live_default()
     })
     .await;
     let dir = TempDir::new().unwrap();
@@ -401,9 +455,10 @@ async fn live_stall_fails_loudly() {
         .await
         .unwrap_err();
     assert!(err.to_string().contains("stalled"), "{err}");
-    // 6 polls × 50ms cadence + first-batch download time: bounded.
+    // Budget = 3 × td(1s) = 3s; allow slack, but it must be
+    // prompt — not the pre-fix 48s worst case, never forever.
     assert!(
-        started.elapsed() < std::time::Duration::from_secs(5),
+        started.elapsed() < std::time::Duration::from_secs(8),
         "stall detection must be prompt, took {:?}",
         started.elapsed()
     );
@@ -417,7 +472,7 @@ async fn live_gap_from_window_slide_detected() {
     let base = live_origin(LiveSpec {
         end_after: 5,
         skip_to: Some(4),
-        frozen: false,
+        ..live_default()
     })
     .await;
     let dir = TempDir::new().unwrap();
@@ -443,12 +498,7 @@ async fn live_gap_from_window_slide_detected() {
 /// already-recorded parts stay for resume.
 #[tokio::test]
 async fn live_cancel_stops_promptly() {
-    let base = live_origin(LiveSpec {
-        end_after: usize::MAX, // runs forever
-        skip_to: None,
-        frozen: false,
-    })
-    .await;
+    let base = live_origin(live_default()).await;
     let dir = TempDir::new().unwrap();
     let sink = dir.path().join("cancel.ts");
 
@@ -489,6 +539,157 @@ async fn live_cancel_stops_promptly() {
 
 fn fetch_is_cancel(e: &peregrine_engine_hls::HlsError) -> bool {
     e.to_string().contains("cancelled")
+}
+
+/// A td=60 stream (radio/camera cadence) that only advances its
+/// window every 3rd reload must NOT be stall-killed: the budget is
+/// time-based (3 × 60s), not a fixed empty-poll count. Regression
+/// guard for R2 P1-2 — the old 6-poll counter killed it at 48s.
+#[tokio::test]
+async fn live_slow_stream_td60_not_stall_killed() {
+    let base = live_origin(LiveSpec {
+        td: 60.0,
+        advance_every: 3,
+        end_after: 12, // window: 0,0,0,1,1,1,2,2,2,3,3,3 then ENDLIST
+        ..live_default()
+    })
+    .await;
+    let dir = TempDir::new().unwrap();
+    let sink = dir.path().join("slow.ts");
+
+    let engine = HlsEngine::new()
+        .unwrap()
+        .with_concurrency(2)
+        // Test cadence (NOT td/2=30s): two empty polls between
+        // arrivals would trip a count-based stall detector.
+        .with_poll_cadence_secs(0.05);
+    let out = engine
+        .download_merge(
+            &job(&base, &sink),
+            Arc::new(NoProgress),
+            tokio_util::sync::CancellationToken::new(),
+            &unlimited(),
+        )
+        .await
+        .unwrap();
+
+    assert!(out.completed);
+    let mut expected = Vec::new();
+    for n in 0..=5u64 {
+        expected.extend_from_slice(&seg_bytes(n));
+    }
+    assert_eq!(std::fs::read(&sink).unwrap(), expected);
+}
+
+/// Poll failures: 2 transient 500s are absorbed (existing test);
+/// 3 CONSECUTIVE 500s fail the task loudly instead of polling a
+/// dead CDN forever.
+#[tokio::test]
+async fn live_poll_failures_three_consecutive_fail_loudly() {
+    let base = live_origin(LiveSpec {
+        fail_from: 2, // every reload 500s; join (poll 1) still OK
+        ..live_default()
+    })
+    .await;
+    let dir = TempDir::new().unwrap();
+    let sink = dir.path().join("dead-cdn.ts");
+
+    let started = std::time::Instant::now();
+    let err = HlsEngine::new()
+        .unwrap()
+        .with_poll_cadence_secs(0.05)
+        .download_merge(
+            &job(&base, &sink),
+            Arc::new(NoProgress),
+            tokio_util::sync::CancellationToken::new(),
+            &unlimited(),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("http 500"), "{err}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+}
+
+/// Cancel WHILE A SEGMENT DOWNLOAD IS IN FLIGHT (not in the poll
+/// gap — that is `live_cancel_stops_promptly`): the per-segment
+/// select must return cancelled immediately even though the origin
+/// still owes us 5s of bytes. No `.tmp` debris may remain.
+#[tokio::test]
+async fn live_cancel_during_segment_download() {
+    let base = live_origin(LiveSpec {
+        seg_delay: std::time::Duration::from_secs(5),
+        ..live_default()
+    })
+    .await;
+    let dir = TempDir::new().unwrap();
+    let sink = dir.path().join("cancel-mid-seg.ts");
+
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let engine = HlsEngine::new().unwrap().with_poll_cadence_secs(0.30);
+    let j = job(&base, &sink);
+    let handle = tokio::spawn({
+        let cancel = cancel.clone();
+        async move {
+            engine
+                .download_merge(&j, Arc::new(NoProgress), cancel, &unlimited())
+                .await
+        }
+    });
+    // Join fetch lands the first window; its 3 segments each sleep
+    // 5s server-side — cancel lands squarely inside them.
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    let started = std::time::Instant::now();
+    cancel.cancel();
+    let res = handle.await.unwrap();
+    assert!(
+        matches!(res, Err(ref e) if fetch_is_cancel(e)),
+        "got {res:?}"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "cancel during segment I/O must not wait out the 5s origin delay"
+    );
+    let parts = {
+        let mut s = sink.as_os_str().to_os_string();
+        s.push(".parts");
+        std::path::PathBuf::from(s)
+    };
+    assert!(parts.exists());
+    for e in std::fs::read_dir(&parts).unwrap().flatten() {
+        assert!(!e.file_name().to_string_lossy().ends_with(".tmp"));
+    }
+}
+
+/// AES-128 live recording end-to-end: key fetched at join, parts
+/// stored ENCRYPTED (plaintext never persists), decrypted in
+/// memory at merge. No explicit IV → seq-derived IVs.
+#[tokio::test]
+async fn live_aes128_roundtrip() {
+    let base = live_origin(LiveSpec {
+        end_after: 4,
+        aes: true,
+        ..live_default()
+    })
+    .await;
+    let dir = TempDir::new().unwrap();
+    let sink = dir.path().join("enc-live.ts");
+
+    let engine = HlsEngine::new().unwrap().with_poll_cadence_secs(0.05);
+    let out = engine
+        .download_merge(
+            &job(&base, &sink),
+            Arc::new(NoProgress),
+            tokio_util::sync::CancellationToken::new(),
+            &unlimited(),
+        )
+        .await
+        .unwrap();
+    assert!(out.completed);
+    let mut expected = Vec::new();
+    for n in 0..=5u64 {
+        expected.extend_from_slice(&seg_bytes(n));
+    }
+    assert_eq!(std::fs::read(&sink).unwrap(), expected);
 }
 
 /// A CDN blip: playlist GETs #2 and #3 answer 503. The recorder

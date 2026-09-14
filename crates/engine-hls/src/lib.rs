@@ -57,19 +57,33 @@ impl HlsEngine {
     }
 
     pub fn with_poll_cadence_secs(mut self, secs: f64) -> Self {
-        self.poll_cadence_override = Some(std::time::Duration::from_secs_f64(secs));
+        // Clamp hostile/typo inputs (R2 P1-4): NaN/Inf/negative panic
+        // `from_secs_f64` or `interval(ZERO)`; 0.05s–60s is the sane
+        // envelope (tests use 0.05–0.3, production derives from td).
+        let s = if secs.is_finite() { secs } else { 2.0 };
+        self.poll_cadence_override = Some(std::time::Duration::from_secs_f64(s.clamp(0.05, 60.0)));
         self
     }
 
     async fn fetch_text(&self, url: &str) -> Result<String, HlsError> {
-        let (status, body) = self.fetcher.get(url, None).await?;
+        // Bound the whole playlist round trip (R2 P1-1): a
+        // half-open connection (headers, then silence) must not
+        // park a scheduler slot. fetch_part has STALL_TIMEOUT for
+        // bodies; the text path (playlists, keys) gets the same
+        // discipline here — total, not per-frame.
+        const TEXT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+        let (status, body) = tokio::time::timeout(TEXT_TIMEOUT, self.fetcher.get(url, None))
+            .await
+            .map_err(|_| HlsError::Network("playlist fetch timed out after 30s".into()))??;
         if !status.is_success() {
             return Err(HlsError::Http {
                 status: status.as_u16(),
                 url: url.to_string(),
             });
         }
-        let bytes = read_all(body).await?;
+        let bytes = tokio::time::timeout(TEXT_TIMEOUT, read_all(body))
+            .await
+            .map_err(|_| HlsError::Network("playlist body timed out after 30s".into()))??;
         String::from_utf8(bytes).map_err(|e| HlsError::BadPlaylist(e.to_string()))
     }
 
@@ -157,14 +171,21 @@ impl HlsEngine {
             }
         }
         for uri in &key_uris {
-            let (status, body) = self.fetcher.get(uri, None).await?;
+            // Same 30s bound as playlists (R2 P1-1 applies to every
+            // small round trip, not just resolve()).
+            const KEY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+            let (status, body) = tokio::time::timeout(KEY_TIMEOUT, self.fetcher.get(uri, None))
+                .await
+                .map_err(|_| HlsError::Network("key fetch timed out after 30s".into()))??;
             if !status.is_success() {
                 return Err(HlsError::Http {
                     status: status.as_u16(),
                     url: uri.clone(),
                 });
             }
-            let bytes = read_all(body).await?;
+            let bytes = tokio::time::timeout(KEY_TIMEOUT, read_all(body))
+                .await
+                .map_err(|_| HlsError::Network("key body timed out after 30s".into()))??;
             let key: [u8; 16] = bytes
                 .as_slice()
                 .try_into()
@@ -174,7 +195,6 @@ impl HlsEngine {
 
         // ---- segments: bounded concurrency, one part file each ----
         let total_hint = job.expected_total;
-        let _ = &total_hint;
         let report = |n: u64| {
             progress.on_progress(&DownloadProgress {
                 bytes_done: n,
@@ -223,13 +243,7 @@ impl HlsEngine {
             let budget = budget.clone();
             let seg = seg.clone();
             pending.push(Box::pin(async move {
-                let tmp = Self::part_path(&dir, seg.seq, ".ts.tmp");
-                let part = Self::part_path(&dir, seg.seq, ".ts");
-                fetcher
-                    .fetch_part(&seg.uri, seg.byterange, &budget, &cancel, &tmp, &part)
-                    .await?;
-                let len = tokio::fs::metadata(&part).await?.len();
-                Ok(len)
+                Self::fetch_part_retry(&fetcher, &seg, &dir, &budget, &cancel).await
             }));
         }
         let mut inflight = futures::stream::iter(pending).buffer_unordered(self.concurrency);
@@ -276,16 +290,22 @@ impl HlsEngine {
     /// gone; recording every seq seen from join to end is the
     /// honest product behavior. `recorded` (seq → metadata), not the
     /// final playlist, is the merge source — the final window has
-    /// slid past early seqs.
+    /// slid past early seqs. Restarting a crashed recording RE-JOINS
+    /// the same way (earlier parts only count as base progress, they
+    /// are not merged; a .parts journal is BACKLOG B45).
     ///
     /// Poll cadence: `max(target_duration / 2, 2s)` capped at 8s
     /// (§6.2 — never reload more often than segment duration;
     /// half-duration is the standard hls.js cadence). Termination:
-    /// ENDLIST (normal), cancel, or `STALL_POLLS` consecutive polls
-    /// with nothing new and no ENDLIST (dead upstream — fail loudly
-    /// rather than hang forever).
-    const STALL_POLLS: u32 = 6;
-
+    /// ENDLIST (normal), cancel, or a TIME budget of no progress —
+    /// `3 × TARGETDURATION` clamped to [1s, 180s] (R2 P1-2: a fixed
+    /// 6-poll count would falsely kill legal td≥48s slow streams).
+    ///
+    /// Robustness (R2 P1-1/P1-3): the resolve round trip is bounded
+    /// (fetch_text, 30s) AND selected against cancel; each segment
+    /// gets 3 attempts with backoff — an unretried failure whose seq
+    /// then slides out of the window would surface as an
+    /// unrecoverable `segment gap`.
     // 9 params: (self + url + playlist snapshot + fs/budget/cancel
     // plumbing + progress pair). A config struct would hide the
     // borrow structure without reducing the coupling — the port
@@ -315,12 +335,14 @@ impl HlsEngine {
             std::time::Duration::from_secs_f64(td.map(|t| t / 2.0).unwrap_or(4.0).clamp(2.0, 8.0))
         };
         let mut poll_every = cadence(initial.target_duration);
+        let mut stall_after = Self::stall_budget(initial.target_duration, poll_every);
 
         let mut recorded: std::collections::BTreeMap<u64, playlist::MediaSegment> =
             std::collections::BTreeMap::new();
         let map = initial.map.clone();
         let mut total = base_bytes;
-        let mut stall: u32 = 0;
+        let mut last_progress = std::time::Instant::now();
+        let mut empty_polls: u32 = 0; // diagnostics only, never the trigger
         // Transient poll failures (CDN hiccup, 5xx blip) must not
         // kill a recording: tolerate up to 3 CONSECUTIVE resolve
         // errors before giving up; any successful poll resets.
@@ -354,15 +376,18 @@ impl HlsEngine {
                 if current.ended {
                     break; // ENDLIST and nothing new — done
                 }
-                stall += 1;
-                if stall >= Self::STALL_POLLS {
-                    return Err(HlsError::Unsupported(format!(
-                        "live stream stalled: no new segments for {} polls",
-                        Self::STALL_POLLS
+                empty_polls += 1;
+                if last_progress.elapsed() > stall_after {
+                    return Err(HlsError::LiveStalled(format!(
+                        "no new segments for {:.0}s ({} empty polls, td={:?}s)",
+                        last_progress.elapsed().as_secs_f64(),
+                        empty_polls,
+                        current.target_duration
                     )));
                 }
             } else {
-                stall = 0;
+                last_progress = std::time::Instant::now();
+                empty_polls = 0;
                 poll_failures = 0;
                 use futures::StreamExt as _;
                 type PartFuture =
@@ -377,13 +402,7 @@ impl HlsEngine {
                         let budget = budget.clone();
                         let seg = (*seg).clone();
                         Box::pin(async move {
-                            let tmp = Self::part_path(&dir, seg.seq, ".ts.tmp");
-                            let part = Self::part_path(&dir, seg.seq, ".ts");
-                            fetcher
-                                .fetch_part(&seg.uri, seg.byterange, &budget, &cancel, &tmp, &part)
-                                .await?;
-                            let len = tokio::fs::metadata(&part).await?.len();
-                            Ok(len)
+                            Self::fetch_part_retry(&fetcher, &seg, &dir, &budget, &cancel).await
                         }) as PartFuture
                     })
                     .collect();
@@ -425,14 +444,28 @@ impl HlsEngine {
             if cancel.is_cancelled() {
                 return Err(HlsError::Network("cancelled".into()));
             }
-            match self.resolve(media_url).await {
+            // R2 P1-1: the resolve round trip must never outlive a
+            // cancel — select it, biased, so a cancelled task returns
+            // even mid-round-trip (fetch_text bounds the trip itself).
+            let resolved = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {
+                    return Err(HlsError::Network("cancelled".into()));
+                }
+                r = self.resolve(media_url) => r,
+            };
+            match resolved {
                 Ok((next, _)) => {
                     poll_failures = 0;
                     current = next;
-                    // §6.2: honor a cadence change signaled via TARGETDURATION.
+                    // §6.2: honor a cadence change signaled via
+                    // TARGETDURATION. Hysteresis (100ms): a td that
+                    // jitters 4.0 vs 4.0001 must not rebuild the
+                    // interval (and reset its phase) every poll.
                     let want = cadence(current.target_duration);
-                    if want != poll_every {
+                    if want.abs_diff(poll_every) > std::time::Duration::from_millis(100) {
                         poll_every = want;
+                        stall_after = Self::stall_budget(current.target_duration, poll_every);
                         interval = tokio::time::interval(poll_every);
                         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                         interval.tick().await; // consume the immediate first tick
@@ -452,6 +485,71 @@ impl HlsEngine {
             }
         }
         Ok((recorded.into_values().collect(), map))
+    }
+
+    /// Time-based stall budget (R2 P1-2): `3 × TARGETDURATION`
+    /// clamped to [1s, 180s]. td≥16 streams legally go 48s+ between
+    /// segments — a fixed poll count would kill them. Missing td
+    /// falls back to 2 × cadence (the cadence derivation inverts
+    /// td/2, so this round-trips).
+    fn stall_budget(td: Option<f64>, cadence: std::time::Duration) -> std::time::Duration {
+        let td_eff = td.unwrap_or(cadence.as_secs_f64() * 2.0);
+        std::time::Duration::from_secs_f64((td_eff * 3.0).clamp(1.0, 180.0))
+    }
+
+    /// Fetch one segment with retries (R2 P1-3): a single 503 blip
+    /// must not kill an hours-long recording — and an unretried
+    /// failure whose seq slides out of the live window becomes an
+    /// unrecoverable `segment gap` at merge. 3 attempts, 50ms/400ms
+    /// backoff, cancel checked before every attempt and selected
+    /// against during waits and fetches.
+    async fn fetch_part_retry(
+        fetcher: &Fetcher,
+        seg: &playlist::MediaSegment,
+        dir: &Path,
+        budget: &BudgetChain,
+        cancel: &CancellationToken,
+    ) -> Result<u64, HlsError> {
+        const ATTEMPTS: u32 = 3;
+        const BACKOFF: [std::time::Duration; 2] = [
+            std::time::Duration::from_millis(50),
+            std::time::Duration::from_millis(400),
+        ];
+        let tmp = Self::part_path(dir, seg.seq, ".ts.tmp");
+        let part = Self::part_path(dir, seg.seq, ".ts");
+        for attempt in 0..ATTEMPTS {
+            if cancel.is_cancelled() {
+                return Err(HlsError::Network("cancelled".into()));
+            }
+            match fetcher
+                .fetch_part(&seg.uri, seg.byterange, budget, cancel, &tmp, &part)
+                .await
+            {
+                Ok(()) => {
+                    let len = tokio::fs::metadata(&part).await?.len();
+                    return Ok(len);
+                }
+                Err(e) if fetch::is_cancel(&e) => return Err(e),
+                Err(e) => {
+                    let last = attempt + 1 == ATTEMPTS;
+                    if last {
+                        return Err(e);
+                    }
+                    tracing::warn!(
+                        seq = seg.seq,
+                        attempt,
+                        "segment fetch failed, retrying: {e}"
+                    );
+                    tokio::select! {
+                        _ = cancel.cancelled() => {
+                            return Err(HlsError::Network("cancelled".into()))
+                        }
+                        _ = tokio::time::sleep(BACKOFF[attempt as usize]) => {}
+                    }
+                }
+            }
+        }
+        unreachable!("retry loop returns on its final attempt")
     }
 }
 
@@ -506,8 +604,8 @@ async fn merge_parts(
     if let Some(first) = segments.first() {
         for (seg, expect) in segments.iter().zip(first.seq..) {
             if seg.seq != expect {
-                return Err(HlsError::BadPlaylist(format!(
-                    "segment gap: expected seq {expect}, have {} (window slid past a segment we never fetched)",
+                return Err(HlsError::SegmentGap(format!(
+                    "expected seq {expect}, have {} (window slid past a segment we never fetched)",
                     seg.seq
                 )));
             }
@@ -599,21 +697,24 @@ impl ProtocolEngine for HlsEngine {
         let fetcher = self.fetcher.clone();
         let url = url.to_string();
         Box::pin(async move {
-            let (status, body) = match fetcher.get(&url, None).await {
-                Ok(r) => r,
-                Err(e) => return Err(ApiError::Network(e.to_string())),
-            };
-            if !status.is_success() {
-                return Err(ApiError::Http {
-                    status: status.as_u16(),
-                    url,
-                });
-            }
-            let bytes = match read_all(body).await {
-                Ok(b) => b,
-                Err(e) => return Err(ApiError::Network(e.to_string())),
-            };
-            let body = match String::from_utf8(bytes) {
+            // Same 30s deadline as fetch_text: a wedged origin must
+            // not hang the daemon's probe request (M4-b1.1 R2' P2).
+            let fetched = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                let (status, body) = fetcher.get(&url, None).await?;
+                if !status.is_success() {
+                    return Err(ApiError::Http {
+                        status: status.as_u16(),
+                        url: url.clone(),
+                    });
+                }
+                let bytes = read_all(body)
+                    .await
+                    .map_err(|e| ApiError::Network(e.to_string()))?;
+                Ok::<_, ApiError>(bytes)
+            })
+            .await
+            .map_err(|_| ApiError::Network("hls probe: timed out after 30s".into()))??;
+            let body = match String::from_utf8(fetched) {
                 Ok(s) => s,
                 Err(_) => {
                     return Err(ApiError::UnsupportedUrl(format!(

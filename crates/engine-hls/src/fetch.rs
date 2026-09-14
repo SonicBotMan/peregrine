@@ -42,6 +42,19 @@ impl Fetcher {
         url: &str,
         range: Option<(u64, u64)>,
     ) -> Result<(StatusCode, Incoming), HlsError> {
+        self.get_cancellable(url, range, None).await
+    }
+
+    /// `get` with an optional cancel token selected against EVERY
+    /// redirect hop's request phase (R2 P1-1): headers-then-silence
+    /// must not park a slot, and a cancelled task must return even
+    /// while the origin still owes us the response head.
+    pub(crate) async fn get_cancellable(
+        &self,
+        url: &str,
+        range: Option<(u64, u64)>,
+        cancel: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<(StatusCode, Incoming), HlsError> {
         let mut current = url.to_string();
         for _hop in 0..=MAX_REDIRECTS {
             let mut builder = Request::builder()
@@ -55,7 +68,17 @@ impl Fetcher {
             let req = builder
                 .body(Full::<hyper::body::Bytes>::default())
                 .map_err(|e| HlsError::Network(e.to_string()))?;
-            let resp = self.client.request(req).await.map_err(HlsError::network)?;
+            let mut fut = std::pin::pin!(self.client.request(req));
+            let resp = match cancel {
+                Some(c) => tokio::select! {
+                    biased;
+                    _ = c.cancelled() => {
+                        return Err(HlsError::Network("cancelled".into()));
+                    }
+                    r = &mut fut => r.map_err(HlsError::network)?,
+                },
+                None => fut.await.map_err(HlsError::network)?,
+            };
             if resp.status().is_redirection()
                 && let Some(loc) = resp.headers().get(hyper::header::LOCATION)
             {
@@ -83,7 +106,7 @@ impl Fetcher {
         tmp: &std::path::Path,
         final_path: &std::path::Path,
     ) -> Result<(), HlsError> {
-        let (status, mut body) = self.get(url, range).await?;
+        let (status, mut body) = self.get_cancellable(url, range, Some(cancel)).await?;
         if !status.is_success() {
             return Err(HlsError::Http {
                 status: status.as_u16(),

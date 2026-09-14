@@ -12,6 +12,17 @@ pub enum HlsError {
     Network(String),
     #[error("decryption failed: {0}")]
     Decrypt(String),
+    /// Upstream live stream went silent (window stopped sliding, no
+    /// ENDLIST). A TRANSIENT/retryable condition — mapped to Network
+    /// at the API boundary, never to UnsupportedUrl (R2 P2-2: a dead
+    /// stream is not an unsupported URL).
+    #[error("live stream stalled: {0}")]
+    LiveStalled(String),
+    /// A live recording's seq set has a hole (window slid past a
+    /// segment we could not fetch). Retryable in principle (a fresh
+    /// join heals it); must not surface as Internal.
+    #[error("segment gap: {0}")]
+    SegmentGap(String),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -33,6 +44,8 @@ impl From<HlsError> for peregrine_api::ApiError {
             HlsError::Unsupported(m) => ApiError::UnsupportedUrl(format!("hls: {m}")),
             // A malformed playlist IS a task failure the user sees:
             HlsError::BadPlaylist(m) => ApiError::Internal(format!("hls playlist: {m}")),
+            HlsError::LiveStalled(m) => ApiError::Network(format!("live stream stalled: {m}")),
+            HlsError::SegmentGap(m) => ApiError::Network(format!("segment gap: {m}")),
             HlsError::Decrypt(m) => ApiError::Internal(format!("hls decrypt: {m}")),
         }
     }
