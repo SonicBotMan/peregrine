@@ -46,7 +46,7 @@ use peregrine_task_manager::{TaskError, TaskManager};
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::Notify;
@@ -831,7 +831,14 @@ struct CoalescingSink {
     /// 128 KiB/s, minutes at tiny rates). No declared base (old
     /// engines, mocks) → raw absolutes, unchanged semantics.
     base: Mutex<Option<u64>>,
-    seed: u64,
+    /// The row reading at worker start (see `on_session_base` for
+    /// the lift rule). Atomic: `on_session_base` may raise it
+    /// mid-session when the engine's disk truth outranks the row.
+    /// Ordering note (R2 P2-2): every read/write of `seed` occurs
+    /// under the `state` lock, so `Relaxed` suffices — the atomic
+    /// only needs atomicity, not cross-lock ordering. Do not move
+    /// a `seed` access outside the state lock.
+    seed: AtomicU64,
     /// New data since the last flush. Cleared before flushing; a
     /// concurrent frame re-arms it, so the next tick writes again —
     /// no frame is ever silently swallowed.
@@ -857,7 +864,7 @@ impl CoalescingSink {
             state: Mutex::new((seed_received, None)),
             last_published: Mutex::new((seed_received, None)),
             base: Mutex::new(None),
-            seed: seed_received,
+            seed: AtomicU64::new(seed_received),
             dirty: AtomicBool::new(false),
             stop: CancellationToken::new(),
         });
@@ -925,8 +932,9 @@ impl CoalescingSink {
     /// Map an engine-reported cumulative onto the seed base when
     /// the engine declared its session base; raw otherwise.
     fn rebase(&self, engine_value: u64) -> u64 {
+        let seed = self.seed.load(Ordering::Relaxed);
         match *self.base.lock().unwrap() {
-            Some(base) => engine_value.saturating_sub(base).saturating_add(self.seed),
+            Some(base) => engine_value.saturating_sub(base).saturating_add(seed),
             None => engine_value,
         }
     }
@@ -968,7 +976,59 @@ impl CoalescingSink {
 
 impl ProgressSink for CoalescingSink {
     fn on_session_base(&self, base: u64) {
-        *self.base.lock().unwrap() = Some(base);
+        // GUI-verify R1 P1: `base` is the ENGINE's absolute disk
+        // truth under this (url, sink) plan; `seed` is the row's
+        // received at worker start. They disagree when the plan
+        // predates the row — re-adding a target resurrects the old
+        // plan's cursors (initial_done) onto a fresh row seeded 0.
+        // rebase() then maps the plan's completion onto
+        // `seed + (v - base)` = 0 and freezes the column (H1:
+        // completed-but-0%), or onto a partial delta that reports
+        // skipped bytes as speed (H2: phantom MB/s on re-add).
+        // The disk truth outranks the row: lift the seed to the
+        // base, and the state with it, so every later reading maps
+        // to its ABSOLUTE value (`seed == base` ⇒ rebase ≡ id).
+        // The legal resume path (base ≤ seed, M3-b1 smoke P0) is
+        // untouched — the max() is a no-op there.
+        let mut st = self.state.lock().unwrap();
+        if base > self.seed.load(Ordering::Relaxed) {
+            tracing::info!(
+                task = ?self.id,
+                base,
+                seed = self.seed.load(Ordering::Relaxed),
+                "engine disk truth outranks the row — lifting the seed to absolute progress"
+            );
+            self.seed.store(base, Ordering::Relaxed);
+            st.0 = st.0.max(base);
+            // `t.max(base)`: the clamp always takes the GREATER of
+            // the stale row total and the disk truth — when an
+            // engine plan outranks the row's total the disk wins.
+            // On the ordered path (base-first, then progress) the
+            // whole expression degrades to `st.0 = base`; it only
+            // clamps on the contract-external reorder where
+            // `st.0` already exceeded `base` via raw absolutes.
+            if let Some(t) = st.1 {
+                st.0 = st.0.min(t.max(base));
+            }
+            drop(st);
+            self.dirty.store(true, Ordering::Release);
+        } else {
+            drop(st);
+        }
+        // Monotone base (R2 P1-2): a second call with a SMALLER
+        // base (e.g. the segmented engine's `SingleStreamRequired`
+        // downgrade restarts single-stream on the same sink from
+        // base 0) must not clobber the lifted base — rebase against
+        // a lower base would inflate every later reading past total
+        // until finish clamps back. Monotonicity makes the second
+        // session's absolutes map onto the same axis as the first.
+        {
+            let mut b = self.base.lock().unwrap();
+            *b = Some(match *b {
+                Some(old) => old.max(base),
+                None => base,
+            });
+        }
     }
 
     /// Sync by trait contract (the engine's reporting surface is
@@ -982,11 +1042,11 @@ impl ProgressSink for CoalescingSink {
         // `on_session_base` — the rebase path is off and the
         // monotone max() will freeze the column until the session
         // out-runs the tail. Loud, not silent.
-        if self.base.lock().unwrap().is_none() && p.bytes_done < self.seed {
+        if self.base.lock().unwrap().is_none() && p.bytes_done < self.seed.load(Ordering::Relaxed) {
             tracing::warn!(
                 task = ?self.id,
                 reading = p.bytes_done,
-                seed = self.seed,
+                seed = self.seed.load(Ordering::Relaxed),
                 "engine reported below-row reading without declaring a session base — \
                  received_bytes may freeze until the session out-runs the row"
             );

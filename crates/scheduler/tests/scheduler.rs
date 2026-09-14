@@ -57,6 +57,9 @@ enum Script {
         bytes: u64,
         total: Option<u64>,
         frames: u64,
+        /// Optional inter-frame pause (drives drainer flush
+        /// granularity in speed-shape tests).
+        frame_pause: Option<Duration>,
     },
     /// Panic inside the engine future (a misbehaving port): the
     /// supervisor must log, move the row to Failed, and free the
@@ -206,6 +209,7 @@ async fn run_script(
             bytes,
             total,
             frames,
+            frame_pause,
         } => {
             p.on_session_base(base);
             for i in 1..=frames {
@@ -213,7 +217,10 @@ async fn run_script(
                     bytes_done: base + bytes * i / frames.max(1),
                     total,
                 });
-                tokio::task::yield_now().await;
+                match frame_pause {
+                    Some(d) => tokio::time::sleep(d).await,
+                    None => tokio::task::yield_now().await,
+                }
             }
             Ok(outcome(bytes, total))
         }
@@ -640,6 +647,7 @@ async fn resumed_session_rebases_onto_row_reading() {
                 bytes: 5000,
                 total: Some(100_000),
                 frames: 5,
+                frame_pause: None,
             },
         ],
         1,
@@ -676,6 +684,120 @@ async fn resumed_session_rebases_onto_row_reading() {
         row.received_bytes, 6000,
         "session is re-based onto the row reading (1000 + 5000), not the raw max (5600)"
     );
+
+    rig.sched.shutdown().await;
+}
+
+#[tokio::test]
+async fn readd_completed_target_reports_full_progress() {
+    // GUI-verify R1 P1 (H1): re-adding a target whose old (url,
+    // sink) plan is already complete resurrects that plan onto a
+    // FRESH row (seed 0). The engine declares base = total (disk
+    // truth) and reports completion; before the seed-lift fix,
+    // rebase() mapped total onto `0 + (total - total)` = 0 and the
+    // row landed completed with received_bytes = 0 — the "0 B /
+    // 36.5 MB" row. After: the seed lifts to the base, rebase is
+    // the identity, and the row lands received == total.
+    let dir = tempfile::tempdir().unwrap();
+    let rig = rig(
+        vec![Script::OkFromBase {
+            base: 100_000,
+            bytes: 0,
+            total: Some(100_000),
+            frames: 1,
+            frame_pause: None,
+        }],
+        1,
+    );
+    tokio::spawn(rig.sched.clone().run());
+
+    let t = add(&rig.sched, dir.path(), "f.bin", Priority::Normal).await;
+    wait_for("completed", || {
+        Box::pin(status_is(&rig.sched, &t.id, TaskStatus::Completed))
+    })
+    .await;
+    let row = rig.sched.tasks().get(&t.id).await.unwrap().unwrap();
+    assert_eq!(
+        row.received_bytes, 100_000,
+        "a resurrected complete plan must land its absolute bytes, not 0"
+    );
+    assert_eq!(row.total_bytes, Some(100_000));
+
+    rig.sched.shutdown().await;
+}
+
+#[tokio::test]
+async fn readd_partial_target_reports_absolute_progress() {
+    // GUI-verify R1 P1 (H2, same root): re-adding a target whose
+    // old plan is PARTIALLY done (60k on disk) seeds the fresh row
+    // at 0 while the engine declares base = 60_000 and adds 40_000
+    // session bytes (4 frames × 10k). Before the fix, rebase()
+    // reported only the session delta (40k). After: readings map
+    // to absolutes (60k → 100k).
+    //
+    // Speed-shape guard (R2 P1-1): the 60k of already-on-disk
+    // bytes materializes as ONE first publish (the seed lift),
+    // never as mid-session jumps — every LATER publish may only
+    // advance by whole frames (10k each; ≤2 frames can coalesce
+    // into one drainer tick, hence the ×2 tolerance). A consumer
+    // can treat a first-publish jump as a baseline reset instead
+    // of speed; a mid-stream jump would be phantom speed.
+    let dir = tempfile::tempdir().unwrap();
+    let rig = rig(
+        vec![Script::OkFromBase {
+            base: 60_000,
+            bytes: 40_000,
+            total: Some(100_000),
+            frames: 4,
+            // Spread frames across drainer ticks (progress_interval
+            // = 250 ms) so each frame lands as its own publish.
+            frame_pause: Some(Duration::from_millis(300)),
+        }],
+        1,
+    );
+    tokio::spawn(rig.sched.clone().run());
+    let mut rx = rig.bus.subscribe();
+
+    let t = add(&rig.sched, dir.path(), "f.bin", Priority::Normal).await;
+    wait_for("completed", || {
+        Box::pin(status_is(&rig.sched, &t.id, TaskStatus::Completed))
+    })
+    .await;
+    let row = rig.sched.tasks().get(&t.id).await.unwrap().unwrap();
+    assert_eq!(
+        row.received_bytes, 100_000,
+        "the row must land the ABSOLUTE progress (base + session), not the delta"
+    );
+
+    // Collect this task's TaskProgress publishes in order.
+    let mut events = Vec::new();
+    while let Ok(ev) = rx.try_recv() {
+        if let EngineEvent::TaskProgress { id, received, .. } = ev
+            && id == t.id
+        {
+            events.push(received);
+        }
+    }
+    assert!(
+        events.len() >= 2,
+        "expected progress publishes, got {events:?}"
+    );
+    // First publish carries the disk truth (the lift) plus at
+    // most one frame of session bytes.
+    assert!(
+        (60_000..=70_000).contains(&events[0]),
+        "first publish should be base(+≤1 frame), got {}",
+        events[0]
+    );
+    // Every later step is whole session frames — no 60k jump
+    // ever appears mid-stream (that was the phantom-speed shape).
+    for w in events.windows(2) {
+        assert!(
+            w[1] - w[0] <= 2 * 10_000,
+            "mid-stream jump of {} bytes looks like phantom speed: {events:?}",
+            w[1] - w[0]
+        );
+    }
 
     rig.sched.shutdown().await;
 }
