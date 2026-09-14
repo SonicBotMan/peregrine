@@ -18,7 +18,7 @@ pub mod error;
 mod fetch;
 pub mod playlist;
 
-use error::HlsError;
+pub use error::HlsError;
 use fetch::{Fetcher, read_all};
 use peregrine_api::budget::BudgetChain;
 use peregrine_api::download::{DownloadJob, DownloadOutcome, DownloadProgress, SharedProgressSink};
@@ -36,6 +36,10 @@ pub const DEFAULT_HLS_CONCURRENCY: usize = 4;
 pub struct HlsEngine {
     fetcher: Fetcher,
     concurrency: usize,
+    /// Tests pin the poll cadence (0.05–0.3s) so stall/cancel
+    /// semantics assert in bounded time; production derives it from
+    /// TARGETDURATION.
+    poll_cadence_override: Option<std::time::Duration>,
 }
 
 impl HlsEngine {
@@ -43,12 +47,17 @@ impl HlsEngine {
         Ok(Self {
             fetcher: Fetcher::new().map_err(|e| ApiError::Network(e.to_string()))?,
             concurrency: DEFAULT_HLS_CONCURRENCY,
+            poll_cadence_override: None,
         })
     }
 
-    #[cfg(test)]
     pub fn with_concurrency(mut self, n: usize) -> Self {
         self.concurrency = n.max(1);
+        self
+    }
+
+    pub fn with_poll_cadence_secs(mut self, secs: f64) -> Self {
+        self.poll_cadence_override = Some(std::time::Duration::from_secs_f64(secs));
         self
     }
 
@@ -110,11 +119,6 @@ impl HlsEngine {
             return Err(HlsError::Network("cancelled".into()));
         }
         let (pl, effective_url) = self.resolve(&job.url).await?;
-        if !pl.ended {
-            return Err(HlsError::Unsupported(
-                "live playlist (no ENDLIST) — M4-b".into(),
-            ));
-        }
 
         let dir = Self::parts_dir(&job.sink);
         tokio::fs::create_dir_all(&dir).await?;
@@ -170,6 +174,7 @@ impl HlsEngine {
 
         // ---- segments: bounded concurrency, one part file each ----
         let total_hint = job.expected_total;
+        let _ = &total_hint;
         let report = |n: u64| {
             progress.on_progress(&DownloadProgress {
                 bytes_done: n,
@@ -179,6 +184,22 @@ impl HlsEngine {
 
         let base = existing_parts_len(&dir).await;
         report(base);
+
+        let (segments, map) = if pl.ended {
+            (pl.segments.clone(), pl.map.clone())
+        } else {
+            self.follow_live(
+                &effective_url,
+                &pl,
+                &dir,
+                &cancel,
+                budget,
+                base,
+                &progress,
+                total_hint,
+            )
+            .await?
+        };
 
         let fetcher = self.fetcher.clone();
         use futures::StreamExt as _;
@@ -192,7 +213,7 @@ impl HlsEngine {
         type PartFuture =
             std::pin::Pin<Box<dyn futures::Future<Output = Result<u64, HlsError>> + Send>>;
         let mut pending: Vec<PartFuture> = Vec::new();
-        for seg in pl.segments.iter() {
+        for seg in segments.iter() {
             if Self::part_path(&dir, seg.seq, ".ts").exists() {
                 continue;
             }
@@ -235,7 +256,7 @@ impl HlsEngine {
         drop(inflight);
 
         // ---- merge: init? ++ seg0 ++ seg1 … ----
-        let merged = merge_parts(&dir, &pl, &keys, &job.sink).await?;
+        let merged = merge_parts(&dir, &segments, map.as_ref(), &keys, &job.sink).await?;
         // Parts are now the output file; the directory is removable.
         let _ = tokio::fs::remove_dir_all(&dir).await;
 
@@ -246,6 +267,191 @@ impl HlsEngine {
             final_url: effective_url,
             final_validator: None,
         })
+    }
+
+    /// Follow a live (no ENDLIST) playlist until the stream ends.
+    ///
+    /// Recording semantics: we start where we JOINED — segments that
+    /// slid out of the server window before our first fetch are
+    /// gone; recording every seq seen from join to end is the
+    /// honest product behavior. `recorded` (seq → metadata), not the
+    /// final playlist, is the merge source — the final window has
+    /// slid past early seqs.
+    ///
+    /// Poll cadence: `max(target_duration / 2, 2s)` capped at 8s
+    /// (§6.2 — never reload more often than segment duration;
+    /// half-duration is the standard hls.js cadence). Termination:
+    /// ENDLIST (normal), cancel, or `STALL_POLLS` consecutive polls
+    /// with nothing new and no ENDLIST (dead upstream — fail loudly
+    /// rather than hang forever).
+    const STALL_POLLS: u32 = 6;
+
+    // 9 params: (self + url + playlist snapshot + fs/budget/cancel
+    // plumbing + progress pair). A config struct would hide the
+    // borrow structure without reducing the coupling — the port
+    // layer calls this exactly once.
+    #[allow(clippy::too_many_arguments)]
+    async fn follow_live(
+        &self,
+        media_url: &str,
+        initial: &MediaPlaylist,
+        dir: &Path,
+        cancel: &CancellationToken,
+        budget: &BudgetChain,
+        base_bytes: u64,
+        progress: &SharedProgressSink,
+        total_hint: Option<u64>,
+    ) -> Result<(Vec<playlist::MediaSegment>, Option<playlist::MapSegment>), HlsError> {
+        let report = |n: u64| {
+            progress.on_progress(&DownloadProgress {
+                bytes_done: n,
+                total: total_hint,
+            })
+        };
+        let cadence = |td: Option<f64>| -> std::time::Duration {
+            if let Some(d) = self.poll_cadence_override {
+                return d;
+            }
+            std::time::Duration::from_secs_f64(td.map(|t| t / 2.0).unwrap_or(4.0).clamp(2.0, 8.0))
+        };
+        let mut poll_every = cadence(initial.target_duration);
+
+        let mut recorded: std::collections::BTreeMap<u64, playlist::MediaSegment> =
+            std::collections::BTreeMap::new();
+        let map = initial.map.clone();
+        let mut total = base_bytes;
+        let mut stall: u32 = 0;
+        // Transient poll failures (CDN hiccup, 5xx blip) must not
+        // kill a recording: tolerate up to 3 CONSECUTIVE resolve
+        // errors before giving up; any successful poll resets.
+        let mut poll_failures: u32 = 0;
+        let mut current = initial.clone();
+        let mut interval = tokio::time::interval(poll_every);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        loop {
+            if cancel.is_cancelled() {
+                return Err(HlsError::Network("cancelled".into()));
+            }
+            // A NEW map mid-recording (fMP4 live discontinuity)
+            // cannot be represented as one concatenated output.
+            if let Some(m) = &current.map
+                && map.as_ref() != Some(m)
+            {
+                return Err(HlsError::Unsupported(
+                    "live stream switched EXT-X-MAP mid-recording".into(),
+                ));
+            }
+            // Fetch every UNSEEN seq in this poll's window, bounded
+            // by engine concurrency, then record them.
+            let fresh: Vec<playlist::MediaSegment> = current
+                .segments
+                .iter()
+                .filter(|s| !recorded.contains_key(&s.seq))
+                .cloned()
+                .collect();
+            if fresh.is_empty() {
+                if current.ended {
+                    break; // ENDLIST and nothing new — done
+                }
+                stall += 1;
+                if stall >= Self::STALL_POLLS {
+                    return Err(HlsError::Unsupported(format!(
+                        "live stream stalled: no new segments for {} polls",
+                        Self::STALL_POLLS
+                    )));
+                }
+            } else {
+                stall = 0;
+                poll_failures = 0;
+                use futures::StreamExt as _;
+                type PartFuture =
+                    std::pin::Pin<Box<dyn futures::Future<Output = Result<u64, HlsError>> + Send>>;
+                let pending: Vec<PartFuture> = fresh
+                    .iter()
+                    .filter(|s| !Self::part_path(dir, s.seq, ".ts").exists())
+                    .map(|seg| {
+                        let fetcher = self.fetcher.clone();
+                        let dir = dir.to_path_buf();
+                        let cancel = cancel.clone();
+                        let budget = budget.clone();
+                        let seg = (*seg).clone();
+                        Box::pin(async move {
+                            let tmp = Self::part_path(&dir, seg.seq, ".ts.tmp");
+                            let part = Self::part_path(&dir, seg.seq, ".ts");
+                            fetcher
+                                .fetch_part(&seg.uri, seg.byterange, &budget, &cancel, &tmp, &part)
+                                .await?;
+                            let len = tokio::fs::metadata(&part).await?.len();
+                            Ok(len)
+                        }) as PartFuture
+                    })
+                    .collect();
+                let mut inflight =
+                    futures::stream::iter(pending).buffer_unordered(self.concurrency);
+                while let Some(res) = inflight.next().await {
+                    match res {
+                        Ok(len) => {
+                            total += len;
+                            report(total);
+                        }
+                        Err(e) if fetch::is_cancel(&e) => {
+                            drop(inflight);
+                            return Err(HlsError::Network("cancelled".into()));
+                        }
+                        Err(e) => {
+                            drop(inflight);
+                            return Err(e);
+                        }
+                    }
+                }
+                drop(inflight);
+                for seg in fresh {
+                    recorded.insert(seg.seq, seg);
+                }
+                if current.ended {
+                    break; // ENDLIST: trailing batch fetched, done
+                }
+            }
+            tokio::select! {
+                _ = cancel.cancelled() => {
+                    return Err(HlsError::Network("cancelled".into()));
+                }
+                _ = interval.tick() => {}
+            }
+            // R2 P1: the tick branch may win the race with a cancel
+            // that fired during the wait — re-check BEFORE resolving
+            // so a cancelled task never starts another round trip.
+            if cancel.is_cancelled() {
+                return Err(HlsError::Network("cancelled".into()));
+            }
+            match self.resolve(media_url).await {
+                Ok((next, _)) => {
+                    poll_failures = 0;
+                    current = next;
+                    // §6.2: honor a cadence change signaled via TARGETDURATION.
+                    let want = cadence(current.target_duration);
+                    if want != poll_every {
+                        poll_every = want;
+                        interval = tokio::time::interval(poll_every);
+                        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                        interval.tick().await; // consume the immediate first tick
+                    }
+                }
+                Err(e) if fetch::is_cancel(&e) => {
+                    return Err(HlsError::Network("cancelled".into()));
+                }
+                Err(e) => {
+                    poll_failures += 1;
+                    if poll_failures >= 3 {
+                        tracing::warn!("live poll failed {}x, giving up", poll_failures);
+                        return Err(e);
+                    }
+                    tracing::debug!("live poll failed ({e}), retrying next cadence");
+                }
+            }
+        }
+        Ok((recorded.into_values().collect(), map))
     }
 }
 
@@ -286,11 +492,27 @@ async fn sweep_tmp(dir: &Path) {
 /// R2 P1-1).
 async fn merge_parts(
     dir: &Path,
-    pl: &MediaPlaylist,
+    segments: &[playlist::MediaSegment],
+    map: Option<&playlist::MapSegment>,
     keys: &std::collections::HashMap<String, [u8; 16]>,
     sink: &Path,
 ) -> Result<u64, HlsError> {
     use tokio::io::AsyncWriteExt;
+
+    // ---- contiguity: a hole means a LOST segment ----
+    // (live: the window slid past a seq we never fetched — VOD seqs
+    // are contiguous by construction, so this only ever fires for
+    // live recordings; merging around the hole would corrupt).
+    if let Some(first) = segments.first() {
+        for (seg, expect) in segments.iter().zip(first.seq..) {
+            if seg.seq != expect {
+                return Err(HlsError::BadPlaylist(format!(
+                    "segment gap: expected seq {expect}, have {} (window slid past a segment we never fetched)",
+                    seg.seq
+                )));
+            }
+        }
+    }
 
     // APPEND `.hls-merging` (never with_extension: `x.ts` and `x.mp4`
     // in one dir would collide on the replaced form — R2 P2-3).
@@ -302,7 +524,7 @@ async fn merge_parts(
     let mut out = tokio::fs::File::create(&out_tmp).await?;
     let mut total: u64 = 0;
 
-    let result = merge_inner(dir, pl, keys, &mut out, &mut total).await;
+    let result = merge_inner(dir, segments, map, keys, &mut out, &mut total).await;
     match result {
         Ok(()) => {
             out.flush().await?;
@@ -322,19 +544,20 @@ async fn merge_parts(
 
 async fn merge_inner(
     dir: &Path,
-    pl: &MediaPlaylist,
+    segments: &[playlist::MediaSegment],
+    map: Option<&playlist::MapSegment>,
     keys: &std::collections::HashMap<String, [u8; 16]>,
     out: &mut tokio::fs::File,
     total: &mut u64,
 ) -> Result<(), HlsError> {
     use tokio::io::AsyncWriteExt;
 
-    if let Some(map) = &pl.map {
+    if let Some(map) = map {
         let init = dir.join("init.mp4");
         let mut bytes = tokio::fs::read(&init).await?;
         if let Key::Aes128 { uri, iv } = &map.key {
             let key = keys
-                .get(uri)
+                .get(uri.as_str())
                 .ok_or_else(|| HlsError::Decrypt("map key vanished mid-merge".into()))?;
             // The MAP has no media-sequence of its own; an explicit
             // IV is required for encrypted inits — absent IV falls
@@ -347,12 +570,12 @@ async fn merge_inner(
     }
 
     let mut buf: Vec<u8>;
-    for seg in &pl.segments {
+    for seg in segments {
         let part = HlsEngine::part_path(dir, seg.seq, ".ts");
         buf = tokio::fs::read(&part).await?;
         if let Key::Aes128 { uri, iv } = &seg.key {
             let key = keys
-                .get(uri)
+                .get(uri.as_str())
                 .ok_or_else(|| HlsError::Decrypt("key vanished mid-merge".into()))?;
             let iv = iv.unwrap_or_else(|| decrypt::seq_iv(seg.seq));
             decrypt::decrypt_cbc(&mut buf, key, &iv)?;

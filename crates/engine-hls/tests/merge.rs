@@ -230,22 +230,343 @@ impl peregrine_api::download::ProgressSink for CancelAfter {
     }
 }
 
-#[tokio::test]
-async fn live_playlist_is_rejected() {
+// ---- M4-b1: live (no ENDLIST) recording ----
+
+/// Deterministic sliding-window live origin.
+///
+/// Window = 3 seqs; each playlist GET (after the first) slides the
+/// window one seq forward. After `end_after` polls the playlist
+/// carries ENDLIST (normal event end). `skip_to` jumps the window
+/// start on poll #2 (gap scenario). Segments are 40 deterministic
+/// bytes each: seq n → [n*8, n*8+40).
+struct LiveSpec {
+    end_after: usize,
+    skip_to: Option<u64>,
+    /// Never advance the window (stalled-stream scenario).
+    frozen: bool,
+}
+
+async fn live_origin(spec: LiveSpec) -> String {
     use axum::Router;
     use axum::routing::get;
-    let app = Router::new().route(
-        "/live.m3u8",
-        get(|| async { "#EXTM3U\n#EXTINF:4.0,\na.ts\n" }),
-    );
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct Live {
+        window_start: u64,
+        polls: usize,
+        ended: bool,
+    }
+    let live = Arc::new(Mutex::new(Live {
+        window_start: 0,
+        polls: 0,
+        ended: false,
+    }));
+
+    let app = Router::new()
+        .route(
+            "/live.m3u8",
+            get({
+                let live = live.clone();
+                let spec_end = spec.end_after;
+                let skip_to = spec.skip_to;
+                let frozen = spec.frozen;
+                move || {
+                    let live = live.clone();
+                    async move {
+                        let mut st = live.lock().unwrap();
+                        st.polls += 1;
+                        if !frozen && st.polls > 1 {
+                            st.window_start += 1;
+                            if st.polls == 2
+                                && let Some(to) = skip_to
+                            {
+                                st.window_start = to;
+                            }
+                        }
+                        if st.polls >= spec_end {
+                            st.ended = true;
+                        }
+                        let start = st.window_start;
+                        let ended = st.ended;
+                        drop(st);
+                        // RFC 8216 §6.2.2: a sliding window MUST raise
+                        // MEDIA-SEQUENCE — segment identity is
+                        // media_sequence + index, so without this the
+                        // engine is CORRECT to treat every reload as
+                        // the same seqs (first bug found by these
+                        // tests was the mock, not the engine).
+                        let mut body = format!(
+                            "#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:{start}\n"
+                        );
+                        for s in start..start + 3 {
+                            body.push_str(&format!("#EXTINF:4.0,\nseg/{s}.ts\n"));
+                        }
+                        if ended {
+                            body.push_str("#EXT-X-ENDLIST\n");
+                        }
+                        body
+                    }
+                }
+            }),
+        )
+        .route(
+            "/seg/{n}",
+            get(
+                |axum::extract::Path(n): axum::extract::Path<String>| async move {
+                    let n: u64 = n.trim_end_matches(".ts").parse().unwrap();
+                    (n * 8..n * 8 + 40).map(|b| b as u8).collect::<Vec<u8>>()
+                },
+            ),
+        );
+
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://{addr}/live.m3u8")
+}
 
+fn seg_bytes(n: u64) -> Vec<u8> {
+    (n * 8..n * 8 + 40).map(|b| b as u8).collect()
+}
+
+/// Normal event: window slides, ENDLIST lands on poll 4 → recorded
+/// = every seq from join (0) to end (5), merged in order, parts dir
+/// cleaned up.
+#[tokio::test]
+async fn live_stream_recorded_until_endlist() {
+    let base = live_origin(LiveSpec {
+        end_after: 4,
+        skip_to: None,
+        frozen: false,
+    })
+    .await;
     let dir = TempDir::new().unwrap();
     let sink = dir.path().join("live.ts");
+
+    let engine = HlsEngine::new()
+        .unwrap()
+        .with_concurrency(2)
+        .with_poll_cadence_secs(0.10);
+    let out = engine
+        .download_merge(
+            &job(&base, &sink),
+            Arc::new(NoProgress),
+            tokio_util::sync::CancellationToken::new(),
+            &unlimited(),
+        )
+        .await
+        .unwrap();
+
+    assert!(out.completed);
+    let mut expected = Vec::new();
+    for n in 0..=5u64 {
+        expected.extend_from_slice(&seg_bytes(n));
+    }
+    assert_eq!(out.bytes_written, expected.len() as u64);
+    assert_eq!(std::fs::read(&sink).unwrap(), expected);
+    let parts = {
+        let mut s = sink.as_os_str().to_os_string();
+        s.push(".parts");
+        std::path::PathBuf::from(s)
+    };
+    assert!(!parts.exists(), "live merge must clean parts dir");
+}
+
+/// Frozen upstream (no new segments, no ENDLIST): fail loudly after
+/// STALL_POLLS instead of polling forever.
+#[tokio::test]
+async fn live_stall_fails_loudly() {
+    let base = live_origin(LiveSpec {
+        end_after: usize::MAX,
+        skip_to: None,
+        frozen: true,
+    })
+    .await;
+    let dir = TempDir::new().unwrap();
+    let sink = dir.path().join("stall.ts");
+
+    let started = std::time::Instant::now();
     let err = HlsEngine::new()
         .unwrap()
+        .with_poll_cadence_secs(0.05)
+        .download_merge(
+            &job(&base, &sink),
+            Arc::new(NoProgress),
+            tokio_util::sync::CancellationToken::new(),
+            &unlimited(),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("stalled"), "{err}");
+    // 6 polls × 50ms cadence + first-batch download time: bounded.
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "stall detection must be prompt, took {:?}",
+        started.elapsed()
+    );
+}
+
+/// Window jumps past seqs we never saw (skip_to=4 on poll 2): the
+/// parts land but the MERGE catches the hole and fails instead of
+/// emitting a corrupt file.
+#[tokio::test]
+async fn live_gap_from_window_slide_detected() {
+    let base = live_origin(LiveSpec {
+        end_after: 5,
+        skip_to: Some(4),
+        frozen: false,
+    })
+    .await;
+    let dir = TempDir::new().unwrap();
+    let sink = dir.path().join("gap.ts");
+
+    let err = HlsEngine::new()
+        .unwrap()
+        .with_poll_cadence_secs(0.05)
+        .download_merge(
+            &job(&base, &sink),
+            Arc::new(NoProgress),
+            tokio_util::sync::CancellationToken::new(),
+            &unlimited(),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("segment gap"), "{err}");
+    // No half-merged output may exist.
+    assert!(!sink.exists(), "gap run must not emit an output file");
+}
+
+/// Cancel while polling mid-recording: prompt Cancelled, no *.tmp,
+/// already-recorded parts stay for resume.
+#[tokio::test]
+async fn live_cancel_stops_promptly() {
+    let base = live_origin(LiveSpec {
+        end_after: usize::MAX, // runs forever
+        skip_to: None,
+        frozen: false,
+    })
+    .await;
+    let dir = TempDir::new().unwrap();
+    let sink = dir.path().join("cancel.ts");
+
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let engine = HlsEngine::new().unwrap().with_poll_cadence_secs(0.30);
+    let j = job(&base, &sink);
+    let handle = tokio::spawn({
+        let cancel = cancel.clone();
+        async move {
+            engine
+                .download_merge(&j, Arc::new(NoProgress), cancel, &unlimited())
+                .await
+        }
+    });
+    // Let it join + fetch the first window, then cancel between polls.
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    let started = std::time::Instant::now();
+    cancel.cancel();
+    let res = handle.await.unwrap();
+    assert!(
+        matches!(res, Err(ref e) if fetch_is_cancel(e)),
+        "got {res:?}"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "cancel must return within one poll interval"
+    );
+    let parts = {
+        let mut s = sink.as_os_str().to_os_string();
+        s.push(".parts");
+        std::path::PathBuf::from(s)
+    };
+    assert!(parts.exists(), "recorded parts must survive cancel");
+    for e in std::fs::read_dir(&parts).unwrap().flatten() {
+        assert!(!e.file_name().to_string_lossy().ends_with(".tmp"));
+    }
+}
+
+fn fetch_is_cancel(e: &peregrine_engine_hls::HlsError) -> bool {
+    e.to_string().contains("cancelled")
+}
+
+/// A CDN blip: playlist GETs #2 and #3 answer 503. The recorder
+/// must keep going and still produce the full merged file (P1:
+/// single poll failures must not kill a live recording).
+#[tokio::test]
+async fn live_survives_transient_playlist_failures() {
+    use axum::Router;
+    use axum::http::StatusCode;
+    use axum::routing::get;
+    use std::sync::Mutex;
+
+    struct St {
+        polls: usize,
+        fail_at: Vec<usize>,
+    }
+    let st = Arc::new(Mutex::new(St {
+        polls: 0,
+        fail_at: vec![2, 3],
+    }));
+
+    let app = Router::new()
+        .route(
+            "/live.m3u8",
+            get({
+                let st = st.clone();
+                move || {
+                    let st = st.clone();
+                    async move {
+                        let mut s = st.lock().unwrap();
+                        s.polls += 1;
+                        if s.fail_at.contains(&s.polls) {
+                            return (StatusCode::SERVICE_UNAVAILABLE, "cdn blip".to_string());
+                        }
+                        // poll1: 0..2; poll4: 1..3; poll5: 2..4+ENDLIST
+                        let start = if s.polls >= 5 {
+                            2
+                        } else if s.polls == 4 {
+                            1
+                        } else {
+                            0
+                        };
+                        let ended = s.polls >= 5;
+                        let mut body = format!(
+                            "#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:{start}\n"
+                        );
+                        let end = start + 3;
+                        for seg in start..end {
+                            body.push_str(&format!("#EXTINF:4.0,\nseg/{seg}.ts\n"));
+                        }
+                        if ended {
+                            body.push_str("#EXT-X-ENDLIST\n");
+                        }
+                        (StatusCode::OK, body)
+                    }
+                }
+            }),
+        )
+        .route(
+            "/seg/{n}",
+            get(
+                |axum::extract::Path(n): axum::extract::Path<String>| async move {
+                    let n: u64 = n.trim_end_matches(".ts").parse().unwrap();
+                    (n * 8..n * 8 + 40).map(|b| b as u8).collect::<Vec<u8>>()
+                },
+            ),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let dir = TempDir::new().unwrap();
+    let sink = dir.path().join("blip.ts");
+    let out = HlsEngine::new()
+        .unwrap()
+        .with_poll_cadence_secs(0.05)
         .download_merge(
             &job(&format!("http://{addr}/live.m3u8"), &sink),
             Arc::new(NoProgress),
@@ -253,8 +574,14 @@ async fn live_playlist_is_rejected() {
             &unlimited(),
         )
         .await
-        .unwrap_err();
-    assert!(err.to_string().contains("live"), "{err}");
+        .unwrap();
+    // recorded = everything seen: poll1 {0,1,2}, poll4 {3}, poll5 {4}
+    let mut expected = Vec::new();
+    for n in 0..=4u64 {
+        expected.extend_from_slice(&seg_bytes(n));
+    }
+    assert_eq!(out.bytes_written, expected.len() as u64);
+    assert_eq!(std::fs::read(&sink).unwrap(), expected);
 }
 
 #[tokio::test]

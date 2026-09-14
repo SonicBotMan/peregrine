@@ -1,3 +1,6 @@
 /target
 *.sock
 .env
+
+# Tauri build dir (M4-b1 R3: a stray  staged 4k+ target files)
+apps/desktop/src-tauri/target/

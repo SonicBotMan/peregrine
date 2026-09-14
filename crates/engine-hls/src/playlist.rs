@@ -60,6 +60,9 @@ pub struct MediaPlaylist {
     pub map: Option<MapSegment>,
     /// First segment's `MEDIA-SEQUENCE` (0 when absent).
     pub media_sequence: u64,
+    /// `EXT-X-TARGETDURATION` in seconds — live followers poll at
+    /// half this (clamped) cadence per §6.2.
+    pub target_duration: Option<f64>,
     /// `true` iff `#EXT-X-ENDLIST` present. VOD contract: required.
     pub ended: bool,
 }
@@ -111,6 +114,7 @@ pub fn parse(body: &str, base: &str) -> Result<Playlist, HlsError> {
     let mut media_sequence = 0u64;
     let mut media_sequence_seen = false;
     let mut ended = false;
+    let mut target_duration: Option<f64> = None;
 
     for raw in body.lines() {
         let line = raw.trim_end_matches('\r');
@@ -178,6 +182,10 @@ pub fn parse(body: &str, base: &str) -> Result<Playlist, HlsError> {
                 .parse()
                 .map_err(|_| HlsError::BadPlaylist("bad MEDIA-SEQUENCE".into()))?;
             media_sequence_seen = true;
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("#EXT-X-TARGETDURATION:") {
+            target_duration = rest.trim().parse::<f64>().ok();
             continue;
         }
         if line.trim() == "#EXT-X-ENDLIST" {
@@ -270,6 +278,7 @@ pub fn parse(body: &str, base: &str) -> Result<Playlist, HlsError> {
             segments,
             map,
             media_sequence,
+            target_duration,
             ended,
         })),
         (true, true) => Err(HlsError::BadPlaylist(
