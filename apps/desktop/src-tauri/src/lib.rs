@@ -65,7 +65,7 @@ fn spawn_daemon(app: &tauri::AppHandle) -> ShellResult {
     let cmd = app
         .shell()
         .sidecar("peregrined")
-        .map_err(|e| {
+        .map_err(|e| -> Box<dyn std::error::Error> {
             format!(
                 "sidecar `peregrined` not bundled (expected binaries/peregrined-<triple>): {e}"
             )
