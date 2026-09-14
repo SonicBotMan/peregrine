@@ -65,3 +65,17 @@ milestone noted. (R1 review, 2026-02-27)
   重试时已计费 bytes 二次计入 budget；EXT-X-MAP init 段无重试（与 segment 不对称）
 - B51: poll_cadence_override 生效期间 td 变化不刷新 stall_after（want 恒等短路）——
   仅测试路径暴露，生产无 override
+
+## B52-B58 — M4-c（FTP）R2 未采纳项（0eafc1d）
+
+- **B52** FTP resume 目标缺失的报错文案对齐 engine-http B19（当前裸
+  `entity not found`；scheduler 仅在 sink 存在时构造 resume，纯竞态边界）。
+- **B53** SIZE 550 语义区分：文件缺失 vs 不支持 SIZE（可补 MDTM 双 550
+  判定缺失，让 probe 像 HTTP 404 一样尽早报错，而不是推迟到 RETR）。
+- **B54** percent_decode 的 from_utf8_lossy 静默替换非 UTF-8 序列
+  （凭据/路径损坏无报错）→ 需可配置策略或显式错误。
+- **B55** 畸形 URL / login 530 的错误分类细化（Network → 更准的
+  UnsupportedUrl/专用文案；与 engine-http 既有口径统一处理）。
+- **B56** "short body" 措辞：远端在 SIZE 与 RETR 间增长时 X>Y 的文案。
+- **B57** FTPS（AUTH TLS）支持（B46 关联，suppaftp async-secure feature）。
+- **B58** FTP 分段并行（多控制连接 + REST 分片；服务器兼容性差，v2 研究）。
