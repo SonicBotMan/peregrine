@@ -71,7 +71,7 @@ struct ScriptedPort {
     peak_active: AtomicUsize,
     /// (url, sink) pairs the scheduler asked the engine to purge
     /// (B31: remove must drop engine-side resume rows).
-    purged: Mutex<Vec<(String, std::path::PathBuf)>>,
+    purged: Mutex<Vec<(String, std::path::PathBuf, bool)>>,
     /// (url, sink, bps) live limit pokes received (M3-b).
     limit_calls: Mutex<Vec<(String, std::path::PathBuf, Option<u64>)>>,
 }
@@ -92,7 +92,7 @@ impl ScriptedPort {
         self.jobs.lock().unwrap().clone()
     }
 
-    fn purged(&self) -> Vec<(String, std::path::PathBuf)> {
+    fn purged(&self) -> Vec<(String, std::path::PathBuf, bool)> {
         self.purged.lock().unwrap().clone()
     }
 
@@ -138,11 +138,12 @@ impl DownloadPort for ScriptedPort {
         &self,
         url: &str,
         sink: &std::path::Path,
+        purge_files: bool,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
         self.purged
             .lock()
             .unwrap()
-            .push((url.to_string(), sink.to_path_buf()));
+            .push((url.to_string(), sink.to_path_buf(), purge_files));
         Box::pin(async { Ok(()) })
     }
 
@@ -290,6 +291,35 @@ async fn add(s: &Scheduler, dir: &std::path::Path, name: &str, p: Priority) -> T
 // 1. Happy path.
 
 #[tokio::test]
+async fn remove_purge_flag_flows_to_engine_port() {
+    // M5.1 P0-2: `purge=true` must reach the engine port as
+    // `purge_files=true` — data deletion is the caller's explicit
+    // choice, threaded REST→scheduler→port→engine verbatim.
+    let dir = tempfile::tempdir().unwrap();
+    let rig = rig(
+        vec![Script::AwaitCancel {
+            partial: 10,
+            total: Some(100),
+        }],
+        2,
+    );
+    tokio::spawn(rig.sched.clone().run());
+
+    let t = add(&rig.sched, dir.path(), "f.bin", Priority::Normal).await;
+    wait_for("engine entered", || {
+        Box::pin(async { rig.port.peak_active.load(Ordering::SeqCst) >= 1 })
+    })
+    .await;
+
+    rig.sched.remove(&t.id, true).await.unwrap();
+    let purged = rig.port.purged();
+    assert_eq!(purged.len(), 1);
+    assert!(purged[0].2, "purge=true must reach the port");
+
+    rig.sched.shutdown().await;
+}
+
+#[tokio::test]
 async fn remove_purges_engine_rows_and_is_idempotent() {
     let dir = tempfile::tempdir().unwrap();
     let rig = rig(
@@ -307,17 +337,21 @@ async fn remove_purges_engine_rows_and_is_idempotent() {
     })
     .await;
 
-    rig.sched.remove(&t.id).await.unwrap();
+    rig.sched.remove(&t.id, false).await.unwrap();
     // Engine-side resume rows dropped for exactly (url, sink) (B31).
     let purged = rig.port.purged();
     assert_eq!(
         purged,
-        vec![("http://test/file".to_string(), dir.path().join("f.bin"))]
+        vec![(
+            "http://test/file".to_string(),
+            dir.path().join("f.bin"),
+            false
+        )]
     );
 
     // Idempotent: a second remove succeeds and does NOT re-purge
     // (the row is gone; nothing to purge).
-    rig.sched.remove(&t.id).await.unwrap();
+    rig.sched.remove(&t.id, false).await.unwrap();
     assert_eq!(rig.port.purged().len(), 1);
 
     rig.sched.shutdown().await;
@@ -717,7 +751,7 @@ async fn remove_mid_flight_discards_a_racing_ok_outcome() {
     // Remove cancels the engine; the engine then returns Ok anyway
     // (a finish racing the user's remove). The row is already gone —
     // the worker's complete() must lose and stay silent.
-    rig.sched.remove(&t.id).await.unwrap();
+    rig.sched.remove(&t.id, false).await.unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     assert!(rig.sched.tasks().get(&t.id).await.unwrap().is_none());
@@ -948,9 +982,9 @@ async fn duplicate_active_target_is_rejected() {
     }
 
     // Remove → terminal → the same target is addable again.
-    rig.sched.remove(&a.id).await.unwrap();
+    rig.sched.remove(&a.id, false).await.unwrap();
     // Remove is idempotent (F11): a second remove reports success.
-    rig.sched.remove(&a.id).await.unwrap();
+    rig.sched.remove(&a.id, false).await.unwrap();
     let b = rig
         .sched
         .add("http://test/file", target, Priority::Normal)
@@ -1014,7 +1048,7 @@ async fn same_save_path_tasks_serialize() {
 
     // Free the path; b must now run and complete.
     rig.sched.pause(&a.id).await.unwrap();
-    rig.sched.remove(&a.id).await.unwrap();
+    rig.sched.remove(&a.id, false).await.unwrap();
     wait_for("b completes after path freed", || {
         Box::pin(status_is(&rig.sched, &b.id, TaskStatus::Completed))
     })

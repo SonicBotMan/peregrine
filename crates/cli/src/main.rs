@@ -51,7 +51,11 @@ enum Cmd {
     Resume { id: String },
 
     /// Remove a task (partial files are kept).
-    Remove { id: String },
+    Remove {
+        id: String,
+        #[arg(long)]
+        purge: bool,
+    },
 
     /// Set a task's download rate limit.
     Limit {
@@ -132,15 +136,17 @@ async fn main() -> anyhow::Result<()> {
                 .await?;
             println!("queued {}", task.id);
         }
-        Cmd::Remove { id } => {
+        Cmd::Remove { id, purge } => {
             // The daemon answers `{"removed": true}` — NOT a Task
             // (smoke-found: typed decode died with `missing field id`).
+            // `--purge` opts into data deletion (M5.1 P0-2).
+            let path = if purge {
+                format!("/tasks/{id}?purge=true")
+            } else {
+                format!("/tasks/{id}")
+            };
             let v: serde_json::Value = client
-                .request_json(
-                    "DELETE",
-                    &format!("/tasks/{id}"),
-                    None::<&serde_json::Value>,
-                )
+                .request_json("DELETE", &path, None::<&serde_json::Value>)
                 .await?;
             anyhow::ensure!(v["removed"].as_bool().unwrap_or(false), "daemon: {v}");
             println!("removed {id}");

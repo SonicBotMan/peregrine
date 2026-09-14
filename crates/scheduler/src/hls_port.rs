@@ -68,14 +68,30 @@ impl DownloadPort for HlsAutoPort {
         &self,
         url: &str,
         sink: &std::path::Path,
+        purge_files: bool,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
         let _ = url;
+        // Merged output survives a plain remove (M5.1 P0-2); the
+        // .parts dir is downloaded data — also user-visible bytes,
+        // so it rides the same flag.
+        if !purge_files {
+            return Box::pin(async { Ok(()) });
+        }
         let dir = {
             let mut s = sink.as_os_str().to_os_string();
             s.push(".parts");
             std::path::PathBuf::from(s)
         };
+        let sink = sink.to_path_buf();
         Box::pin(async move {
+            // Merged output first: the deliverable IS the data the
+            // user asked to delete. Best-effort on the sink if the
+            // parts dir is the only remnant (merge failed mid-way).
+            if let Err(e) = tokio::fs::remove_file(&sink).await
+                && e.kind() != std::io::ErrorKind::NotFound
+            {
+                return Err(anyhow::anyhow!("purge {sink:?}: {e}"));
+            }
             match tokio::fs::remove_dir_all(&dir).await {
                 Ok(()) => Ok(()),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),

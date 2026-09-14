@@ -50,10 +50,16 @@ impl DownloadPort for FtpAutoPort {
         &self,
         url: &str,
         sink: &Path,
+        purge_files: bool,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
         let _ = url;
-        // FTP has no side files (no parts dir): the sink IS the state.
+        // FTP has no side files (no parts dir): the sink IS the data.
+        // M5.1 P0-2: data deletion is explicit — plain remove keeps
+        // the downloaded file.
         let sink = sink.to_path_buf();
+        if !purge_files {
+            return Box::pin(async { Ok(()) });
+        }
         Box::pin(async move {
             match tokio::fs::remove_file(&sink).await {
                 Ok(()) => Ok(()),

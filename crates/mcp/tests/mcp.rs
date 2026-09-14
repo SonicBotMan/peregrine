@@ -50,21 +50,23 @@ impl DownloadPort for HangingPort {
         &self,
         _url: &str,
         _sink: &std::path::Path,
+        _purge_files: bool,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
         Box::pin(async { Ok(()) })
     }
 }
 
 /// A daemon on a temp UDS socket + temp TCP port serving the SAME
-/// router (REST + WS /events). The temp dir is leaked
-/// (`into_path`) — the socket and db must outlive this function's
-/// `TempDir` guard.
-async fn daemon_rig() -> (PathBuf, String, Arc<Daemon>) {
-    let dir = tempfile::tempdir().unwrap().keep();
-    let socket = dir.join("mcp-test.sock");
+/// router (REST + WS /events). Returns the `TempDir` guard so the
+/// caller's binding keeps the whole rig (socket, db, daemon) alive
+/// AND cleans it on drop — M5.1 P2-8: `.keep()` leaked one dir per
+/// test invocation.
+async fn daemon_rig() -> (tempfile::TempDir, PathBuf, String, Arc<Daemon>) {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("mcp-test.sock");
     let daemon = Arc::new(
         Daemon::build_with_port(
-            Some(&dir.join("tasks.db")),
+            Some(&dir.path().join("tasks.db")),
             SchedulerConfig::default(),
             Arc::new(HangingPort) as Arc<dyn DownloadPort>,
         )
@@ -88,7 +90,7 @@ async fn daemon_rig() -> (PathBuf, String, Arc<Daemon>) {
     });
 
     let events_url = format!("ws://127.0.0.1:{ws_port}/events");
-    (socket, events_url, daemon)
+    (dir, socket, events_url, daemon)
 }
 
 /// MCP client capturing every resource-updated push the server
@@ -173,7 +175,7 @@ fn text_of(r: &rmcp::model::CallToolResult) -> String {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn tools_catalog_and_roundtrip() {
-    let (socket, events_url, _daemon) = daemon_rig().await;
+    let (_dir, socket, events_url, _daemon) = daemon_rig().await;
     let (client, _rx) = mcp_pair(socket, events_url).await;
 
     // Catalog: ten tools, object schemas.
@@ -276,7 +278,7 @@ async fn tools_catalog_and_roundtrip() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn add_download_priority_is_case_insensitive() {
-    let (socket, events_url, _daemon) = daemon_rig().await;
+    let (_dir, socket, events_url, _daemon) = daemon_rig().await;
     let (client, _rx) = mcp_pair(socket, events_url).await;
 
     let tmp = tempfile::tempdir().unwrap();
@@ -317,7 +319,7 @@ async fn add_download_priority_is_case_insensitive() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn unknown_task_is_tool_error_not_protocol_error() {
-    let (socket, events_url, _daemon) = daemon_rig().await;
+    let (_dir, socket, events_url, _daemon) = daemon_rig().await;
     let (client, _rx) = mcp_pair(socket, events_url).await;
 
     let r = call(&client, "get_download", serde_json::json!({"id": "nope"})).await;
@@ -349,7 +351,7 @@ async fn daemon_down_is_tool_error() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn resources_list_read_and_404() {
-    let (socket, events_url, _daemon) = daemon_rig().await;
+    let (_dir, socket, events_url, _daemon) = daemon_rig().await;
     let (client, _rx) = mcp_pair(socket, events_url).await;
 
     let tmp = tempfile::tempdir().unwrap();
@@ -414,7 +416,7 @@ async fn resources_list_read_and_404() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn subscribe_pushes_updates_through_real_ws() {
-    let (socket, events_url, _daemon) = daemon_rig().await;
+    let (_dir, socket, events_url, _daemon) = daemon_rig().await;
     let (client, mut rx) = mcp_pair(socket, events_url).await;
 
     // Subscribe the list resource (legacy resources/subscribe).

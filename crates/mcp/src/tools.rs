@@ -191,33 +191,40 @@ pub async fn dispatch(mcp: &PeregrineMcp, name: &str, args: JsonObject) -> CallT
                 return bad_args::<ListArgs>();
             };
             let path = match a.status {
-                Some(s) => format!("/tasks?status={s}"),
+                // M5.1 P2-3: case-normalize like priority — a model
+                // sending "Running" must not 422 on a wall it can't
+                // see through.
+                Some(s) => format!("/tasks?status={}", s.to_lowercase()),
                 None => "/tasks".to_string(),
             };
             call!("GET", path, None::<&serde_json::Value>, Vec<Task>)
         }
         "get_download" => {
-            let Some(a) = decode::<IdArgs>(args) else {
+            let Some(id) = id_arg(args) else {
                 return bad_args::<IdArgs>();
             };
-            call!("GET", format!("/tasks/{}", a.id), None::<&u8>, Task)
+            call!("GET", format!("/tasks/{}", id), None::<&u8>, Task)
         }
         "pause_download" => {
-            let Some(a) = decode::<IdArgs>(args) else {
+            let Some(id) = id_arg(args) else {
                 return bad_args::<IdArgs>();
             };
-            call!("POST", format!("/tasks/{}/pause", a.id), None::<&u8>, Task)
+            call!("POST", format!("/tasks/{}/pause", id), None::<&u8>, Task)
         }
         "resume_download" => {
-            let Some(a) = decode::<IdArgs>(args) else {
+            let Some(id) = id_arg(args) else {
                 return bad_args::<IdArgs>();
             };
-            call!("POST", format!("/tasks/{}/resume", a.id), None::<&u8>, Task)
+            call!("POST", format!("/tasks/{}/resume", id), None::<&u8>, Task)
         }
         "remove_download" => {
             let Some(a) = decode::<RemoveArgs>(args) else {
                 return bad_args::<RemoveArgs>();
             };
+            // P2-2 boundary check, same as id_arg().
+            if a.id.is_empty() || a.id.contains('/') {
+                return bad_args::<RemoveArgs>();
+            }
             let path = if a.purge.unwrap_or(false) {
                 format!("/tasks/{}?purge=true", a.id)
             } else {
@@ -229,16 +236,20 @@ pub async fn dispatch(mcp: &PeregrineMcp, name: &str, args: JsonObject) -> CallT
             let Some(a) = decode::<LimitArgs>(args) else {
                 return bad_args::<LimitArgs>();
             };
+            // P2-2 boundary check, same as id_arg().
+            if a.id.is_empty() || a.id.contains('/') {
+                return bad_args::<LimitArgs>();
+            }
             let body = json!({"bps": a.bps});
             call!("PUT", format!("/tasks/{}/limit", a.id), Some(&body), Task)
         }
         "get_download_segments" => {
-            let Some(a) = decode::<IdArgs>(args) else {
+            let Some(id) = id_arg(args) else {
                 return bad_args::<IdArgs>();
             };
             call!(
                 "GET",
-                format!("/tasks/{}/segments", a.id),
+                format!("/tasks/{}/segments", id),
                 None::<&u8>,
                 Vec<peregrine_api::task::SegmentView>
             )
@@ -296,6 +307,18 @@ struct LimitArgs {
 #[derive(Deserialize)]
 struct GlobalLimitArgs {
     bps: u64,
+}
+
+/// Decode an id-bearing argument set + boundary-check the id
+/// (M5.1 P2-2: reject `/`-containing ids BEFORE they hit the
+/// path — same rule the resource layer applies; a `/` would
+/// silently address a different route).
+fn id_arg(args: JsonObject) -> Option<String> {
+    let a: IdArgs = decode(args)?;
+    if a.id.is_empty() || a.id.contains('/') {
+        return None;
+    }
+    Some(a.id)
 }
 
 /// Decode typed args; `None` on shape mismatch (caller turns it

@@ -9,9 +9,11 @@
 //!   per-connection (the factory builds a fresh [`PeregrineMcp`]
 //!   per session; each carries its own subscription state).
 //!
-//! Both point at the same daemon socket; `--socket` overrides the
-//! default `~/.peregrine/daemon.sock`, `--events` overrides the
-//! daemon WS events URL.
+//! Both point at the same daemon socket; `--socket`/`PGRG_SOCKET`
+//! override the default exactly like the CLI (same
+//! `transport::socket_path` source — M5.1 P0-1: the two defaults
+//! must never drift apart again), `--events` overrides the daemon
+//! WS events URL.
 
 use std::path::PathBuf;
 
@@ -23,21 +25,26 @@ use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
 };
 
-/// Default daemon socket: `$HOME/.peregrine/daemon.sock` (the same
-/// default the CLI uses).
-fn default_socket() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".peregrine/daemon.sock")
+/// Default daemon socket: sourced from `transport::socket_path(None)`
+/// (honors `PGRG_SOCKET` / XDG_RUNTIME_DIR, falls back to
+/// /tmp/peregrine-<uid>) — THE same default the CLI and daemon use
+/// (M5.1 P0-1: a hand-rolled `$HOME/.peregrine/daemon.sock` here
+/// silently pointed at a socket nothing ever creates).
+fn default_socket() -> std::io::Result<PathBuf> {
+    peregrine_api::transport::socket_path(None)
 }
 
 #[derive(Parser)]
 #[command(name = "peregrine-mcp", about = "Peregrine MCP server")]
 struct Args {
-    /// Daemon UDS socket path
-    #[arg(long, default_value_t = default_socket().display().to_string())]
-    socket: String,
+    /// Daemon UDS socket path (default: same resolution as the CLI —
+    /// PGRG_SOCKET, then XDG_RUNTIME_DIR, then /tmp fallback).
+    /// R2' P2-4: NO `default_value_t` — clap builds Commands eagerly
+    /// (the default would run on every parse, panicking without io
+    /// context when XDG dirs are unwritable); the default resolves
+    /// lazily in `main()` with proper anyhow propagation.
+    #[arg(long)]
+    socket: Option<String>,
 
     /// Daemon WebSocket events URL (for push notifications)
     #[arg(long, default_value = DEFAULT_EVENTS_URL)]
@@ -47,8 +54,8 @@ struct Args {
     #[arg(long)]
     http: Option<String>,
 
-    /// Silence tracing output below WARN (stdio mode: logs go to
-    /// stderr, never stdout — stdout IS the protocol channel).
+    /// Tracing verbosity for stderr logs (stdio mode: logs go to
+    /// stderr, never stdout — stdout IS the protocol channel)
     #[arg(long, default_value_t = tracing::Level::INFO)]
     log_level: tracing::Level,
 }
@@ -61,7 +68,13 @@ fn main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
-    let socket = PathBuf::from(&args.socket);
+    // R2' P2-4: lazy default — resolution errors propagate as
+    // normal anyhow errors instead of a context-free panic from
+    // clap's eager `default_value_t` evaluation.
+    let socket = match args.socket {
+        Some(s) => PathBuf::from(s),
+        None => default_socket()?,
+    };
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;

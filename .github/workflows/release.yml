@@ -1,0 +1,43 @@
+name: release
+
+# M6-b: tag-driven release. Push a tag (`v*`) → build the locked
+# release, package via scripts/package.sh (tarball + sha256), and
+# attach to a GitHub Release. The desktop bundle rides its own
+# workflow (desktop.yml); this one ships the headless artifacts.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write # creating the Release requires it
+
+jobs:
+  headless:
+    name: tarball
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain (pinned to match rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@1.96.1
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Package (tarball + sha256)
+        run: bash scripts/package.sh
+
+      - name: Upload to the Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: peregrine-release-tarball
+          path: dist/
+          if-no-files-found: error

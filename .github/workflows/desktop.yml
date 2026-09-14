@@ -6,7 +6,7 @@ name: desktop
 # compiled and validated.
 on:
   push:
-    branches: [master]
+    branches: [main]
     paths:
       - "apps/desktop/**"
       - "crates/**"

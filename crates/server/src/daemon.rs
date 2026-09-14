@@ -86,20 +86,21 @@ impl DownloadPort for RoutingPort {
         &self,
         url: &str,
         sink: &std::path::Path,
+        purge_files: bool,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + '_>> {
         // BT is DIRECTED, not fanned out: its purge deletes the sink
         // path itself (torrent data), which would nuke a live
         // HTTP/HLS target if sprayed blindly. A BT source routes
         // deterministically, so route-then-purge is correct here.
         if peregrine_engine_bt::is_bt_source(url) {
-            return self.bt.purge(url, sink);
+            return self.bt.purge(url, sink, purge_files);
         }
         // Purge ALL sides: a URL that routes to HLS today may have
         // HTTP engine rows from a pre-M4 attempt (or vice versa after
         // a heuristic flip). Purging is idempotent — no downside.
-        let a = self.http.purge(url, sink);
-        let b = self.hls.purge(url, sink);
-        let c = self.ftp.purge(url, sink);
+        let a = self.http.purge(url, sink, purge_files);
+        let b = self.hls.purge(url, sink, purge_files);
+        let c = self.ftp.purge(url, sink, purge_files);
         Box::pin(async move {
             // ALL sides must run even if one fails (R2 P2-4):
             // short-circuiting the rest leaves stale engine state.

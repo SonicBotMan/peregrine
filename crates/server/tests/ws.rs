@@ -43,6 +43,7 @@ impl peregrine_scheduler::DownloadPort for IdlePort {
         &self,
         _url: &str,
         _sink: &std::path::Path,
+        _purge_files: bool,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + '_>> {
         Box::pin(async { Ok(()) })
     }

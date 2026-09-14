@@ -46,15 +46,14 @@ impl DownloadPort for BtAutoPort {
         &self,
         url: &str,
         sink: &Path,
+        purge_files: bool,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
         let engine = &self.engine;
         let url = url.to_string();
         let sink = sink.to_path_buf();
-        // R2' P1 (M5.1 P0-2 alignment): engine purge here means
-        // "drop engine-side state", NOT "delete user data" — data
-        // deletion is the caller's explicit choice and rides the
-        // purge=true path being threaded through REST/CLI/MCP in
-        // M5.1. Until then a plain remove keeps every byte.
-        Box::pin(async move { engine.purge(&url, &sink, false).await })
+        // M5.1 P0-2: `purge_files` now flows end-to-end from
+        // REST/CLI/MCP. The engine still refuses to delete data
+        // while sibling tasks hold the torrent (refcount).
+        Box::pin(async move { engine.purge(&url, &sink, purge_files).await })
     }
 }

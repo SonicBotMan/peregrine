@@ -19,7 +19,10 @@ pub struct Args {
     pub socket: Option<String>,
 
     /// Loopback TCP port override (shorthand for `--listen tcp:PORT`).
-    #[arg(long)]
+    /// Bare `--tcp` (no value) = 8800 — the port the MCP server's
+    /// zero-arg event push expects (M5.1 P1-1: the pair
+    /// `peregrined --tcp` ↔ `peregrine-mcp` works with no flags).
+    #[arg(long, num_args = 0..=1, default_missing_value = "8800")]
     pub tcp: Option<u16>,
 
     /// Task database path. Default: $XDG_DATA_HOME/peregrine/tasks.db
@@ -45,10 +48,20 @@ impl Args {
             return Listen::parse(&self.listen);
         }
         match (self.tcp, &self.socket) {
-            (Some(port), unix) => Ok(Listen::Tcp {
-                port,
-                also_unix: unix.as_deref().map(std::path::PathBuf::from),
-            }),
+            (Some(port), unix) => {
+                // Same rule as `Listen::parse("tcp:0")`: an
+                // ephemeral shorthand lies to --print-socket (it
+                // prints the SPEC, not the bound port).
+                if port == 0 {
+                    anyhow::bail!(
+                        "--tcp 0 is invalid: an explicit port is required (ephemeral ports break --print-socket discovery)"
+                    );
+                }
+                Ok(Listen::Tcp {
+                    port,
+                    also_unix: unix.as_deref().map(std::path::PathBuf::from),
+                })
+            }
             (None, Some(p)) => Ok(Listen::Unix(std::path::PathBuf::from(p))),
             (None, None) => Ok(Listen::default()),
         }

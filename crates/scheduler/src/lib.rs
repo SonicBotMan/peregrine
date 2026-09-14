@@ -80,10 +80,16 @@ pub trait DownloadPort: Send + Sync {
     /// resumes into a sparse mismatch. Failures are logged by the
     /// caller and never block the removal — a stale resume row is a
     /// degraded next-download, not a lost one.
+    /// Drop engine-side state for (url, sink). `purge_files`:
+    /// ALSO delete the user's downloaded data. Internal state
+    /// (resume rows, session-entry references) is ALWAYS cleaned —
+    /// it is not user data (B31: stale rows would resurrect ghost
+    /// resumes into mismatched sparse files).
     fn purge(
         &self,
         url: &str,
         sink: &std::path::Path,
+        purge_files: bool,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>>;
 
     /// Live-poke a running download's per-task rate limit
@@ -202,19 +208,35 @@ impl DownloadPort for HttpAutoPort {
         &self,
         url: &str,
         sink: &std::path::Path,
+        purge_files: bool,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
+        // Engine rows are ALWAYS cleaned (B31: a stale row would
+        // resurrect a ghost resume into a mismatched sparse file).
+        // `purge_files=true` ALSO deletes the sink: the caller (REST
+        // `?purge=true`, CLI `--purge`, MCP `purge: true`) promises
+        // data deletion at every layer — the HTTP engine must honor
+        // it too, not just FTP/HLS/BT (M5.1 R2' P1-1). Missing file
+        // is Ok — remove is idempotent at this layer as well.
         // Own the inputs before the async block: the elided
         // param lifetimes and the return `'_` can disagree when the
         // block captures them by reference.
         let url = url.to_string();
         let sink = sink.to_path_buf();
-        // Engine rows are keyed (url, sink); segment rows cascade on
+        // Segment rows are keyed (url, sink); they cascade on
         // task delete (storage invariant, tested there).
         Box::pin(async move {
             if let Some(state) = self.store.get_task(&url, &sink).await? {
                 self.store.delete_task(state.id).await?;
             }
-            Ok(())
+            if purge_files {
+                match tokio::fs::remove_file(&sink).await {
+                    Ok(()) => Ok(()),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                    Err(e) => Err(anyhow::anyhow!("purge {sink:?}: {e}")),
+                }
+            } else {
+                Ok(())
+            }
         })
     }
 
@@ -411,10 +433,10 @@ impl Scheduler {
     /// Remove a task. Idempotent (R2 review): a second remove — or
     /// one racing the worker's terminal write — reports success, so
     /// IPC callers can retry safely instead of parsing `NotFound`.
-    /// Partial files stay on disk — deleting user data is the
-    /// caller's (IPC command's) explicit choice, not the scheduler's
-    /// default.
-    pub async fn remove(&self, id: &TaskId) -> Result<(), TaskError> {
+    /// `purge=false` (the safe default) keeps user data on disk —
+    /// deleting it is the caller's explicit choice; engine-internal
+    /// state (resume rows, session refs) is always cleaned.
+    pub async fn remove(&self, id: &TaskId, purge: bool) -> Result<(), TaskError> {
         // Row first (url/sink needed for the engine purge below).
         let Some(row) = self.tm.get(id).await? else {
             return Ok(()); // idempotent (R2 review)
@@ -429,7 +451,7 @@ impl Scheduler {
         // Best-effort: failure logs and never blocks removal.
         if let Err(e) = self
             .port
-            .purge(&row.url, std::path::Path::new(&row.save_path))
+            .purge(&row.url, std::path::Path::new(&row.save_path), purge)
             .await
         {
             tracing::warn!(task = %id, error = %e, "engine purge after remove failed");

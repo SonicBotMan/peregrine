@@ -29,6 +29,11 @@ pub const RES_TASKS_URI: &str = "tasks://";
 const RECONNECT_MIN: Duration = Duration::from_millis(500);
 const RECONNECT_MAX: Duration = Duration::from_secs(10);
 
+/// Per-push bound. Generous for a healthy client draining a burst
+/// of progress events; short enough that a wedged peer only costs
+/// one bridge tick before the event is dropped (R2' P1-2).
+const PUSH_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Start the bridge exactly once per session. Idempotent.
 pub fn ensure_bridge(inner: Arc<Inner>, events_url: &str) {
     if inner.bridge.get().is_some() {
@@ -40,17 +45,39 @@ pub fn ensure_bridge(inner: Arc<Inner>, events_url: &str) {
 
 async fn bridge_loop(inner: Arc<Inner>, events_url: String) {
     let mut backoff = RECONNECT_MIN;
+    let mut consecutive_failures = 0u32;
     loop {
         match tokio_tungstenite::connect_async(&events_url).await {
             Ok((ws, _resp)) => {
                 backoff = RECONNECT_MIN;
+                consecutive_failures = 0;
                 tracing::debug!(url = %events_url, "event bridge connected");
                 if let Err(e) = bridge_session(&inner, ws).await {
+                    // A notify timeout / dead peer is a SESSION
+                    // signal (M5.1 P1-2): stop the bridge entirely —
+                    // a session whose peer is gone has no work left.
+                    if e.downcast_ref::<BridgeDead>().is_some() {
+                        tracing::debug!("event bridge: session gone, stopping");
+                        return;
+                    }
                     tracing::debug!(error = %e, "event bridge session ended");
                 }
             }
             Err(e) => {
-                tracing::debug!(error = %e, url = %events_url, "event bridge connect failed");
+                consecutive_failures += 1;
+                // M5.1 P1-1: a daemon that never comes up must not
+                // spam debug forever — surface it once at ERROR (the
+                // operator-facing signal), then drop back to debug.
+                if consecutive_failures == 3 {
+                    tracing::error!(
+                        url = %events_url,
+                        error = %e,
+                        "event bridge: daemon unreachable after 3 attempts \
+                         (is `peregrined --tcp` running?) — retrying quietly"
+                    );
+                } else {
+                    tracing::debug!(error = %e, url = %events_url, "event bridge connect failed");
+                }
             }
         }
         // Session ended (daemon restart / network drop): retry with
@@ -64,6 +91,12 @@ async fn bridge_loop(inner: Arc<Inner>, events_url: String) {
 
 /// One WS connection: read frames, map to URIs, push notifications
 /// for subscribed URIs through the session peer.
+/// Marker: the session peer is gone/wedged — the bridge should
+/// stop (per-session task leak fix, M5.1 P1-2).
+#[derive(Debug, thiserror::Error)]
+#[error("session peer is gone")]
+struct BridgeDead;
+
 async fn bridge_session(
     inner: &Arc<Inner>,
     ws: tokio_tungstenite::WebSocketStream<
@@ -94,7 +127,9 @@ async fn bridge_session(
             }
         };
         let uris = event_uris(&event);
-        notify(inner, &uris).await;
+        if notify(inner, &uris).await.is_err() {
+            anyhow::bail!(BridgeDead);
+        }
     }
     anyhow::bail!("event stream ended")
 }
@@ -117,11 +152,11 @@ fn event_uris(e: &EngineEvent) -> Vec<String> {
     vec![format!("task://{id}"), RES_TASKS_URI.to_string()]
 }
 
-async fn notify(inner: &Arc<Inner>, uris: &[String]) {
+async fn notify(inner: &Arc<Inner>, uris: &[String]) -> Result<(), BridgeDead> {
     let Some(peer) = inner.peer.get() else {
         // Peer not seen yet (no request since session start — only
         // possible if subscribe raced the very first exchange).
-        return;
+        return Ok(());
     };
     let hits: Vec<String> = {
         let subs = inner.subs.lock().await;
@@ -131,9 +166,27 @@ async fn notify(inner: &Arc<Inner>, uris: &[String]) {
         let notification = ServerNotification::ResourceUpdatedNotification(
             ResourceUpdatedNotification::new(ResourceUpdatedNotificationParam::new(uri.clone())),
         );
-        if let Err(e) = peer.send_notification(notification).await {
-            // A dead peer ends the session anyway; log and move on.
-            tracing::debug!(error = %e, %uri, "resource update push failed");
+        // M5.1 P1-2: bounded send — a wedged peer must not park the
+        // bridge on an unbounded await. R2' P1-2: a TIMEOUT is
+        // backpressure (an LLM host mid-generation not draining
+        // stdio), not death — drop THIS event's remaining pushes and
+        // keep bridging; only a hard send error (dead session)
+        // kills the bridge.
+        let sent = tokio::time::timeout(PUSH_TIMEOUT, peer.send_notification(notification)).await;
+        match sent {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                // Send failed: the session peer is dead — stop the
+                // bridge (M5.1 P1-2: leak fix; a dead session's
+                // bridge has no reader left).
+                tracing::debug!(error = %e, %uri, "resource update push failed");
+                return Err(BridgeDead);
+            }
+            Err(_) => {
+                tracing::debug!(%uri, "resource update push timed out (backpressure)");
+                return Ok(());
+            }
         }
     }
+    Ok(())
 }

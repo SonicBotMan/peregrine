@@ -70,6 +70,18 @@ struct Inner {
     bridge: OnceLock<tokio::task::JoinHandle<()>>,
 }
 
+impl Drop for Inner {
+    fn drop(&mut self) {
+        // R2' P2-5: the bridge holds an Arc<Inner> (cycle) and
+        // would outlive the session whenever no further matching
+        // event arrives to notice a dead peer — abort it when the
+        // LAST session reference goes away.
+        if let Some(h) = self.bridge.get() {
+            h.abort();
+        }
+    }
+}
+
 impl PeregrineMcp {
     pub fn new(socket: PathBuf, events_url: impl Into<String>) -> Self {
         Self {
@@ -142,7 +154,9 @@ impl ServerHandler for PeregrineMcp {
                 for t in tasks {
                     resources.push(resource(
                         &format!("task://{}", t.id),
-                        &format!("Download task {} ({})", t.id, t.url),
+                        // P2-7: a 2 KiB magnet URL would make the
+                        // listing unusable — cap the description.
+                        &format!("Download task {} ({})", t.id, truncate(&t.url, 80)),
                     ));
                 }
             }
@@ -253,6 +267,15 @@ impl PeregrineMcp {
         self.http
             .request_json("GET", &format!("/tasks/{id}"), None::<&u8>)
             .await
+    }
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let cut: String = s.chars().take(max - 1).collect();
+        format!("{cut}…")
     }
 }
 

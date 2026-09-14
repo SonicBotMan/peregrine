@@ -306,14 +306,21 @@ async fn put_settings(
     }))
 }
 
+/// `?purge=true` opt-in: also delete downloaded data (M5.1 P0-2).
+#[derive(serde::Deserialize)]
+pub struct RemoveQuery {
+    pub purge: Option<bool>,
+}
+
 async fn remove_task(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    QueryBody(q): QueryBody<RemoveQuery>,
 ) -> ApiResult<serde_json::Value> {
     state
         .0
         .sched
-        .remove(&TaskId::new(id))
+        .remove(&TaskId::new(id), q.purge.unwrap_or(false))
         .await
         .map_err(map_err)?;
     Ok((StatusCode::OK, Json(serde_json::json!({"removed": true}))))

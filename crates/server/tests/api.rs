@@ -37,6 +37,9 @@ struct HangingPort {
     cancelled: AtomicUsize,
     /// Live limit pokes received (url, bps) — M3-b.
     limits: std::sync::Mutex<Vec<(String, Option<u64>)>>,
+    /// Purge flags received — M5.1 P0-2 (purge=true must flow
+    /// REST → scheduler → port verbatim).
+    purge_flags: std::sync::Mutex<Vec<bool>>,
 }
 
 impl DownloadPort for HangingPort {
@@ -59,7 +62,9 @@ impl DownloadPort for HangingPort {
         &self,
         _url: &str,
         _sink: &std::path::Path,
+        purge_files: bool,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
+        self.purge_flags.lock().unwrap().push(purge_files);
         Box::pin(async { Ok(()) })
     }
 
@@ -81,6 +86,7 @@ async fn rig() -> Rig {
         entered: AtomicUsize::new(0),
         cancelled: AtomicUsize::new(0),
         limits: std::sync::Mutex::new(Vec::new()),
+        purge_flags: std::sync::Mutex::new(Vec::new()),
     });
     let daemon = Arc::new(
         Daemon::build_with_port(
@@ -198,6 +204,64 @@ async fn crud_roundtrip_returns_domain_tasks() {
     let (status, gone) = json_req(&rig.app, "GET", &format!("/tasks/{id}"), None).await;
     assert_eq!(status, 404);
     assert_eq!(gone["error"], "not_found");
+}
+
+#[tokio::test]
+async fn delete_purge_query_flows_to_engine_port() {
+    // M5.1 P0-2: `?purge=true` (and its absence) must reach the
+    // engine port's purge_files verbatim — data deletion is the
+    // caller's explicit choice at every layer.
+    let rig = rig().await;
+    let save = rig.dir.path().join("purge.bin");
+
+    let (status, created) = json_req(
+        &rig.app,
+        "POST",
+        "/tasks",
+        Some(serde_json::json!(AddTaskRequest {
+            url: "http://example.test/purge.bin".to_string(),
+            save_path: save.display().to_string(),
+            priority: Priority::Normal,
+        })),
+    )
+    .await;
+    assert_eq!(status, 201);
+    let id = created["id"].as_str().unwrap().to_string();
+    wait_for(|| rig.port.entered.load(Ordering::SeqCst) == 1).await;
+
+    // Default DELETE: no purge — data kept.
+    let (status, body) = json_req(&rig.app, "DELETE", &format!("/tasks/{id}"), None).await;
+    assert_eq!(status, 200, "{body}");
+    wait_for(|| rig.port.purge_flags.lock().unwrap().len() == 1).await;
+    assert!(!rig.port.purge_flags.lock().unwrap()[0]);
+
+    // Second task, purged remove.
+    let save2 = rig.dir.path().join("purge2.bin");
+    let (status, created2) = json_req(
+        &rig.app,
+        "POST",
+        "/tasks",
+        Some(serde_json::json!(AddTaskRequest {
+            url: "http://example.test/purge2.bin".to_string(),
+            save_path: save2.display().to_string(),
+            priority: Priority::Normal,
+        })),
+    )
+    .await;
+    assert_eq!(status, 201);
+    let id2 = created2["id"].as_str().unwrap().to_string();
+    wait_for(|| rig.port.entered.load(Ordering::SeqCst) == 2).await;
+
+    let (status, body) = json_req(
+        &rig.app,
+        "DELETE",
+        &format!("/tasks/{id2}?purge=true"),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    wait_for(|| rig.port.purge_flags.lock().unwrap().len() == 2).await;
+    assert!(rig.port.purge_flags.lock().unwrap()[1]);
 }
 
 #[tokio::test]
@@ -356,6 +420,7 @@ async fn settings_global_limit_roundtrip_and_persistence() {
                     entered: AtomicUsize::new(0),
                     cancelled: AtomicUsize::new(0),
                     limits: std::sync::Mutex::new(Vec::new()),
+                    purge_flags: std::sync::Mutex::new(Vec::new()),
                 });
                 p
             },

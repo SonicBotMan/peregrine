@@ -22,6 +22,21 @@ HLS（VOD + live 录制）；M5 MCP 服务器（10 工具/3 资源/事件推送�
 里程碑计划见 [docs/design/PROPOSAL.md](docs/design/PROPOSAL.md)，
 代码评审记录见 [docs/reviews/](docs/reviews/)。
 
+### MCP 快速开始
+
+```bash
+# 1. 启动 daemon（--tcp 裸开 = 8800，事件推送零配置）
+peregrined --tcp
+
+# 2. 启动 MCP（stdio 模式；socket 默认解析与 CLI 完全同源）
+peregrine-mcp
+```
+
+零参数即配对：`peregrined --tcp` 监听 127.0.0.1:8800，
+`peregrine-mcp` 的事件桥默认连 `ws://127.0.0.1:8800/events`——
+两边都不需要额外参数。daemon 侧 socket 解析（PGRG_SOCKET →
+XDG_RUNTIME_DIR → /tmp 回退）与 CLI/MCP 共用同一函数，不会再漂移。
+
 ### MCP 服务器已知限制（M5）
 
 - 订阅用的是 legacy `resources/subscribe`（Claude Desktop 当前实际所说方言）；
