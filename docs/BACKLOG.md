@@ -87,3 +87,4 @@ milestone noted. (R1 review, 2026-02-27)
 - B65 (轮D R2 P2): banner 状态机抽 lib/banner.svelte.ts + fake-timer 单测；open_sidecar_log 抽纯 FS 函数 tempdir 单测。
 - B66 (轮D R2 P3): desktop.yml 无 pipefail，dpkg-deb -f 自身失败时报误导文案（step 仍红，可容忍）。
 - B61 (M6-a): cargo-dist / systemd unit / 签名（deb 已有；CI 发布链路 M6-b 落）。
+- B67 (Dependabot/RUSTSEC-2024-0429): glib 0.18.5 被 tauri 2.x Linux 链（gtk 0.18/webkit2gtk 2.0/tray-icon 0.24）锁死，GHSA-wrw7-89jp-8q8g 修复版 0.20.0 不可达——已在 .github/dependabot.yml ignore（范围 `>= 0.15.0, < 0.20.0` 自动到期）。暴露面≈0：仅 `Variant::str_iter()` 触发 UB，代码树无调用点。**移除触发器**：Tauri 3（或任意 tauri 版本切到 gtk-rs 0.20 链）后删除该 ignore 块，随 tauri 升级一并带 glib ≥0.20。tauri 上游 issue #15035/#12048。

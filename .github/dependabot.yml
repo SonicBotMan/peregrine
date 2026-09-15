@@ -1,0 +1,26 @@
+# Dependabot: security updates only (no version-update PRs).
+#
+# open-pull-requests-limit: 0 disables version updates while leaving
+# security updates running (they are not subject to the limit).
+# https://docs.github.com/en/code-security/how-tos/secure-your-supply-chain/manage-your-dependency-security/customizing-dependabot-security-prs
+version: 2
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/apps/desktop/src-tauri"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
+    ignore:
+      # RUSTSEC-2024-0429 / GHSA-wrw7-89jp-8q8g: unsound VariantStrIter
+      # Iterator impls. INFO/unsound-class advisory; only reachable by
+      # calling glib::Variant::str_iter(), which nothing in our tree
+      # (or the tauri 2.x Linux stack that pulls glib in) calls.
+      #
+      # The fix (glib 0.20.0) is unreachable: tauri 2.x pins the whole
+      # gtk-rs 0.18 line (gtk 0.18 / webkit2gtk 2.0 / tray-icon 0.24).
+      # Unlock = Tauri 3 (or any tauri release moving to gtk-rs 0.20).
+      # Ignore scope mirrors the advisory range so it self-releases
+      # the moment >= 0.20.0 becomes resolvable.
+      # See BACKLOG B67 for the removal trigger.
+      - dependency-name: "glib"
+        versions: [">= 0.15.0, < 0.20.0"]
