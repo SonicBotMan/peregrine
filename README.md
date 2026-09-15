@@ -19,7 +19,7 @@
 | MCP 服务器（stdio + streamable-HTTP） | ✅ M5 |
 | 打包（tarball/deb/release CI） | ✅ M6 |
 
-263 项测试 · clippy 零告警 · 每里程碑三轮审查（自查→独立复审→反思），
+268 项测试 · clippy 零告警 · 每里程碑三轮审查（自查→独立复审→反思），
 全部记录在 [docs/reviews/](docs/reviews/)。
 
 ## 界面
