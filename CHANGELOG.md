@@ -1,5 +1,50 @@
 # Changelog
 
+## v2.0.0-alpha.2 — 2026-09-15
+
+Fix-and-polish round over alpha.1, all from real-machine
+acceptance (GUI walkthrough + CLI speed benchmarks) findings.
+
+### Fixed
+
+- **Re-add of an already-downloaded target no longer reports
+  `received=0`** — the scheduler sink now lifts its seed to the
+  engine's disk truth on session start (segmented skip-all
+  completion included), reports ABSOLUTE progress (base + session
+  delta) instead of the session-only delta, and keeps the resume
+  base monotone across same-sink downgrades. Verified by
+  revert-red regression tests (`readd_*` in scheduler suite).
+- **Completed tasks keep their segment plan rows** —
+  `GET /tasks/{id}/segments` now returns the terminal segment
+  table instead of an empty list (the GUI segment panel used to
+  blank out on completion). Re-adding a completed (url, sink)
+  resumes onto the done rows and completes with ZERO network
+  fetches. Rows are purged on task removal as before.
+- **`pg list` no longer truncates task ids** — the 21-char id is
+  the operating handle for `pg get/pause/remove`; the URL column
+  now absorbs the terminal width instead (`COLUMNS`, 80 fallback,
+  head-first clip keeping the filename tail).
+
+### Added
+
+- CLI: shell completions (`pg completions`), man pages
+  (`pg gen-man`), TCP client transport (`--socket tcp:HOST:PORT` /
+  `PGRG_SOCKET`).
+- systemd units (`peregrined.service`/`.socket`, `docs/systemd/`)
+  for socket-activated daemon deployment.
+- Desktop: single-instance guard, sidecar daemon auto-start with
+  explicit-path fallback; shell-completion generators.
+- README: GUI section with real screenshots (live segment panel,
+  completed list) + real-machine benchmark chart (tele2 mirror,
+  3.1× single-stream, md5-verified).
+
+### Review process
+
+Each fix round: R1 → independent R2 (delegate) → R3 reflection,
+dispositions in `docs/reviews/` (`P1-readd-received0-*.md`,
+`P2-contract-fixes-*.md`). 268 workspace tests, clippy
+`-D warnings` clean.
+
 ## v2.0.0-alpha.1 — 2026-09-13
 
 Complete rewrite. Peregrine v1 (Node/TypeScript) is frozen at

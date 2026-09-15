@@ -2279,7 +2279,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "peregrine-api"
-version = "2.0.0-alpha.1"
+version = "2.0.0-alpha.2"
 dependencies = [
  "anyhow",
  "bytes",
@@ -2297,7 +2297,7 @@ dependencies = [
 
 [[package]]
 name = "peregrine-cli"
-version = "2.0.0-alpha.1"
+version = "2.0.0-alpha.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -2320,7 +2320,7 @@ dependencies = [
 
 [[package]]
 name = "peregrine-engine-bt"
-version = "2.0.0-alpha.1"
+version = "2.0.0-alpha.2"
 dependencies = [
  "anyhow",
  "librqbit",
@@ -2335,7 +2335,7 @@ dependencies = [
 
 [[package]]
 name = "peregrine-engine-ftp"
-version = "2.0.0-alpha.1"
+version = "2.0.0-alpha.2"
 dependencies = [
  "peregrine-api",
  "suppaftp",
@@ -2347,7 +2347,7 @@ dependencies = [
 
 [[package]]
 name = "peregrine-engine-hls"
-version = "2.0.0-alpha.1"
+version = "2.0.0-alpha.2"
 dependencies = [
  "aes",
  "axum",
@@ -2368,7 +2368,7 @@ dependencies = [
 
 [[package]]
 name = "peregrine-engine-http"
-version = "2.0.0-alpha.1"
+version = "2.0.0-alpha.2"
 dependencies = [
  "axum",
  "futures",
@@ -2387,7 +2387,7 @@ dependencies = [
 
 [[package]]
 name = "peregrine-mcp"
-version = "2.0.0-alpha.1"
+version = "2.0.0-alpha.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -2411,7 +2411,7 @@ dependencies = [
 
 [[package]]
 name = "peregrine-scheduler"
-version = "2.0.0-alpha.1"
+version = "2.0.0-alpha.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -2431,7 +2431,7 @@ dependencies = [
 
 [[package]]
 name = "peregrine-server"
-version = "2.0.0-alpha.1"
+version = "2.0.0-alpha.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -2461,7 +2461,7 @@ dependencies = [
 
 [[package]]
 name = "peregrine-storage"
-version = "2.0.0-alpha.1"
+version = "2.0.0-alpha.2"
 dependencies = [
  "anyhow",
  "peregrine-api",
@@ -2473,7 +2473,7 @@ dependencies = [
 
 [[package]]
 name = "peregrine-task-manager"
-version = "2.0.0-alpha.1"
+version = "2.0.0-alpha.2"
 dependencies = [
  "anyhow",
  "peregrine-api",

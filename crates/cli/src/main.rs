@@ -277,20 +277,58 @@ fn human_bps(bps: u64) -> String {
 /// Plain-text table: stable columns, no pager, no colors. The GUI is
 /// the product surface; the CLI is for humans debugging a daemon.
 fn print_table(tasks: &[Task]) {
+    // Terminal width: COLUMNS env (set by most shells for TTYs)
+    // with an 80 fallback for pipes/CI. The id is NEVER truncated —
+    // it is the operating handle (`pg get/pause/remove <id>`), and
+    // a clipped id is unusable (acceptance round: take(14) ate 7 of
+    // the 21 id chars). The URL column absorbs the width budget
+    // instead, clipped head-first — scheme bytes are noise, the
+    // filename tail is what the eye needs.
+    let cols: usize = std::env::var("COLUMNS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|&c| c >= 40)
+        .unwrap_or(80);
+    let id_w = tasks
+        .iter()
+        .map(|t| t.id.as_str().chars().count())
+        .chain(std::iter::once(2))
+        .max()
+        .unwrap();
+    let url_w = url_width(cols, id_w);
     println!(
-        "{:<14} {:<9} {:>10} {:<7} URL",
+        "{:<id_w$} {:<9} {:>10} {:<6} URL",
         "ID", "STATUS", "RECEIVED", "PRIO"
     );
     for t in tasks {
         println!(
-            "{:<14} {:<9} {:>10} {:<7} {}",
-            t.id.as_str().chars().take(14).collect::<String>(),
+            "{:<id_w$} {:<9} {:>10} {:<6} {}",
+            t.id.as_str(),
             t.status,
             bytes_fmt(t.received_bytes),
             t.priority,
-            t.url
+            clip_url(&t.url, url_w)
         );
     }
+}
+
+/// Fixed columns + 3 gaps (id/status/received/prio) → what's left
+/// for URL, floored so a tiny terminal still shows a URL tail.
+fn url_width(cols: usize, id_w: usize) -> usize {
+    cols.saturating_sub(id_w + 1 + 9 + 1 + 10 + 1 + 6 + 1)
+        .max(8)
+}
+
+/// Head-first clip: keep the tail (filename, query) — the leading
+/// scheme/host bytes carry the least information per column.
+fn clip_url(url: &str, w: usize) -> String {
+    let n = url.chars().count();
+    if n <= w {
+        return url.to_string();
+    }
+    let take = w.saturating_sub(1).max(1);
+    let skip = n.saturating_sub(take);
+    format!("…{}", url.chars().skip(skip).collect::<String>())
 }
 
 fn bytes_fmt(n: u64) -> String {
@@ -323,6 +361,29 @@ mod tests {
         let args = Args::try_parse_from(["pg", "--socket", "/tmp/x.sock", "ping"]).unwrap();
         assert_eq!(args.socket.as_deref(), Some("/tmp/x.sock"));
         assert!(matches!(args.cmd, Cmd::Ping));
+    }
+
+    // #31: the id is the operating handle — the layout must budget
+    // for its FULL width, and URLs clip head-first instead.
+    #[test]
+    fn url_width_budgets_full_id_and_floors_url() {
+        // 21-char id at 80 cols: 80 - (21+1+9+1+10+1+6+1) = 30.
+        assert_eq!(url_width(80, 21), 30);
+        // Tiny terminal: URL floor keeps a usable tail.
+        assert_eq!(url_width(40, 21), 8);
+        // Absurd terminal (a pipe, cols below the floor): still 8.
+        assert_eq!(url_width(10, 21), 8);
+    }
+
+    #[test]
+    fn clip_url_keeps_tail_head_first() {
+        // exact fit — untouched
+        assert_eq!(clip_url("short", 10), "short");
+        // over budget: ellipsis + LAST w-1 chars (tail survives)
+        let clipped = clip_url("http://a/b/c/file.bin", 10);
+        assert_eq!(clipped.chars().count(), 10);
+        assert!(clipped.starts_with('…'));
+        assert!(clipped.ends_with("file.bin"));
     }
 
     #[test]

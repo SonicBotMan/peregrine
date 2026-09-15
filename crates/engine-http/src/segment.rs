@@ -131,8 +131,9 @@ pub fn plan_ranges(total: u64, cfg: &SegmentConfig) -> Vec<(u64, u64)> {
 
 /// Segmented download driver. Requires `job.expected_total == Some(_)`
 /// (unknown-size downloads must take the single-stream path) and a
-/// `Store` for cursor persistence. On success the task row is dropped
-/// — the completed file on disk is the truth.
+/// `Store` for cursor persistence. On success the plan rows are kept
+/// as the completed-state telemetry + re-add resume memory; cleanup
+/// is owned by task remove (see the completion bookkeeping below).
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_segmented_download(
     client: &HttpsClient,
@@ -485,14 +486,29 @@ async fn run_attempt(
             .map_err(|e| fatal(ApiError::Io(format!("sync {}: {e}", sink.display()))))?;
     }
 
-    // Final events + bookkeeping. `set_validator` BEFORE delete is moot
-    // for the row, but keeps the code honest if delete becomes soft.
+    // Final events + bookkeeping. The plan rows are DELIBERATELY
+    // KEPT after completion (GUI-verify R1 backlog → #31):
+    // (a) the completed-state `/tasks/{id}/segments` telemetry
+    //     reads them — deleting here emptied the GUI panel the
+    //     moment a task finished;
+    // (b) a same-(url, sink) re-add resumes onto the done rows,
+    //     skips every segment, reports base == total (seed-lift)
+    //     and completes instantly — the row IS the "already
+    //     downloaded" memory;
+    // (c) cleanup has an owner: task remove purges engine rows on
+    //     every path (scheduler `purge`, B31 + storage cascade).
+    // Stale rows are safe: the resume sink-length check replans
+    // if the file shrank/vanished. (R2 P1-1 note: the etag-change
+    // replan guard is NOT reachable on the production re-add path —
+    // Route 1 short-circuits before probe, so `last_etag` is None
+    // there; the two-ended-206 + total guards carry the defense.
+    // The `or(stored)` below keeps the row's validator from being
+    // erased by the zero-worker instant completion.)
     store
-        .set_validator(task_id, last_etag.as_deref())
-        .await
-        .map_err(|e| fatal(ApiError::Storage(e.to_string())))?;
-    store
-        .delete_task(task_id)
+        .set_validator(
+            task_id,
+            last_etag.as_deref().or(final_state.etag.as_deref()),
+        )
         .await
         .map_err(|e| fatal(ApiError::Storage(e.to_string())))?;
 

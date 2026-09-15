@@ -171,14 +171,13 @@ async fn fresh_ranged_large_routes_segmented() {
     assert!(out.completed);
     assert_eq!(out.total_bytes, Some(1000));
     assert_eq!(std::fs::read(&sink).unwrap(), body_bytes());
-    // Completed → row dropped.
-    assert!(
-        store
-            .get_task(&format!("http://{addr}/file"), &sink)
-            .await
-            .unwrap()
-            .is_none()
-    );
+    // Completed → rows kept, terminal (#31: telemetry + re-add).
+    let kept = store
+        .get_task(&format!("http://{addr}/file"), &sink)
+        .await
+        .unwrap()
+        .expect("plan rows must survive completion");
+    assert!(kept.segments.iter().all(|s| s.is_complete()));
     assert!(
         worker_gets.load(Ordering::SeqCst) >= 2,
         "segmented routing must actually fan out worker GETs, saw {}",

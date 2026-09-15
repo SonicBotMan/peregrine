@@ -183,14 +183,14 @@ async fn segmented_download_assembles_exact_file() {
     assert_eq!(out.bytes_written, 1000);
     let disk = std::fs::read(&sink).unwrap();
     assert_eq!(disk, body_bytes(), "segments must assemble byte-exact");
-    // Task row dropped on completion — file on disk is the truth.
-    assert!(
-        store
-            .get_task(&format!("http://{addr}/file"), &sink)
-            .await
-            .unwrap()
-            .is_none()
-    );
+    // Plan rows kept on completion (#31): terminal state for
+    // telemetry + re-add resume; removal purges them.
+    let kept = store
+        .get_task(&format!("http://{addr}/file"), &sink)
+        .await
+        .unwrap()
+        .expect("plan rows must survive completion");
+    assert!(kept.segments.iter().all(|s| s.is_complete()));
     // Final progress event is exactly the total.
     assert_eq!(rec.last(), (1000, Some(1000)));
 }
@@ -831,4 +831,56 @@ async fn cancelled_swarm_leaves_no_ghost_worker() {
         0,
         "a segment worker outlived the cancelled download (ghost)"
     );
+}
+
+/// #31 (GUI-verify R1 backlog): completion must NOT drop the plan
+/// rows — the completed-state `/tasks/{id}/segments` telemetry reads
+/// them, and a same-(url, sink) re-add resumes onto the done rows
+/// and completes without refetching.
+#[tokio::test]
+async fn completion_keeps_plan_rows_for_telemetry_and_readd() {
+    let addr = spawn(vec![("/file", get(closed_ranged))]).await;
+    let url = format!("http://{addr}/file");
+    let sink = temp_sink("keep-rows");
+    let store = Store::open_memory().unwrap();
+
+    let out = engine()
+        .download_segmented(
+            job(url.clone(), sink.clone()),
+            &std_cfg(),
+            &store,
+            Arc::new(Recorder::default()),
+            token(),
+            &peregrine_api::budget::BudgetChain::unlimited(),
+        )
+        .await
+        .unwrap();
+    assert!(out.completed);
+    assert_eq!(std::fs::read(&sink).unwrap(), body_bytes());
+
+    // Rows survive completion: telemetry reads them, all terminal.
+    let row = store.get_task(&url, &sink).await.unwrap().unwrap();
+    assert!(
+        row.segments.iter().all(|s| s.is_complete()),
+        "kept rows must be terminal: {:?}",
+        row.segments
+    );
+    assert_eq!(row.segments.iter().map(|s| s.done).sum::<u64>(), 1000);
+
+    // Re-add onto the kept rows: everything skips, completes
+    // instantly with zero session bytes.
+    let out2 = engine()
+        .download_segmented(
+            job(url, sink.clone()),
+            &std_cfg(),
+            &store,
+            Arc::new(Recorder::default()),
+            token(),
+            &peregrine_api::budget::BudgetChain::unlimited(),
+        )
+        .await
+        .unwrap();
+    assert!(out2.completed, "re-add must complete, got {out2:?}");
+    assert_eq!(out2.bytes_written, 0, "nothing left to fetch");
+    assert_eq!(std::fs::read(&sink).unwrap(), body_bytes());
 }
