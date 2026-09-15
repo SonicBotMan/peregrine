@@ -291,6 +291,20 @@ impl Daemon {
         if self.booted.swap(true, Ordering::SeqCst) {
             anyhow::bail!("daemon already started");
         }
+        // B24 orphan GC, BEFORE boot requeues anything: engine rows
+        // whose sink file is gone can never resume — drop them now so
+        // a requeued task against a deleted file starts FRESH instead
+        // of gluing onto rows that describe a nonexistent disk state.
+        // Best-effort: a GC failure logs and continues (stale rows are
+        // a cost, not a correctness risk).
+        match self.store.purge_missing_sinks().await {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(
+                rows = n,
+                "startup GC dropped engine rows with missing sinks"
+            ),
+            Err(e) => tracing::warn!(error = %e, "startup orphan GC failed"),
+        }
         let requeued = self.sched.tasks().boot().await?;
         // M3-b: the persisted global rate limit applies from the
         // first byte of the first task after boot (missing = 0).

@@ -225,6 +225,15 @@ pub struct DownloadOutcome {
     pub completed: bool,
     /// URL the bytes actually came from (after any redirects).
     pub final_url: String,
+    /// B34: `true` when the caller asked to resume from an offset
+    /// but the server answered the request with a FULL 200 body —
+    /// the engine truncated the sink and rewrote from zero, so the
+    /// resume offset the caller handed in was discarded. Callers
+    /// tracking cumulative bytes must rebase on 0 + `bytes_written`,
+    /// NOT `start_offset + bytes_written` (that double-counts the
+    /// pre-replay prefix). A fresh (non-resume) download is `false`
+    /// by definition — there was nothing to replay over.
+    pub replayed_from_zero: bool,
     /// The resource's CURRENT validator as served with this body
     /// (from the final response's ETag / Last-Modified), NOT the one
     /// the caller sent. After a 200-replay the old validator is stale;

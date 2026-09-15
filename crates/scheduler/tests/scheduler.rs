@@ -46,6 +46,18 @@ enum Script {
     /// Hang until cancelled, then STILL return `Ok` (a racing engine
     /// finish vs user remove — the CAS must drop this outcome).
     RaceOk { bytes: u64, total: Option<u64> },
+    /// Return `Ok` with `replayed_from_zero = true` and no progress
+    /// frames — the B34 200-replay outcome (server discarded the
+    /// resume offset; `bytes_written` counts from ZERO).
+    OkReplayed { bytes: u64, total: Option<u64> },
+    /// Declare the session base (engine's `on_session_base`) and
+    /// THEN return a B34 200-replay outcome — pins the interaction
+    /// the real engine produces: base first, replay after.
+    OkReplayedAfterBase {
+        base: u64,
+        bytes: u64,
+        total: Option<u64>,
+    },
     /// Fail immediately.
     Fail(ApiError),
     /// Declare a session base, then report `frames` frames
@@ -165,6 +177,7 @@ fn outcome(bytes: u64, total: Option<u64>) -> DownloadOutcome {
         completed: true,
         final_url: "http://test/file".into(),
         final_validator: None,
+        replayed_from_zero: false,
     }
 }
 
@@ -223,6 +236,17 @@ async fn run_script(
                 }
             }
             Ok(outcome(bytes, total))
+        }
+        Script::OkReplayed { bytes, total } => {
+            let mut o = outcome(bytes, total);
+            o.replayed_from_zero = true;
+            Ok(o)
+        }
+        Script::OkReplayedAfterBase { base, bytes, total } => {
+            p.on_session_base(base);
+            let mut o = outcome(bytes, total);
+            o.replayed_from_zero = true;
+            Ok(o)
         }
         Script::Fail(e) => Err(e),
         Script::Panic => {
@@ -623,6 +647,106 @@ async fn pause_mid_flight_keeps_paused_not_failed_and_lands_partial() {
 
 // ---------------------------------------------------------------------
 // 6. Resume requeues and finishes.
+
+#[tokio::test]
+async fn replayed_session_with_session_base_lands_on_absolute_byte_count() {
+    // R2 P2-4: the REAL engine calls `on_session_base(1000)` at
+    // session entry, then (server ignored Range) returns a
+    // 200-replay outcome. finish must rebase on 0 (replayed) —
+    // NOT keep the 1000 base — landing on 5000, not 6000/5000.
+    let dir = tempfile::tempdir().unwrap();
+    let rig = rig(
+        vec![
+            Script::AwaitCancel {
+                partial: 1000,
+                total: Some(100_000),
+            },
+            Script::OkReplayedAfterBase {
+                base: 1000,
+                bytes: 5000,
+                total: Some(100_000),
+            },
+        ],
+        1,
+    );
+    tokio::spawn(rig.sched.clone().run());
+
+    let t = add(&rig.sched, dir.path(), "f.bin", Priority::Normal).await;
+    wait_for("running", || {
+        Box::pin(status_is(&rig.sched, &t.id, TaskStatus::Running))
+    })
+    .await;
+    rig.sched.pause(&t.id).await.unwrap();
+    wait_for("paused", || {
+        Box::pin(status_is(&rig.sched, &t.id, TaskStatus::Paused))
+    })
+    .await;
+    std::fs::write(dir.path().join("f.bin"), vec![0u8; 1000]).unwrap();
+
+    rig.sched.resume(&t.id).await.unwrap();
+    wait_for("completed after base+replay resume", || {
+        Box::pin(status_is(&rig.sched, &t.id, TaskStatus::Completed))
+    })
+    .await;
+    let row = rig.sched.tasks().get(&t.id).await.unwrap().unwrap();
+    assert_eq!(
+        row.received_bytes, 5000,
+        "replay discards even a declared session base"
+    );
+
+    rig.sched.shutdown().await;
+}
+
+#[tokio::test]
+async fn replayed_from_zero_session_does_not_double_count_resume_offset() {
+    // B34 regression: the resumed session's engine hit a 200 full
+    // replay (server ignored Range / If-Range rejected) and rewrote
+    // the sink from zero. The caller's resume offset (1000, the
+    // on-disk partial) was DISCARDED — `finish` must rebase on 0,
+    // landing received == 5000, not 1000 + 5000.
+    let dir = tempfile::tempdir().unwrap();
+    let rig = rig(
+        vec![
+            Script::AwaitCancel {
+                partial: 1000,
+                total: Some(100_000),
+            },
+            Script::OkReplayed {
+                bytes: 5000,
+                total: Some(100_000),
+            },
+        ],
+        1,
+    );
+    tokio::spawn(rig.sched.clone().run());
+
+    let t = add(&rig.sched, dir.path(), "f.bin", Priority::Normal).await;
+    wait_for("running", || {
+        Box::pin(status_is(&rig.sched, &t.id, TaskStatus::Running))
+    })
+    .await;
+    rig.sched.pause(&t.id).await.unwrap();
+    wait_for("paused", || {
+        Box::pin(status_is(&rig.sched, &t.id, TaskStatus::Paused))
+    })
+    .await;
+    // The on-disk partial resume_job will see (the scripted engine
+    // never touches the file — write it ourselves).
+    std::fs::write(dir.path().join("f.bin"), vec![0u8; 1000]).unwrap();
+
+    rig.sched.resume(&t.id).await.unwrap();
+    wait_for("completed after replayed resume", || {
+        Box::pin(status_is(&rig.sched, &t.id, TaskStatus::Completed))
+    })
+    .await;
+    let row = rig.sched.tasks().get(&t.id).await.unwrap().unwrap();
+    assert_eq!(
+        row.received_bytes, 5000,
+        "200-replay discards the resume offset — no double count"
+    );
+
+    rig.sched.shutdown().await;
+}
 
 #[tokio::test]
 async fn resumed_session_rebases_onto_row_reading() {

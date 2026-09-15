@@ -54,8 +54,18 @@ pub async fn bind(path: &Path) -> anyhow::Result<(UnixListener, SocketIdentity)>
             }
         }
     }
-    let listener = UnixListener::bind(path)
-        .with_context(|| format!("bind unix socket at {}", path.display()))?;
+    // B13: bind under a tightened umask so the socket file is never
+    // briefly group/world-accessible between `bind()` and the
+    // explicit chmod below. The umask is process-wide; this runs on
+    // the startup path before any file-creating tasks are spawned,
+    // so the exposure is a microsecond window in which the ONLY
+    // effect on a racing creator would be an over-restrictive mode
+    // — the safe direction.
+    let prev_umask = unsafe { libc::umask(0o077) };
+    let listener =
+        UnixListener::bind(path).with_context(|| format!("bind unix socket at {}", path.display()));
+    unsafe { libc::umask(prev_umask) };
+    let listener = listener?;
     restrict_permissions(path)?;
     let meta = std::fs::metadata(path).context("stat socket for cleanup identity")?;
     Ok((

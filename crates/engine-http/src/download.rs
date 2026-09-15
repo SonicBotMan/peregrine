@@ -284,6 +284,7 @@ async fn run_download_impl(
                     completed: true,
                     final_url: current.to_string(),
                     final_validator: HttpEngine::response_validator(res.headers()),
+                    replayed_from_zero: false,
                 });
             }
             // Self-heal (QA-E2E Bug 3): a 416 whose offset does NOT
@@ -315,7 +316,7 @@ async fn run_download_impl(
                     resume: None,
                     expected_total,
                 };
-                return Box::pin(run_download_impl(
+                let healed_out = Box::pin(run_download_impl(
                     client.clone(),
                     max_redirects,
                     healed_job,
@@ -326,6 +327,15 @@ async fn run_download_impl(
                     vstore,
                 ))
                 .await;
+                // B34: the caller DID hand us a resume offset (it
+                // was a lie about the sink, but contractually an
+                // offset) and this retry discarded it — whatever the
+                // inner call reports, from the CALLER's viewpoint
+                // the session replayed from zero.
+                return healed_out.map(|mut o| {
+                    o.replayed_from_zero = true;
+                    o
+                });
             }
         }
         return Err(ApiError::Http {
@@ -575,12 +585,19 @@ async fn run_download_impl(
         None => true, // unknown size: EOF is all we can ask for
     };
 
+    // B34: this session was a full 200 replay over a caller-supplied
+    // resume offset (or the 416-heal restart above) — the offset was
+    // discarded; cumulative accounting must rebase on zero.
+    let replayed_from_zero = resume.as_ref().is_some_and(|c| c.start_offset > 0)
+        && matches!(write_mode, WriteMode::Truncate);
+
     Ok(DownloadOutcome {
         bytes_written: written,
         total_bytes: expected_total,
         completed,
         final_url: current.to_string(),
         final_validator: HttpEngine::response_validator(&headers),
+        replayed_from_zero,
     })
 }
 

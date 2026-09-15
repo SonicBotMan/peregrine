@@ -203,7 +203,7 @@ async fn resume_with_stored_validator_gets_206_append() {
         .await
         .unwrap();
 
-    engine
+    let outcome = engine
         .download_auto(
             DownloadJob {
                 url: url.clone(),
@@ -222,6 +222,10 @@ async fn resume_with_stored_validator_gets_206_append() {
         )
         .await
         .unwrap();
+
+    // B34: a clean 206 append is NOT a replay — the caller's resume
+    // offset stays valid for cumulative accounting.
+    assert!(!outcome.replayed_from_zero);
 
     // The server saw If-Range: "v1" on the resume request.
     assert!(
@@ -262,7 +266,7 @@ async fn changed_remote_triggers_full_rewrite() {
     // The remote mutates between sessions.
     *state.etag.lock().unwrap() = "v2";
 
-    engine
+    let outcome = engine
         .download_auto(
             DownloadJob {
                 url: url.clone(),
@@ -281,6 +285,12 @@ async fn changed_remote_triggers_full_rewrite() {
         )
         .await
         .unwrap();
+
+    // B34: the 200 full replay DISCARDED the 400-byte resume offset —
+    // the outcome says so, so cumulative callers rebase on zero
+    // instead of double-counting the pre-replay prefix.
+    assert!(outcome.replayed_from_zero);
+    assert_eq!(outcome.bytes_written, state.body().len() as u64);
 
     // If-Range WAS sent (and rejected) — the discriminator between
     // "we detected the change" and "the server never let us ask".

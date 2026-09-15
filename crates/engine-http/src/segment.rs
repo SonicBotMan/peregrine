@@ -523,6 +523,7 @@ async fn run_attempt(
         completed: true,
         final_url: url.clone(),
         final_validator: last_etag.map(IfRangeValidator::StrongEtag),
+        replayed_from_zero: false,
     })
 }
 

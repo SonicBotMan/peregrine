@@ -436,6 +436,7 @@ impl ProtocolEngine for FtpEngine {
                 completed: true,
                 final_url: url,
                 final_validator: None,
+                replayed_from_zero: false,
             })
         })
     }

@@ -370,6 +370,7 @@ impl HlsEngine {
             completed: true,
             final_url: effective_url,
             final_validator: None,
+            replayed_from_zero: false,
         })
     }
 

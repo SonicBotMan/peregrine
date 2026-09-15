@@ -315,6 +315,52 @@ impl Store {
         .await
         .context("join delete_task")?
     }
+
+    /// B24 orphan GC, run at daemon startup: delete every task row
+    /// (cascading its segments) whose SINK FILE no longer exists on
+    /// disk. A row without its file can never be resumed — the only
+    /// futures it has are a misleading resume attempt or, after a
+    /// redirect-target change, sitting orphaned forever. Rows whose
+    /// sink still exists are NEVER touched (a validator-only row is
+    /// B36's resume state and must survive reboots).
+    ///
+    /// Returns the number of rows dropped. Best-effort: rows whose
+    /// sink path cannot be stat'ed due to a TRANSIENT error are
+    /// LEFT ALONE (only a confirmed `NotFound` counts as gone).
+    pub async fn purge_missing_sinks(&self) -> Result<usize> {
+        let this = self.0.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut guard = this.lock().unwrap();
+            let rows: Vec<(i64, String)> = guard
+                .prepare("SELECT id, sink FROM tasks")
+                .context("listing tasks for GC")?
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .context("scanning tasks for GC")?
+                .collect::<rusqlite::Result<_>>()?;
+            // One transaction around the whole sweep: atomic (a
+            // mid-sweep failure leaves the DB consistent) and a
+            // single fsync for N rows instead of N commits (R2
+            // P2-3).
+            let tx = guard
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .context("opening GC transaction")?;
+            let mut dropped = 0usize;
+            for (id, sink) in rows {
+                let gone = std::fs::metadata(&sink)
+                    .map(|m| !m.is_file())
+                    .unwrap_or_else(|e| e.kind() == std::io::ErrorKind::NotFound);
+                if gone {
+                    tx.execute("DELETE FROM tasks WHERE id = ?1", params![id])
+                        .with_context(|| format!("GC deleting task row for missing sink {sink}"))?;
+                    dropped += 1;
+                }
+            }
+            tx.commit().context("committing GC sweep")?;
+            Ok(dropped)
+        })
+        .await
+        .context("join purge_missing_sinks")?
+    }
 }
 
 const SCHEMA: &str = r#"
@@ -348,6 +394,64 @@ mod tests {
             end,
             done,
         }
+    }
+
+    #[tokio::test]
+    async fn purge_missing_sinks_drops_only_rows_whose_file_is_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open_memory().unwrap();
+        let sink_a = dir.path().join("a.bin");
+        let sink_b = dir.path().join("b.bin");
+        std::fs::write(&sink_a, b"partial a").unwrap();
+        std::fs::write(&sink_b, b"partial b").unwrap();
+
+        // Row A: segmented (total + segments). Row B: B36
+        // validator-only. Row C: sink NEVER existed (transient
+        // crash between row-write and file-create).
+        let a = store
+            .upsert_task("http://x/a", &sink_a, Some(10), Some("\"va\""))
+            .await
+            .unwrap();
+        store.replace_segments(a, &[(0, 9)]).await.unwrap();
+        store.update_cursor(a, 0, 4).await.unwrap();
+        let _b = store
+            .upsert_validator_only("http://x/b", &sink_b, "\"vb\"")
+            .await
+            .unwrap();
+        let _c = store
+            .upsert_validator_only("http://x/c", &dir.path().join("c.bin"), "\"vc\"")
+            .await
+            .unwrap();
+
+        // A's file vanishes (user deleted it); B's survives.
+        std::fs::remove_file(&sink_a).unwrap();
+
+        let dropped = store.purge_missing_sinks().await.unwrap();
+        assert_eq!(dropped, 2, "rows A and C go, B stays");
+
+        assert!(
+            store
+                .get_task("http://x/a", &sink_a)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        // FK cascade took A's segment rows too (get via B is the
+        // live check; A's segments are unreachable — assert via
+        // reopen-free SQL is overkill here).
+        let b = store
+            .get_task("http://x/b", &sink_b)
+            .await
+            .unwrap()
+            .expect("validator-only row with live sink survives GC");
+        assert_eq!(b.etag.as_deref(), Some("\"vb\""));
+        assert!(
+            store
+                .get_task("http://x/c", &dir.path().join("c.bin"))
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]

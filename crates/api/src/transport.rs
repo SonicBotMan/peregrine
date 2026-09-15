@@ -64,17 +64,56 @@ fn current_uid() -> u32 {
 
 /// Default socket path: `$XDG_RUNTIME_DIR/peregrine/peregrine.sock`,
 /// falling back to a 0700 directory `/tmp/peregrine-<uid>/peregrine.sock`
-/// when XDG_RUNTIME_DIR is unset or empty. A bare file directly in /tmp
-/// would sit in a world-traversable directory during the
-/// bind→chmod window; an owner-only directory closes that.
+/// when XDG_RUNTIME_DIR is unset, empty, or fails validation. A bare
+/// file directly in /tmp would sit in a world-traversable directory
+/// during the bind→chmod window; an owner-only directory closes that.
 pub fn default_socket_path() -> std::io::Result<PathBuf> {
     let xdg = std::env::var_os("XDG_RUNTIME_DIR").filter(|s| !s.is_empty());
     if let Some(runtime_dir) = xdg {
-        let dir = PathBuf::from(runtime_dir).join("peregrine");
-        std::fs::create_dir_all(&dir)?;
-        return Ok(dir.join("peregrine.sock"));
+        // B13: trust XDG_RUNTIME_DIR only when it is owned by this
+        // uid and not group/other-writable. A hijacked or mispointed
+        // runtime dir (e.g. another user's, or /tmp itself) would put
+        // the control socket somewhere an attacker can reach — fall
+        // back to the private per-uid /tmp dir instead.
+        if xdg_runtime_dir_ok(&runtime_dir) {
+            let dir = PathBuf::from(runtime_dir).join("peregrine");
+            std::fs::create_dir_all(&dir)?;
+            return Ok(dir.join("peregrine.sock"));
+        }
+        // Explicitly-configured XDG rejected (missing / not a dir /
+        // wrong owner / group- or other-writable): say so — a silent
+        // fallback to the private /tmp dir hides a real
+        // misconfiguration from the operator (R2 P1-1). No-op when
+        // tracing isn't initialised (client side).
+        tracing::warn!(
+            xdg = %runtime_dir.to_string_lossy(),
+            "XDG_RUNTIME_DIR failed validation — falling back to /tmp socket dir"
+        );
     }
     Ok(tmp_fallback_dir()?.join("peregrine.sock"))
+}
+
+/// XDG_RUNTIME_DIR validation (B13): must exist, be a directory,
+/// owned by the current uid, and carry no group/other write bits
+/// (0700-style — the spec REQUIRES 0700; we accept anything without
+/// foreign WRITE, e.g. 0755 read-only traversal, since reading the
+/// socket path is harmless while writing to the socket is not).
+#[cfg(unix)]
+fn xdg_runtime_dir_ok(runtime_dir: &std::ffi::OsStr) -> bool {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let meta = match std::fs::metadata(runtime_dir) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    if !meta.is_dir() {
+        return false;
+    }
+    meta.uid() == current_uid() && (meta.permissions().mode() & 0o022) == 0
+}
+
+#[cfg(not(unix))]
+fn xdg_runtime_dir_ok(_runtime_dir: &std::ffi::OsStr) -> bool {
+    true
 }
 
 /// XDG-less fallback directory: owned by this uid, permissions pinned to
@@ -83,6 +122,19 @@ pub fn default_socket_path() -> std::io::Result<PathBuf> {
 fn tmp_fallback_dir() -> std::io::Result<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
     let dir = PathBuf::from(format!("/tmp/peregrine-{}", current_uid()));
+    // B13: reject a symlink at the fallback path. create_dir_all
+    // FOLLOWS symlinks, so one planted by a local attacker would put
+    // the socket (and the chmod below) into an arbitrary directory;
+    // the name embeds OUR uid, so no legitimate setup ever makes it
+    // a symlink — refuse loudly instead.
+    if let Ok(meta) = std::fs::symlink_metadata(&dir)
+        && meta.file_type().is_symlink()
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("refusing symlink at {}: remove it manually", dir.display()),
+        ));
+    }
     std::fs::create_dir_all(&dir)?;
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
     Ok(dir)
@@ -118,5 +170,28 @@ mod tests {
         let p = default_socket_path().unwrap();
         assert!(p.is_absolute());
         assert!(p.ends_with("peregrine.sock"));
+    }
+
+    #[test]
+    fn xdg_validation_rejects_foreign_writable_dir() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        // 0700, owned by us → trusted.
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(xdg_runtime_dir_ok(dir.path().as_os_str()));
+        // Group-writable → a co-tenant could replace the socket dir.
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o770)).unwrap();
+        assert!(!xdg_runtime_dir_ok(dir.path().as_os_str()));
+        // Other-writable → world.
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o702)).unwrap();
+        assert!(!xdg_runtime_dir_ok(dir.path().as_os_str()));
+        // Nonexistent → fall back.
+        assert!(!xdg_runtime_dir_ok(
+            std::path::Path::new("/nonexistent/xdg/dir").as_os_str()
+        ));
+        // A regular file, not a directory → fall back.
+        let f = dir.path().join("notadir");
+        std::fs::write(&f, b"").unwrap();
+        assert!(!xdg_runtime_dir_ok(f.as_os_str()));
     }
 }

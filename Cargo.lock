@@ -2289,10 +2289,12 @@ dependencies = [
  "libc 1.0.0-alpha.4",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tokio-util",
  "tower",
+ "tracing",
 ]
 
 [[package]]
@@ -2438,6 +2440,7 @@ dependencies = [
  "clap",
  "futures",
  "http-body-util",
+ "libc 1.0.0-alpha.4",
  "peregrine-api",
  "peregrine-engine-bt",
  "peregrine-engine-hls",

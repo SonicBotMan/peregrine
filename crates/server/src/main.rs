@@ -122,6 +122,11 @@ async fn main() -> anyhow::Result<()> {
     // Clone BEFORE the move-closures below; the TCP branch (and the
     // post-loop teardown) still needs `daemon`.
     let shutdown_token = daemon.cancel.clone();
+    // B38: arm the second-signal escape hatch BEFORE serving — see
+    // `force_exit_watchdog`. Spawned once here, not inside
+    // `shutdown_signal` (which runs once per listener).
+    #[cfg(unix)]
+    tokio::spawn(force_exit_watchdog(shutdown_token.clone()));
     for l in unix_listeners {
         let app = app.clone();
         let sig = shutdown_token.clone();
@@ -191,9 +196,10 @@ async fn main() -> anyhow::Result<()> {
 /// Exit cleanly on SIGINT (^C, interactive) and SIGTERM (systemd/kill).
 /// Both paths cancel the daemon-wide token FIRST (resident WS event
 /// streams exit immediately — `systemctl stop` no longer waits on
-/// upgraded connections until TimeoutStopSec), then funnel into
-/// axum's graceful shutdown, which drains in-flight requests before
-/// `remove_socket_file` runs.
+/// upgraded connections until TimeoutStopSec), then RETURN — which
+/// is what actually starts axum's graceful drain: axum stops the
+/// serve loop when the future passed to `with_graceful_shutdown`
+/// COMPLETES, not when the token cancels (B38 R2 P0-1).
 async fn shutdown_signal(cancel: tokio_util::sync::CancellationToken) {
     let ctrl_c = async {
         tokio::signal::ctrl_c()
@@ -214,4 +220,59 @@ async fn shutdown_signal(cancel: tokio_util::sync::CancellationToken) {
         _ = terminate => {},
     }
     cancel.cancel();
+}
+
+/// B38 second-signal escape hatch. Spawned ONCE before serving:
+/// registers both signal streams first (closing the race where a
+/// fast second signal lands before any handler exists), waits for
+/// the FIRST signal (cancelling the token alongside
+/// `shutdown_signal` — idempotent), then parks. A SECOND signal
+/// means the human lost patience with the drain — exit immediately
+/// with 128+signal semantics. The exit skips socket cleanup on
+/// purpose; a leftover socket file is stale-detected and removed by
+/// the next `peregrined` boot (see `uds::bind`), so a hard exit is
+/// safe where a hung drain is not.
+#[cfg(unix)]
+async fn force_exit_watchdog(cancel: tokio_util::sync::CancellationToken) {
+    let mut sigint = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+    {
+        Ok(s) => s,
+        Err(e) => {
+            // Not fatal — the graceful path still works; we just
+            // lose the force exit (R2 P2-2: no panic on the
+            // shutdown path over a failed fd).
+            tracing::warn!(error = %e, "installing second-SIGINT handler failed");
+            return;
+        }
+    };
+    let mut sigterm = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+    {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "installing second-SIGTERM handler failed");
+            return;
+        }
+    };
+    // First signal: whichever arrives. `shutdown_signal` observes
+    // the same broadcast and starts the drain; we only mirror the
+    // cancel so the watchdog also works if no listener future is
+    // parked on `shutdown_signal` yet (e.g. signal during boot).
+    let first = tokio::select! {
+        _ = sigint.recv() => "SIGINT",
+        _ = sigterm.recv() => "SIGTERM",
+    };
+    tracing::info!(signal = first, "shutdown signal — draining gracefully");
+    cancel.cancel();
+    // Second signal: force exit, with the conventional 128+n code
+    // for whichever signal it was (R2 P2-1).
+    tokio::select! {
+        _ = sigint.recv() => {
+            tracing::warn!("second SIGINT during drain — exiting immediately");
+            std::process::exit(130);
+        }
+        _ = sigterm.recv() => {
+            tracing::warn!("second SIGTERM during drain — exiting immediately");
+            std::process::exit(143);
+        }
+    }
 }

@@ -423,6 +423,7 @@ impl BtEngine {
                             completed: true,
                             final_url: job.url.clone(),
                             final_validator: None,
+                            replayed_from_zero: false,
                         });
                     }
                 }

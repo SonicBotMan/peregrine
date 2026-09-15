@@ -856,8 +856,18 @@ impl Worker {
                 // resume offset. Take the max of both: whichever
                 // channel saw the last byte, the final store write
                 // must not go backwards.
+                //
+                // B34: a 200 full replay discarded the resume offset
+                // (engine truncated and rewrote from zero) — rebasing
+                // on `resume_start` would double-count the pre-replay
+                // prefix; the session base is zero instead.
+                let resume_base = if out.replayed_from_zero {
+                    0
+                } else {
+                    resume_start
+                };
                 Arc::clone(sink)
-                    .finish(resume_start, out.bytes_written, out.total_bytes)
+                    .finish(resume_base, out.bytes_written, out.total_bytes)
                     .await;
                 // A lost CAS (task paused/removed in the window between
                 // the engine's `Ok` and this write) is a newer truth
