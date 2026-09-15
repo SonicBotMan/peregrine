@@ -62,7 +62,9 @@ impl HttpEngine {
             if job.expected_total.is_none() {
                 job.expected_total = row.total;
             }
-            return run_with_downgrade(self, job, cfg, store, progress, cancel, budget).await;
+            let original = job.url.clone();
+            return run_with_downgrade(self, job, original, cfg, store, progress, cancel, budget)
+                .await;
         }
 
         // Route 2: a single-stream partial in the caller's hands.
@@ -117,11 +119,18 @@ impl HttpEngine {
             let info = info.expect("use_segments implies Some");
             // The probe's final URL (post-redirect) is where workers
             // should aim; its validator is the If-Range they send.
+            // `original` stays the ROW KEY: every read side
+            // (scheduler resume_job, Route 1/2 lookups here) queries
+            // by the caller's URL, so a validator-only row written
+            // under the final URL would be unreachable forever
+            // (B36-R2 P2-3 key drift — fixed by threading the
+            // original through the downgrade restart).
+            let original = job.url.clone();
             job.url = info.url.clone();
             job.expected_total = info.content_length;
             job.resume = Some(ResumeContext::from_probe(&info, 0));
             tracing::debug!(total = ?info.content_length, "routing: segmented");
-            run_with_downgrade(self, job, cfg, store, progress, cancel, budget).await
+            run_with_downgrade(self, job, original, cfg, store, progress, cancel, budget).await
         } else {
             tracing::debug!("routing: single stream");
             self.download(job, progress, cancel, budget).await
@@ -134,9 +143,14 @@ impl HttpEngine {
 /// from zero. The restart drops the resume context — the partial on
 /// disk belongs to a segment plan we no longer trust, and the
 /// single-stream engine truncates on a validator-less replay anyway.
+/// Same 8-arg shape as `run_download_impl` (allowed there too):
+/// the thread-through of store/progress/cancel/budget + the
+/// original-URL key leaves no natural grouping worth a struct yet.
+#[allow(clippy::too_many_arguments)]
 async fn run_with_downgrade(
     engine: &HttpEngine,
     job: DownloadJob,
+    original_url: String,
     cfg: &crate::segment::SegmentConfig,
     store: &Store,
     progress: SharedProgressSink,
@@ -188,6 +202,11 @@ async fn run_with_downgrade(
             }
             let mut fresh = job;
             fresh.resume = None;
+            // Row-key unification (B36-R2 P2-3): the restart keys its
+            // validator row on the CALLER's URL, not the probe's
+            // final URL, so the next resume finds it. `job.url` still
+            // deletes the segment row under the key it was written.
+            fresh.url = original_url;
             engine.download(fresh, progress, cancel, budget).await
         }
         Err(e) => Err(e),

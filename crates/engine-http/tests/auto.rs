@@ -505,6 +505,132 @@ async fn downgrade_restarts_single_stream() {
     );
 }
 
+/// B36-R2 P2-3 (key drift, fixed): probe redirects `/file` → `/real`;
+/// the segmented attempt on `/real` is betrayed (200s) and downgrades;
+/// the restarted single stream must key its validator row on the
+/// CALLER's URL (`/file`), because every read side (scheduler
+/// resume, download_auto routing) looks the row up by the original
+/// URL. Before the fix the row landed under `/real` — written,
+/// flushes, and is unreachable forever (validator-less resume).
+#[tokio::test]
+async fn downgrade_validator_row_keys_original_url() {
+    let body = body_bytes();
+    let real = Router::new().route(
+        "/real",
+        any(move |req: Request| {
+            let body = body.clone();
+            async move {
+                if req.method() == axum::http::Method::HEAD {
+                    return (
+                        StatusCode::OK,
+                        [
+                            (&header::ACCEPT_RANGES, "bytes"),
+                            (&header::ETAG, "\"v1\""),
+                            (&header::CONTENT_LENGTH, "1000"),
+                        ],
+                        "",
+                    )
+                        .into_response();
+                }
+                let confirm = req
+                    .headers()
+                    .get(header::RANGE)
+                    .and_then(|v| v.to_str().ok())
+                    .is_some_and(|r| r == "bytes=0-0");
+                if confirm {
+                    let mut resp =
+                        (StatusCode::PARTIAL_CONTENT, body[..1].to_vec()).into_response();
+                    let h = resp.headers_mut();
+                    h.insert(
+                        header::CONTENT_RANGE,
+                        HeaderValue::from_static("bytes 0-0/1000"),
+                    );
+                    h.insert(header::ETAG, HeaderValue::from_static("\"v1\""));
+                    return resp;
+                }
+                if req.headers().contains_key(header::RANGE) {
+                    // Worker betrayal — triggers SingleStreamRequired.
+                    let mut resp = (StatusCode::OK, body.clone()).into_response();
+                    resp.headers_mut()
+                        .insert(header::ETAG, HeaderValue::from_static("\"v1\""));
+                    return resp;
+                }
+                // Bare GET on /real answers 200 like a real mirror —
+                // so a pre-fix restart keyed on /real FAILS the row
+                // assertion itself (not a 404 artifact) (R2 P3-1).
+                let mut resp = (StatusCode::OK, body.clone()).into_response();
+                resp.headers_mut()
+                    .insert(header::ETAG, HeaderValue::from_static("\"v1\""));
+                resp
+            }
+        }),
+    );
+    let body2 = body_bytes();
+    let app = Router::new()
+        .route(
+            "/file",
+            // The caller's URL: HEAD redirects to /real (probe chase);
+            // the downgrade restart's GET lands here for the full body.
+            any(move |req: Request| {
+                let body = body2.clone();
+                async move {
+                    if req.method() == axum::http::Method::HEAD {
+                        return (StatusCode::FOUND, [(&header::LOCATION, "/real")], "")
+                            .into_response();
+                    }
+                    let mut resp = (StatusCode::OK, body.clone()).into_response();
+                    resp.headers_mut()
+                        .insert(header::ETAG, HeaderValue::from_static("\"v1\""));
+                    resp
+                }
+            }),
+        )
+        .merge(real);
+    let addr = spawn(app).await;
+    let sink = temp_sink("downgrade-key");
+    let store = Store::open_memory().unwrap();
+    // The engine writes validator rows only when built with the
+    // store (daemon wiring injects it; plain `new()` skips writes).
+    let eng = HttpEngine::new()
+        .unwrap()
+        .with_validator_store(store.clone());
+    let original = format!("http://{addr}/file");
+    let final_url = format!("http://{addr}/real");
+
+    let out = eng
+        .download_auto(
+            peregrine_api::DownloadJob {
+                url: original.clone(),
+                sink: sink.clone(),
+                resume: None,
+                expected_total: None,
+            },
+            &cfg(),
+            &store,
+            Arc::new(Recorder::default()),
+            token(),
+            &peregrine_api::budget::BudgetChain::unlimited(),
+        )
+        .await
+        .unwrap();
+
+    assert!(out.completed);
+    assert_eq!(std::fs::read(&sink).unwrap(), body_bytes());
+    // THE row lives under the ORIGINAL url, validator-only shape.
+    let row = store
+        .get_task(&original, &sink)
+        .await
+        .unwrap()
+        .expect("validator row must be keyed on the original URL");
+    assert_eq!(row.total, None, "validator-only row never carries a total");
+    assert_eq!(row.etag.as_deref(), Some("\"v1\""));
+    // And no orphan under the probe's final URL.
+    assert!(
+        store.get_task(&final_url, &sink).await.unwrap().is_none(),
+        "no validator row may be keyed on the final URL"
+    );
+}
+
 /// A live (never-cancelled) token for tests that don't exercise cancellation.
 fn token() -> CancellationToken {
     CancellationToken::new()

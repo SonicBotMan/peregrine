@@ -1,5 +1,44 @@
 # Changelog
 
+## Unreleased (post-alpha.3 hardening rounds)
+
+Five engineering rounds driven by the QA-E2E audit and backlog
+triage (B34/B38/B13/B24, B59, B52/B56/B50, B39/B41/B42,
+B36-residual).
+
+### Fixed
+
+- **416 self-heal**: a resume whose offset doesn't settle as
+  "already complete" (sparse-preallocated sink, mutated file,
+  lying mirrors) restarts once from zero instead of failing
+  forever. `replayed_from_zero` accounting keeps progress honest
+  when a server ignores Range and rewrites the whole body (B34).
+- **HLS finalize on cancel/pause**: an interrupted merge now
+  salvages whatever segments landed instead of leaking them;
+  permanent 4xx on a segment fails fast instead of retrying
+  forever; EXT-X-MAP init segments get bounded retries (B50/B52
+  sibling fixes in engine-ftp: resume-missing and SIZE-skew
+  errors are human-readable, split by direction).
+- **BT cross-restart purge**: a torrent removed with files kept
+  can be re-added cleanly after a daemon restart (precise data
+  paths tracked in a purge side table; magnet `bt://` links are
+  rejected up front with a clear message) (B59).
+- **Single-stream resume validators**: `If-Range` revalidation on
+  every resume; the downgrade path keys its validator row on the
+  caller's URL (was: unreachable under the redirect target);
+  `Last-Modified` validators must be valid RFC 7231 dates
+  (garbage degrades to validator-less resume) (B36 + residual).
+- **Daemon shutdown**: second Ctrl-C no longer kills the process
+  mid-cleanup; stale-socket probe heals at boot; orphan task rows
+  GC'd when their sink file is gone (B38/B13/B24).
+
+### Changed
+
+- Desktop: UI action failures raise a transient error banner
+  (B39); the sidecar daemon logs to `<log dir>/peregrined.log`
+  (release installs have no console) (B41); the deb CI gate
+  verifies `Depends` actually includes webkit2gtk (B42).
+
 ## v2.0.0-alpha.3 — 2026-09-15
 
 Packaging repair release over alpha.2 (the alpha.2 tarball shipped
