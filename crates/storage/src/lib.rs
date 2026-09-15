@@ -273,6 +273,35 @@ impl Store {
         .context("join set_validator")?
     }
 
+    /// B36: insert-or-refresh a validator-ONLY row — the write side
+    /// of single-stream resume validation. Unlike [`Self::upsert_task`]
+    /// this NEVER touches `total`: a concurrent segmented session's
+    /// row (total = Some) keeps its meaning, and a fresh single-stream
+    /// row is created with total = NULL so Route 1 (segmented resume)
+    /// never claims it.
+    pub async fn upsert_validator_only(
+        &self,
+        url: &str,
+        sink: &Path,
+        etag: &str,
+    ) -> Result<TaskId> {
+        let url = url.to_string();
+        let sink = sink.to_string_lossy().into_owned();
+        let etag = etag.to_string();
+        let this = self.0.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = this.lock().unwrap();
+            conn.execute(
+                "INSERT INTO tasks (url, sink, total, etag) VALUES (?1, ?2, NULL, ?3)\n                 ON CONFLICT(url, sink)\n                 DO UPDATE SET etag = ?3",
+                params![url, sink, etag],
+            )
+            .context("upserting validator-only row")?;
+            Ok(TaskId(conn.last_insert_rowid()))
+        })
+        .await
+        .context("join upsert_validator_only")?
+    }
+
     /// Drop a task and (via FK cascade) its segments. Called when a
     /// download completes — the file on disk is the truth now.
     pub async fn delete_task(&self, task: TaskId) -> Result<()> {

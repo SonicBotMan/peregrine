@@ -197,8 +197,19 @@ pub(crate) async fn run_download(
     progress: SharedProgressSink,
     cancel: tokio_util::sync::CancellationToken,
     budget: &peregrine_api::budget::BudgetChain,
+    vstore: Option<&peregrine_storage::Store>,
 ) -> Result<DownloadOutcome, ApiError> {
-    run_download_impl(client, max_redirects, job, progress, cancel, budget, false).await
+    run_download_impl(
+        client,
+        max_redirects,
+        job,
+        progress,
+        cancel,
+        budget,
+        false,
+        vstore,
+    )
+    .await
 }
 
 // `healed`: set when this session is already the one-bounded restart
@@ -213,6 +224,7 @@ async fn run_download_impl(
     cancel: tokio_util::sync::CancellationToken,
     budget: &peregrine_api::budget::BudgetChain,
     healed: bool,
+    vstore: Option<&peregrine_storage::Store>,
 ) -> Result<DownloadOutcome, ApiError> {
     // Fast-out on a pre-cancelled token (M2-b R2 P1-3): without this,
     // a paused task still pays the redirect chase and — worse — a
@@ -311,6 +323,7 @@ async fn run_download_impl(
                     cancel,
                     budget,
                     true,
+                    vstore,
                 ))
                 .await;
             }
@@ -401,6 +414,30 @@ async fn run_download_impl(
             tracing::debug!(probe = ?expected_total, actual = t, "total size corrected");
         }
         expected_total = Some(t);
+    }
+
+    // B36 write side: persist THIS response's validator (strong
+    // etag / Last-Modified, wire form) keyed by (url, sink) at the
+    // FIRST response of the session — so even a pause/crash right
+    // after these headers leaves the row carrying the validator the
+    // NEXT session should send as `If-Range`. A changed remote then
+    // answers 200 (If-Range rejected) → the `Truncate` branch above
+    // rewrites from zero instead of gluing a mixed body. Best
+    // effort: a store failure degrades to validator-less resume
+    // (today's behavior), never fails the download.
+    //
+    // `upsert_validator_only` creates a total=NULL row (Route 1
+    // keys segmented resume on `total IS NOT NULL`, so a
+    // single-stream row must never carry one) and, on conflict,
+    // refreshes ONLY the etag — a concurrent segmented session's
+    // total-bearing row is never clobbered (R2 P1-1).
+    if let Some(store) = vstore
+        && let Some(v) = HttpEngine::response_validator(&headers)
+    {
+        let wire = v.wire().to_string();
+        if let Err(e) = store.upsert_validator_only(&url, &sink, &wire).await {
+            tracing::warn!(error = %e, url, "persisting resume validator failed");
+        }
     }
 
     let mut file = HttpEngine::open_sink(&sink, write_mode).await?;

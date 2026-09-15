@@ -50,7 +50,7 @@ impl HttpEngine {
             .get_task(&job.url, &job.sink)
             .await
             .map_err(|e| ApiError::Storage(e.to_string()))?;
-        if let Some(row) = existing.filter(|t| t.total.is_some()) {
+        if let Some(row) = existing.clone().filter(|t| t.total.is_some()) {
             tracing::debug!("store row present — resuming segmented");
             // The row is the authority for a total the caller didn't
             // provide; one it DID provide outranks the row (the row
@@ -68,6 +68,30 @@ impl HttpEngine {
         // Route 2: a single-stream partial in the caller's hands.
         if job.resume.is_some() {
             tracing::debug!("resume context present — single stream");
+            // B36 read side: a row WITHOUT a total is the
+            // single-stream session's validator record (persisted at
+            // the previous session's first response — see
+            // run_download_impl). Feed it as the resume `If-Range`:
+            // an unchanged remote answers 206 and the append
+            // proceeds; a CHANGED remote answers 200 and the
+            // truncate branch rewrites from zero — instead of the
+            // silent mixed-body glue this used to be. A total-bearing
+            // row never reaches here (Route 1 took it), and an
+            // absent/weak validator degrades to validator-less
+            // resume (exactly today's behavior). A caller-provided
+            // validator (probe-fresh) outranks the row: the row is
+            // at least one session old, and the worst case of
+            // either choice is one safe full replay (R2 P2-5).
+            if let Some(v) = existing
+                .as_ref()
+                .and_then(|r| r.etag.as_deref())
+                .and_then(peregrine_api::IfRangeValidator::from_wire)
+                && let Some(ctx) = job.resume.as_mut()
+                && ctx.validator.is_none()
+            {
+                tracing::debug!(validator = ?v, "resume: row validator -> If-Range");
+                ctx.validator = Some(v);
+            }
             return self.download(job, progress, cancel, budget).await;
         }
 

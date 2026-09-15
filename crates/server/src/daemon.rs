@@ -195,7 +195,11 @@ impl Daemon {
         seg_cfg: SegmentConfig,
     ) -> anyhow::Result<Self> {
         Self::assemble(db_path, sched_cfg, |store, global| {
-            let engine = Arc::new(HttpEngine::new()?);
+            // Same shared store as HttpAutoPort (B32: ONE Store
+            // instance everywhere) — wired into the engine so the
+            // single-stream first response persists its validator
+            // (B36 resume If-Range).
+            let engine = Arc::new(HttpEngine::new()?.with_validator_store(store.clone()));
             let http: Arc<dyn DownloadPort> = Arc::new(HttpAutoPort::new(
                 engine,
                 seg_cfg,

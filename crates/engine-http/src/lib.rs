@@ -77,6 +77,12 @@ pub const USER_AGENT: &str = concat!("peregrine/", env!("CARGO_PKG_VERSION"));
 pub struct HttpEngine {
     client: HttpsClient,
     max_redirects: usize,
+    /// B36 write side: when the daemon wires one in, the FIRST
+    /// response's validator (strong etag / Last-Modified) is
+    /// persisted per (url, sink) so a later resume can send
+    /// `If-Range` and detect a changed remote. `None` in tests and
+    /// standalone engine use — behavior degrades to today's.
+    validator_store: Option<peregrine_storage::Store>,
 }
 
 impl HttpEngine {
@@ -93,7 +99,16 @@ impl HttpEngine {
         Ok(Self {
             client: https_client()?,
             max_redirects,
+            validator_store: None,
         })
+    }
+
+    /// Attach the shared store for validator persistence (B36).
+    /// Builder-style; the daemon calls this with the same `Store`
+    /// handed to `download_auto`.
+    pub fn with_validator_store(mut self, store: peregrine_storage::Store) -> Self {
+        self.validator_store = Some(store);
+        self
     }
 }
 
@@ -146,8 +161,18 @@ impl ProtocolEngine for HttpEngine {
         let client = self.client.clone();
         let max_redirects = self.max_redirects;
         let budget = budget.clone(); // owned by the boxed future ('static)
+        let vstore = self.validator_store.clone();
         Box::pin(async move {
-            download::run_download(client, max_redirects, job, progress, cancel, &budget).await
+            download::run_download(
+                client,
+                max_redirects,
+                job,
+                progress,
+                cancel,
+                &budget,
+                vstore.as_ref(),
+            )
+            .await
         })
     }
 

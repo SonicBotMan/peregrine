@@ -41,6 +41,38 @@ pub enum IfRangeValidator {
     LastModified(String),
 }
 
+impl IfRangeValidator {
+    /// Rebuild a validator from its stored wire form (the exact
+    /// string sent as `If-Range`: a quoted strong etag or an
+    /// http-date). B36's read side: the engine persists the wire
+    /// form in the task row and reconstructs it on resume.
+    ///
+    /// Type recovery is by shape: etags are quoted (`"v1"`),
+    /// http-dates start with a weekday name. A weak etag (`W/"…"`)
+    /// can never back `If-Range` (RFC 7233 §3.2) → `None`, matching
+    /// `from_probe`'s refusal. A malformed quoted string is still
+    /// treated as an etag — the worst case is a no-match `If-Range`,
+    /// which degrades to a safe full replay.
+    pub fn from_wire(wire: &str) -> Option<Self> {
+        if wire.starts_with("W/") {
+            return None;
+        }
+        if wire.starts_with('"') {
+            Some(IfRangeValidator::StrongEtag(wire.to_string()))
+        } else {
+            Some(IfRangeValidator::LastModified(wire.to_string()))
+        }
+    }
+
+    /// The exact string to place in the `If-Range` header.
+    pub fn wire(&self) -> &str {
+        match self {
+            IfRangeValidator::StrongEtag(e) => e.as_str(),
+            IfRangeValidator::LastModified(d) => d.as_str(),
+        }
+    }
+}
+
 /// What the downloader must know to resume a partial file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ResumeContext {
@@ -250,6 +282,38 @@ mod tests {
         info.last_modified = None;
         let r = ResumeContext::from_probe(&info, 0);
         assert_eq!(r.validator, None);
+    }
+
+    #[test]
+    fn from_wire_round_trips_both_variants() {
+        // Strong etag: quoted → StrongEtag, wire out unchanged.
+        let e = IfRangeValidator::from_wire("\"v1\"").unwrap();
+        assert_eq!(e, IfRangeValidator::StrongEtag("\"v1\"".into()));
+        assert_eq!(e.wire(), "\"v1\"");
+        // http-date: unquoted → LastModified, wire out unchanged.
+        let lm = IfRangeValidator::from_wire("Mon, 07 Sep 2026 00:00:00 GMT").unwrap();
+        assert_eq!(
+            lm,
+            IfRangeValidator::LastModified("Mon, 07 Sep 2026 00:00:00 GMT".into())
+        );
+        assert_eq!(lm.wire(), "Mon, 07 Sep 2026 00:00:00 GMT");
+    }
+
+    #[test]
+    fn from_wire_refuses_weak_etag() {
+        // A weak etag can never back If-Range (RFC 7233 §3.2).
+        assert!(IfRangeValidator::from_wire("W/\"v1\"").is_none());
+    }
+
+    #[test]
+    fn from_wire_malformed_unquoted_maps_to_last_modified_safely() {
+        // A bare unquoted token is shaped like a date, not an etag —
+        // it rebuilds as LastModified. Worst case the reconstructed
+        // If-Range never matches → 200 full replay (safe direction);
+        // the wire form is preserved either way, so no corruption.
+        let v = IfRangeValidator::from_wire("v1").unwrap();
+        assert_eq!(v, IfRangeValidator::LastModified("v1".into()));
+        assert_eq!(v.wire(), "v1");
     }
 
     #[test]
