@@ -196,11 +196,18 @@ impl Daemon {
     ) -> anyhow::Result<Self> {
         Self::assemble(db_path, sched_cfg, |store, global| {
             let engine = Arc::new(HttpEngine::new()?);
-            let http: Arc<dyn DownloadPort> =
-                Arc::new(HttpAutoPort::new(engine, seg_cfg, store, global.clone()));
-            let hls: Arc<dyn DownloadPort> = Arc::new(HlsAutoPort::new(global.clone())?);
-            let ftp: Arc<dyn DownloadPort> =
-                Arc::new(peregrine_scheduler::FtpAutoPort::new(global.clone()));
+            let http: Arc<dyn DownloadPort> = Arc::new(HttpAutoPort::new(
+                engine,
+                seg_cfg,
+                store.clone(),
+                global.clone(),
+            ));
+            let hls: Arc<dyn DownloadPort> =
+                Arc::new(HlsAutoPort::new(global.clone(), store.clone())?);
+            let ftp: Arc<dyn DownloadPort> = Arc::new(peregrine_scheduler::FtpAutoPort::new(
+                global.clone(),
+                store.clone(),
+            ));
             let bt: Arc<dyn DownloadPort> = Arc::new(peregrine_scheduler::BtAutoPort::new());
             Ok(Arc::new(RoutingPort { http, hls, ftp, bt }))
         })

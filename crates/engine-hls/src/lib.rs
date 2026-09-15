@@ -119,6 +119,96 @@ impl HlsEngine {
         dir.join(format!("{seq:012}{ext}"))
     }
 
+    /// Gap-tolerant salvage of a cancelled live recording (QA-E2E
+    /// Bug 1, worker-side finalize). DISK-DISCOVERED — no playlist in
+    /// hand: scans `<sink>.parts/` for `{seq:012}.ts` files and
+    /// concatenates them in seq order, holes tolerated (the live
+    /// window slides; a seq we never fetched is skipped, not fatal
+    /// — unlike the strict `merge_parts`, which refuses gaps), with
+    /// `init.mp4` first when present. Same tmp+rename atomicity as
+    /// `merge_parts`; on success the parts dir is removed.
+    ///
+    /// LIMITATION (v1): the aborted session's AES keys lived only in
+    /// its memory, so an encrypted stream salvages to ciphertext —
+    /// an unplayable file. Logged by the caller; a playlist-snapshot
+    /// (`salvage.json`) that lets finalize re-fetch keys is BACKLOG.
+    pub async fn salvage_merge(sink: &Path) -> Result<u64, HlsError> {
+        use tokio::io::AsyncWriteExt;
+
+        let dir = Self::parts_dir(sink);
+        sweep_tmp(&dir).await; // stale `*.tmp` is debris, never data
+        let mut seqs: Vec<(u64, std::path::PathBuf)> = Vec::new();
+        let mut has_init = false;
+        let mut rd = match tokio::fs::read_dir(&dir).await {
+            Ok(rd) => rd,
+            // No parts dir (never started / already purged): a
+            // nothing-to-salvage, not an error — remove() may have
+            // raced the finalize and deleted it first (harmless).
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(e) => return Err(e.into()),
+        };
+        while let Some(entry) = rd.next_entry().await? {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name == "init.mp4" {
+                has_init = true;
+            } else if let Some(seq) = name.strip_suffix(".ts")
+                && let Ok(seq) = seq.parse::<u64>()
+            {
+                seqs.push((seq, entry.path()));
+            }
+        }
+        if seqs.is_empty() {
+            // init-only salvage is a 1 KB fMP4 header — not a file a
+            // user can use; leave it (and the dir) alone.
+            return Ok(0);
+        }
+        seqs.sort_by_key(|(seq, _)| *seq);
+
+        // APPEND `.hls-merging` (same collision rationale as
+        // merge_parts, R2 P2-3).
+        let out_tmp = {
+            let mut s = sink.as_os_str().to_os_string();
+            s.push(".hls-merging");
+            std::path::PathBuf::from(s)
+        };
+        let mut out = tokio::fs::File::create(&out_tmp).await?;
+        let mut total: u64 = 0;
+        let res: Result<(), HlsError> = async {
+            if has_init {
+                let b = tokio::fs::read(dir.join("init.mp4")).await?;
+                out.write_all(&b).await?;
+                total += b.len() as u64;
+            }
+            for (_, part) in &seqs {
+                let b = tokio::fs::read(part).await?;
+                out.write_all(&b).await?;
+                total += b.len() as u64;
+            }
+            Ok(())
+        }
+        .await;
+        match res {
+            Ok(()) => {
+                out.flush().await?;
+                drop(out);
+                tokio::fs::rename(&out_tmp, sink).await?;
+                // Deliverable landed; the per-part journal is spent.
+                // Best-effort — a locked dir (Windows AV scan etc.)
+                // leaves parts behind, which is only disk noise.
+                let _ = tokio::fs::remove_dir_all(&dir).await;
+                Ok(total)
+            }
+            Err(e) => {
+                // Keep the parts (manual recovery possible); clean
+                // the partial merge so no debris lingers (R2 P2-3).
+                drop(out);
+                let _ = tokio::fs::remove_file(&out_tmp).await;
+                Err(e)
+            }
+        }
+    }
+
     /// Full merge download. The scheduler's `HlsAutoPort` wraps this
     /// (registry/budget wiring stays in the port layer, mirroring
     /// `HttpAutoPort` over `HttpEngine::download_auto`).

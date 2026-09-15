@@ -198,6 +198,22 @@ pub(crate) async fn run_download(
     cancel: tokio_util::sync::CancellationToken,
     budget: &peregrine_api::budget::BudgetChain,
 ) -> Result<DownloadOutcome, ApiError> {
+    run_download_impl(client, max_redirects, job, progress, cancel, budget, false).await
+}
+
+// `healed`: set when this session is already the one-bounded restart
+// issued by the 416 self-heal below — a second 416 then surfaces as an
+// error instead of recursing (pathological server).
+#[allow(clippy::too_many_arguments)]
+async fn run_download_impl(
+    client: HttpsClient,
+    max_redirects: usize,
+    job: DownloadJob,
+    progress: SharedProgressSink,
+    cancel: tokio_util::sync::CancellationToken,
+    budget: &peregrine_api::budget::BudgetChain,
+    healed: bool,
+) -> Result<DownloadOutcome, ApiError> {
     // Fast-out on a pre-cancelled token (M2-b R2 P1-3): without this,
     // a paused task still pays the redirect chase and — worse — a
     // fresh (non-resume) call would truncate the sink via
@@ -257,6 +273,46 @@ pub(crate) async fn run_download(
                     final_url: current.to_string(),
                     final_validator: HttpEngine::response_validator(res.headers()),
                 });
+            }
+            // Self-heal (QA-E2E Bug 3): a 416 whose offset does NOT
+            // settle as "already complete" means the resume context
+            // is a lie about the sink — the canonical case is a
+            // sparse-preallocated file (len == total) whose segment
+            // rows were purged on remove, feeding `start_offset ==
+            // total` into a fresh single-stream re-add; mirrors that
+            // serve a different resource or a truncated sink land
+            // here too. One bounded restart from zero beats a task
+            // that can only ever 416. The retry re-enters with
+            // resume = None, so the fresh 200 path truncates the
+            // stale sink and rewrites it; if a server ever answers
+            // the retry's 416-less request with 416 anyway, `healed`
+            // stops the recursion.
+            if !healed && resume.as_ref().is_some_and(|c| c.start_offset > 0) {
+                let stale = resume.as_ref().map(|c| c.start_offset).unwrap_or(0);
+                tracing::warn!(
+                    offset = stale,
+                    total = server_total.or(expected_total),
+                    url = %current,
+                    "416 with non-settling offset — stale resume context (sparse/mutated sink), \
+                     restarting from zero"
+                );
+                drop(res); // release the pooled connection before the retry
+                let healed_job = DownloadJob {
+                    url: url.clone(),
+                    sink: sink.clone(),
+                    resume: None,
+                    expected_total,
+                };
+                return Box::pin(run_download_impl(
+                    client.clone(),
+                    max_redirects,
+                    healed_job,
+                    progress,
+                    cancel,
+                    budget,
+                    true,
+                ))
+                .await;
             }
         }
         return Err(ApiError::Http {

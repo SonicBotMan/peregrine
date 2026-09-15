@@ -6,11 +6,12 @@
 //! the engine), single connection per transfer (no segmentation).
 
 use crate::DownloadPort;
+use crate::TaskBudgets;
 use peregrine_api::ApiError;
-use peregrine_api::budget::BudgetChain;
 use peregrine_api::download::{DownloadJob, DownloadOutcome, SharedProgressSink};
 use peregrine_api::engine::ProtocolEngine;
 use peregrine_engine_ftp::FtpEngine;
+use peregrine_storage::Store;
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
@@ -18,14 +19,16 @@ use tokio_util::sync::CancellationToken;
 
 pub struct FtpAutoPort {
     engine: FtpEngine,
-    global: peregrine_api::budget::SharedRateBudget,
+    store: Store,
+    budgets: TaskBudgets,
 }
 
 impl FtpAutoPort {
-    pub fn new(global: peregrine_api::budget::SharedRateBudget) -> Self {
+    pub fn new(global: peregrine_api::budget::SharedRateBudget, store: Store) -> Self {
         Self {
             engine: FtpEngine::new(),
-            global,
+            store,
+            budgets: TaskBudgets::new(global),
         }
     }
 }
@@ -37,13 +40,19 @@ impl DownloadPort for FtpAutoPort {
         progress: SharedProgressSink,
         cancel: CancellationToken,
     ) -> Pin<Box<dyn Future<Output = Result<DownloadOutcome, ApiError>> + Send + '_>> {
-        // Unlimited LOCAL bucket, live GLOBAL chain: daemon-wide
-        // throttle + fairness hold (per-task FTP throttle is B44).
-        let budget = BudgetChain {
-            local: peregrine_api::budget::RateBudget::unlimited(),
-            global: self.global.clone(),
-        };
-        Box::pin(async move { self.engine.download(job, progress, cancel, &budget).await })
+        // QA-E2E Bug 2: per-task LOCAL bucket seeded from the row;
+        // the engine pays the chain per slice (lib.rs acquire).
+        let (url, sink) = (job.url.clone(), job.sink.clone());
+        let store = &self.store;
+        let budgets = &self.budgets;
+        let engine = &self.engine;
+        Box::pin(async move {
+            let seed = TaskBudgets::row_seed(store, &url, &sink).await;
+            let budget = budgets.budget_for(&url, sink.as_path(), seed);
+            let out = engine.download(job, progress, cancel, &budget).await;
+            budgets.drop_key(&url, &sink);
+            out
+        })
     }
 
     fn purge(
@@ -69,7 +78,9 @@ impl DownloadPort for FtpAutoPort {
         })
     }
 
-    fn set_task_limit(&self, _url: &str, _sink: &Path, _bps: Option<u64>) {
-        // B44: per-task throttle lands with the budget registry work.
+    fn set_task_limit(&self, url: &str, sink: &Path, bps: Option<u64>) {
+        // QA-E2E Bug 2: live poke into the registered local bucket;
+        // queued tasks read the row when they start (row_seed).
+        self.budgets.poke(url, sink, bps);
     }
 }

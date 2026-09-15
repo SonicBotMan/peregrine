@@ -38,6 +38,10 @@ pub enum TaskError {
     },
     #[error("url must be a non-empty string")]
     EmptyUrl,
+    /// The requested operation exists but THIS engine/port does not
+    /// support it yet (QA-E2E Bug 2: per-task limits on engine-bt).
+    #[error("unsupported by this engine: {0}")]
+    Unsupported(String),
     #[error("save_path must be a non-empty absolute path, got {0:?}")]
     InvalidSavePath(String),
     #[error("an active task {id} already targets {url} to {save_path}; remove or finish it first")]

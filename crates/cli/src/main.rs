@@ -59,7 +59,12 @@ enum Cmd {
         purge: bool,
     },
 
-    /// Set a task's download rate limit.
+    /// Set a task's download rate limit (BT tasks excepted).
+    ///
+    /// QA-E2E Bug 2: BT tasks are rejected with a clear error —
+    /// engine-bt has no throttle plumbing (librqbit owns the
+    /// sockets), so a "successful" set would be a silent no-op.
+    /// `pg speed` (daemon-wide) still applies to every protocol.
     Limit {
         id: String,
         /// Bytes/sec. 0 = unlimited. Accepts k/m suffixes (64k, 2m).

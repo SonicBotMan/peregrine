@@ -97,6 +97,22 @@ pub trait DownloadPort: Send + Sync {
     /// atomics. Default no-op: scripted/test ports don't throttle;
     /// production is `HttpAutoPort`'s registry poked in-place.
     fn set_task_limit(&self, _url: &str, _sink: &std::path::Path, _bps: Option<u64>) {}
+
+    /// Salvage a CANCELLED engine's partial artifacts into a usable
+    /// output (QA-E2E Bug 1): the worker calls this when the engine
+    /// exits `Cancelled` — pause/shutdown/remove all land there, and
+    /// only HLS leaves something worth salvaging (`.parts`). The
+    /// engine itself never merges on the cancel path (cancel must
+    /// stay responsive; a 27 GB merge can take minutes). Default
+    /// no-op. Best-effort by contract: failures log, never fail the
+    /// caller, and the artifacts stay on disk for manual recovery.
+    fn finalize(
+        &self,
+        _url: &str,
+        _sink: &std::path::Path,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 /// Production port over `HttpEngine::download_auto` (PROPOSAL §5:
@@ -248,6 +264,93 @@ impl DownloadPort for HttpAutoPort {
             && let Some(b) = map.get(&key)
         {
             b.set_bps(bps.unwrap_or(0));
+        }
+    }
+}
+
+/// Per-task local-budget registry (QA-E2E Bug 2): mirrors
+/// HttpAutoPort's `locals` map so HLS/FTP ports get the SAME
+/// semantics — seeded from the downloads row at session start,
+/// poked live by the settings layer, dropped when the session ends —
+/// without triplicating the plumbing. Shared handles: the clone in
+/// the map and the one handed to the engine alias the same bucket.
+pub(crate) struct TaskBudgets {
+    global: peregrine_api::budget::SharedRateBudget,
+    locals: Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<
+                (String, std::path::PathBuf),
+                peregrine_api::budget::SharedRateBudget,
+            >,
+        >,
+    >,
+}
+
+impl TaskBudgets {
+    fn new(global: peregrine_api::budget::SharedRateBudget) -> Self {
+        Self {
+            global,
+            locals: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        }
+    }
+
+    /// Same contract as `HttpAutoPort::budget_for`.
+    fn budget_for(
+        &self,
+        url: &str,
+        sink: &std::path::Path,
+        initial_bps: u64,
+    ) -> peregrine_api::budget::BudgetChain {
+        let key = (url.to_string(), sink.to_path_buf());
+        let local = {
+            let mut map = self.locals.lock().expect("locals map poisoned");
+            map.entry(key)
+                .or_insert_with(|| peregrine_api::budget::RateBudget::with_bps(initial_bps))
+                .clone()
+        };
+        peregrine_api::budget::BudgetChain {
+            local,
+            global: self.global.clone(),
+        }
+    }
+
+    /// Same contract as `HttpAutoPort::set_task_limit`'s live poke.
+    fn poke(&self, url: &str, sink: &std::path::Path, bps: Option<u64>) {
+        let key = (url.to_string(), sink.to_path_buf());
+        if let Ok(map) = self.locals.lock()
+            && let Some(b) = map.get(&key)
+        {
+            b.set_bps(bps.unwrap_or(0));
+        }
+    }
+
+    /// Session over — drop the registry entry so a future re-add
+    /// seeds from the row again, not this session's stale bucket.
+    fn drop_key(&self, url: &str, sink: &std::path::Path) {
+        if let Ok(mut map) = self.locals.lock() {
+            map.remove(&(url.to_string(), sink.to_path_buf()));
+        }
+    }
+
+    /// Seed from the downloads ROW (0 = unlimited), exactly as
+    /// `HttpAutoPort::auto_download` does; failure reads as
+    /// "no row, no limit" — the session starts unlimited, a later
+    /// live poke can still clamp it.
+    async fn row_seed(store: &Store, url: &str, sink: &std::path::Path) -> u64 {
+        let tid = store
+            .find_active_download_by_target(url, &sink.to_string_lossy())
+            .await
+            .ok()
+            .flatten();
+        match tid {
+            Some(tid) => store
+                .get_download(&tid)
+                .await
+                .ok()
+                .flatten()
+                .map(|t| t.speed_limit_bps)
+                .unwrap_or(0),
+            None => 0,
         }
     }
 }
@@ -413,6 +516,23 @@ impl Scheduler {
     /// RUNNING engine's bucket in-place — the next byte pays the new
     /// rate, no restart.
     pub async fn set_task_limit(&self, id: &TaskId, bps: u64) -> Result<Task, TaskError> {
+        // QA-E2E Bug 2: engine-bt has no budget plumbing at all
+        // (librqbit hands us chunks; we never see the socket).
+        // Refuse BEFORE persisting — otherwise the row stores a
+        // limit no engine will ever honor (the silent no-op this
+        // replaces; REST/MCP/CLI all inherit the loud error).
+        let existing = self.tm.get(id).await?;
+        let url = existing
+            .as_ref()
+            .map(|t| t.url.as_str())
+            .unwrap_or_default();
+        if url.starts_with("bt://") || url.starts_with("magnet:") {
+            return Err(TaskError::Unsupported(
+                "engine-bt does not support per-task rate limits yet \
+                 (librqbit hands us chunks; BACKLOG)"
+                    .into(),
+            ));
+        }
         let task = self.tm.set_limit(id, bps).await?;
         self.port.set_task_limit(
             &task.url,
@@ -756,6 +876,27 @@ impl Worker {
                 // reading still lands (progress writes are
                 // status-guarded and idempotent).
                 Arc::clone(sink).finish_pending().await;
+                // QA-E2E Bug 1: a cancelled engine may leave
+                // salvageable artifacts (HLS `.parts`). Finalize
+                // HERE — the engine keeps cancel responsive, the
+                // worker pays the (potentially minutes-long) merge.
+                // Fires for pause too (harmless: VOD resumes
+                // idempotently off the parts; a paused live task
+                // resumes as a fresh recording that replaces the
+                // sink). Best-effort: on failure the parts stay for
+                // manual recovery.
+                if let Err(e) = self
+                    .sched
+                    .port
+                    .finalize(&self.task.url, std::path::Path::new(&self.task.save_path))
+                    .await
+                {
+                    tracing::warn!(
+                        task = %self.task.id,
+                        error = %e,
+                        "finalize on cancel failed — partial artifacts kept on disk"
+                    );
+                }
                 Ok(())
             }
             Err(e) => {

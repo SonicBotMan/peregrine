@@ -966,3 +966,75 @@ async fn encrypted_map_is_decrypted_at_merge() {
     assert_eq!(&bytes[16..], &seg_plain[..], "segment must be decrypted");
     assert_eq!(out.bytes_written, 48);
 }
+
+// ---- QA-E2E Bug 1: gap-tolerant salvage on cancel ----
+
+fn parts_dir_of(sink: &std::path::Path) -> std::path::PathBuf {
+    let mut s = sink.as_os_str().to_os_string();
+    s.push(".parts");
+    std::path::PathBuf::from(s)
+}
+
+#[tokio::test]
+async fn salvage_merges_parts_with_holes_and_cleans_up() {
+    // Disk-discovered salvage: seqs {0, 2, 5} (holes at 1/3/4 — the
+    // live window slid past them), one stale .tmp, plus init.mp4.
+    // Salvage must concatenate init + 0 + 2 + 5 in order, remove the
+    // parts dir, and leave no .hls-merging debris.
+    let dir = TempDir::new().unwrap();
+    let sink = dir.path().join("live.ts");
+    let parts = parts_dir_of(&sink);
+    std::fs::create_dir_all(&parts).unwrap();
+    std::fs::write(parts.join("000000000005.ts"), vec![5u8; 50]).unwrap();
+    std::fs::write(parts.join("000000000000.ts"), vec![0u8; 10]).unwrap();
+    std::fs::write(parts.join("000000000002.ts"), vec![2u8; 20]).unwrap();
+    std::fs::write(parts.join("garbage.tmp"), vec![9u8; 5]).unwrap();
+    std::fs::write(parts.join("init.mp4"), vec![7u8; 4]).unwrap();
+
+    let n = HlsEngine::salvage_merge(&sink).await.unwrap();
+    assert_eq!(n, 4 + 10 + 20 + 50, "init + present seqs, tmp skipped");
+
+    let mut want = vec![7u8; 4];
+    want.extend_from_slice(&[0u8; 10]);
+    want.extend_from_slice(&[2u8; 20]);
+    want.extend_from_slice(&[5u8; 50]);
+    assert_eq!(
+        std::fs::read(&sink).unwrap(),
+        want,
+        "seq order, holes skipped"
+    );
+    assert!(!parts.exists(), "parts dir removed after salvage");
+    assert!(!sink.with_file_name("live.ts.hls-merging").exists());
+}
+
+#[tokio::test]
+async fn salvage_without_parts_dir_or_with_only_init_is_a_noop() {
+    let dir = TempDir::new().unwrap();
+    let sink = dir.path().join("none.ts");
+    assert_eq!(HlsEngine::salvage_merge(&sink).await.unwrap(), 0);
+    assert!(!sink.exists(), "no parts dir — no output file");
+
+    let parts = parts_dir_of(&sink);
+    std::fs::create_dir_all(&parts).unwrap();
+    std::fs::write(parts.join("init.mp4"), vec![7u8; 4]).unwrap();
+    assert_eq!(HlsEngine::salvage_merge(&sink).await.unwrap(), 0);
+    assert!(!sink.exists(), "init-only salvage is not a usable file");
+}
+
+#[tokio::test]
+async fn salvage_replaces_a_stale_sink_atomically() {
+    // A previous run left a HALF-WRITTEN sink (crash during rename
+    // of an even older salvage, say). Salvage overwrites it with the
+    // current parts — the deliverable always reflects the parts.
+    let dir = TempDir::new().unwrap();
+    let sink = dir.path().join("live.ts");
+    let parts = parts_dir_of(&sink);
+    std::fs::create_dir_all(&parts).unwrap();
+    std::fs::write(&sink, vec![0xEE; 7]).unwrap(); // stale garbage
+    std::fs::write(parts.join("000000000001.ts"), vec![1u8; 8]).unwrap();
+
+    let n = HlsEngine::salvage_merge(&sink).await.unwrap();
+    assert_eq!(n, 8);
+    assert_eq!(std::fs::read(&sink).unwrap(), vec![1u8; 8]);
+    assert!(!parts.exists());
+}

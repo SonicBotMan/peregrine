@@ -358,6 +358,70 @@ async fn four16_without_a_settling_total_is_an_error() {
 
     let msg = err.to_string();
     assert!(msg.contains("416"), "got: {msg}");
+    // Since the QA-E2E Bug 3 self-heal this error is reached only
+    // AFTER one bounded from-zero retry: the server 416s the retried
+    // (Range-less) request as well, and the `healed` flag stops the
+    // recursion. The assertion above therefore pins BOTH hops.
+}
+
+#[tokio::test]
+async fn stale_offset_416_self_heals_to_a_full_rewrite() {
+    // QA-E2E Bug 3: canonical repro — the resume offset lies about
+    // the sink (sparse-preallocated file whose segment rows were
+    // purged, so len == total fed a fresh single-stream re-add). A
+    // 416 that does NOT settle as "already complete" must trigger
+    // ONE bounded restart from zero: the retry omits Range, gets the
+    // full 200, truncates the stale sink and rewrites it verbatim.
+    async fn cond416(headers: HeaderMap) -> Response {
+        let has_range = headers.contains_key(header::RANGE);
+        if has_range {
+            // No Content-Range, and the body is an error page: the
+            // mirror-style 416 QA hit in the wild (Yandex).
+            (StatusCode::RANGE_NOT_SATISFIABLE, "out of range").into_response()
+        } else {
+            (StatusCode::OK, body_bytes()).into_response()
+        }
+    }
+    let app = Router::new().route("/cond416", get(cond416));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let engine = HttpEngine::new().unwrap();
+    let sink = temp_sink("cond416");
+    // The lying sink: 400 bytes of stale content at the resume offset.
+    std::fs::write(&sink, &body_bytes()[..400]).unwrap();
+
+    let out = engine
+        .download(
+            DownloadJob {
+                url: format!("http://{addr}/cond416"),
+                sink: sink.clone(),
+                resume: Some(ResumeContext {
+                    start_offset: 400,
+                    validator: None,
+                }),
+                expected_total: Some(1000),
+            },
+            Arc::new(NoProgress),
+            token(),
+            &peregrine_api::budget::BudgetChain::unlimited(),
+        )
+        .await
+        .unwrap();
+
+    assert!(out.completed, "self-healed session must complete");
+    assert_eq!(
+        std::fs::read(&sink).unwrap(),
+        body_bytes(),
+        "stale prefix must be fully rewritten, never glued"
+    );
+    assert_eq!(
+        out.bytes_written, 1000,
+        "the healed session wrote the whole body"
+    );
 }
 
 #[tokio::test]

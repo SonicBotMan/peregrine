@@ -7,24 +7,30 @@
 //! (parts-dir idempotence IS the resume).
 
 use crate::DownloadPort;
+use crate::TaskBudgets;
 use peregrine_api::ApiError;
-use peregrine_api::budget::BudgetChain;
 use peregrine_api::download::{DownloadJob, DownloadOutcome, SharedProgressSink};
 use peregrine_engine_hls::HlsEngine;
+use peregrine_storage::Store;
 use std::future::Future;
 use std::pin::Pin;
 use tokio_util::sync::CancellationToken;
 
 pub struct HlsAutoPort {
     engine: HlsEngine,
-    global: peregrine_api::budget::SharedRateBudget,
+    store: Store,
+    budgets: TaskBudgets,
 }
 
 impl HlsAutoPort {
-    pub fn new(global: peregrine_api::budget::SharedRateBudget) -> Result<Self, ApiError> {
+    pub fn new(
+        global: peregrine_api::budget::SharedRateBudget,
+        store: Store,
+    ) -> Result<Self, ApiError> {
         Ok(Self {
             engine: HlsEngine::new()?,
-            global,
+            store,
+            budgets: TaskBudgets::new(global),
         })
     }
 }
@@ -36,16 +42,18 @@ impl DownloadPort for HlsAutoPort {
         progress: SharedProgressSink,
         cancel: CancellationToken,
     ) -> Pin<Box<dyn Future<Output = Result<DownloadOutcome, ApiError>> + Send + '_>> {
-        // No per-task local bucket for HLS v1: BudgetChain with an
-        // unlimited local still consults the GLOBAL budget, so
-        // daemon-wide throttling and fairness hold (B44 for per-task).
-        let budget = BudgetChain {
-            local: peregrine_api::budget::RateBudget::unlimited(),
-            global: self.global.clone(),
-        };
+        // QA-E2E Bug 2: per-task LOCAL bucket seeded from the row
+        // (same semantics as HttpAutoPort); the engine already pays
+        // the chain per slice (fetch.rs). Registered live so
+        // `set_task_limit` can poke a running task.
+        let (url, sink) = (job.url.clone(), job.sink.clone());
+        let store = &self.store;
+        let budgets = &self.budgets;
+        let engine = &self.engine;
         Box::pin(async move {
-            let out = self
-                .engine
+            let seed = TaskBudgets::row_seed(store, &url, &sink).await;
+            let budget = budgets.budget_for(&url, sink.as_path(), seed);
+            let out = engine
                 .download_merge(&job, progress, cancel, &budget)
                 .await
                 .map_err(|e| {
@@ -59,8 +67,11 @@ impl DownloadPort for HlsAutoPort {
                     } else {
                         ApiError::from(e)
                     }
-                })?;
-            Ok(out)
+                });
+            // Session over (either arm) — drop the registry entry so
+            // a future re-add seeds from the row again.
+            budgets.drop_key(&url, &sink);
+            out
         })
     }
 
@@ -100,8 +111,31 @@ impl DownloadPort for HlsAutoPort {
         })
     }
 
-    fn set_task_limit(&self, _url: &str, _sink: &std::path::Path, _bps: Option<u64>) {
-        // B44: per-task throttle on HLS arrives with a per-task
-        // budget registry like HttpAutoPort's. Global still applies.
+    fn set_task_limit(&self, url: &str, sink: &std::path::Path, bps: Option<u64>) {
+        // QA-E2E Bug 2: live poke into the registered local bucket;
+        // queued tasks read the row when they start (row_seed).
+        self.budgets.poke(url, sink, bps);
+    }
+
+    fn finalize(
+        &self,
+        _url: &str,
+        sink: &std::path::Path,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
+        let sink = sink.to_path_buf();
+        Box::pin(async move {
+            let bytes = HlsEngine::salvage_merge(&sink)
+                .await
+                .map_err(|e| anyhow::anyhow!("hls salvage {sink:?}: {e}"))?;
+            if bytes > 0 {
+                tracing::info!(
+                    sink = %sink.display(),
+                    bytes,
+                    "salvaged cancelled recording (gap-tolerant; encrypted streams \
+                     salvage to ciphertext — see BACKLOG)"
+                );
+            }
+            Ok(())
+        })
     }
 }

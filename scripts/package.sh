@@ -36,12 +36,12 @@ mkdir -p dist
 # timestamp. Toolchain differences remain (CI vs local), but the
 # same commit + toolchain now yields byte-identical archives.
 tar --sort=name --owner=0 --group=0 --numeric-owner \
-    --mtime="@$(git log -1 --format=%ct)" \
-    -c -C dist "$(basename "${OUT}")" \
-    | gzip -n > "${OUT}.tar.gz"
+  --mtime="@$(git log -1 --format=%ct)" \
+  -c -C dist "$(basename "${OUT}")" |
+  gzip -n >"${OUT}.tar.gz"
 # Bare filename in the checksum so `sha256sum -c` works wherever
 # the pair is downloaded (alpha.2 emitted a `dist/` prefix).
-(cd dist && sha256sum "$(basename "${OUT}").tar.gz" > "$(basename "${OUT}").tar.gz.sha256")
+(cd dist && sha256sum "$(basename "${OUT}").tar.gz" >"$(basename "${OUT}").tar.gz.sha256")
 
 if [[ "${1:-}" == "deb" ]]; then
   if ! command -v cargo-deb >/dev/null; then

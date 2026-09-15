@@ -51,7 +51,7 @@ async fn ftp_purge_false_keeps_data_true_deletes() {
     let dir = tempfile::tempdir().unwrap();
     let sink = dir.path().join("f.bin");
     std::fs::write(&sink, b"data").unwrap();
-    let port = FtpAutoPort::new(RateBudget::unlimited());
+    let port = FtpAutoPort::new(RateBudget::unlimited(), Store::open_memory().unwrap());
 
     // Plain remove: the sink survives.
     port.purge("ftp://x/f.bin", &sink, false).await.unwrap();
@@ -66,7 +66,7 @@ async fn ftp_purge_false_keeps_data_true_deletes() {
 async fn ftp_purge_true_on_missing_file_is_ok() {
     let dir = tempfile::tempdir().unwrap();
     let sink = dir.path().join("never.bin");
-    let port = FtpAutoPort::new(RateBudget::unlimited());
+    let port = FtpAutoPort::new(RateBudget::unlimited(), Store::open_memory().unwrap());
     port.purge("ftp://x/never.bin", &sink, true).await.unwrap();
 }
 
@@ -78,7 +78,7 @@ async fn hls_purge_false_keeps_parts_true_deletes() {
     std::fs::create_dir_all(&parts).unwrap();
     std::fs::write(&sink, b"merged").unwrap();
     std::fs::write(parts.join("seg0.ts"), b"seg").unwrap();
-    let port = HlsAutoPort::new(RateBudget::unlimited()).unwrap();
+    let port = HlsAutoPort::new(RateBudget::unlimited(), Store::open_memory().unwrap()).unwrap();
 
     // Plain remove: merged output AND parts dir survive.
     port.purge("http://x/v.m3u8", &sink, false).await.unwrap();
