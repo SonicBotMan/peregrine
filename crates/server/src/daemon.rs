@@ -184,6 +184,22 @@ impl Clone for Daemon {
     }
 }
 
+/// `<db-dir>/bt-registry.json` — same directory as the task DB.
+fn store_path_with_suffix(db: &Path, suffix: &str) -> PathBuf {
+    let file = db.file_name().map(|f| f.to_string_lossy().into_owned());
+    let name = match file {
+        Some(f) => {
+            let stem = f.split('.').next().unwrap_or("peregrine");
+            format!("{stem}-{suffix}")
+        }
+        None => suffix.to_string(),
+    };
+    match db.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p.join(name),
+        _ => PathBuf::from(name),
+    }
+}
+
 impl Daemon {
     /// Build a production daemon over a real HTTP engine.
     ///
@@ -194,7 +210,7 @@ impl Daemon {
         sched_cfg: SchedulerConfig,
         seg_cfg: SegmentConfig,
     ) -> anyhow::Result<Self> {
-        Self::assemble(db_path, sched_cfg, |store, global| {
+        Self::assemble(db_path, sched_cfg, |store, global, path| {
             // Same shared store as HttpAutoPort (B32: ONE Store
             // instance everywhere) — wired into the engine so the
             // single-stream first response persists its validator
@@ -212,7 +228,14 @@ impl Daemon {
                 global.clone(),
                 store.clone(),
             ));
-            let bt: Arc<dyn DownloadPort> = Arc::new(peregrine_scheduler::BtAutoPort::new());
+            let bt: Arc<dyn DownloadPort> =
+                Arc::new(peregrine_scheduler::BtAutoPort::with_registry_persistence(
+                    // B59: the BT side table lives beside the task
+                    // DB (same data dir, same lifetime).
+                    // B59: the BT side table lives beside the task
+                    // DB (same data dir, same lifetime).
+                    store_path_with_suffix(path, "bt-registry.json"),
+                ));
             Ok(Arc::new(RoutingPort { http, hls, ftp, bt }))
         })
     }
@@ -226,7 +249,7 @@ impl Daemon {
         sched_cfg: SchedulerConfig,
         port: Arc<dyn DownloadPort>,
     ) -> anyhow::Result<Self> {
-        Self::assemble(db_path, sched_cfg, |_, _| Ok(port))
+        Self::assemble(db_path, sched_cfg, |_, _, _| Ok(port))
     }
 
     /// The one assembly path: exactly one `Store` is opened, the
@@ -237,6 +260,7 @@ impl Daemon {
         port_factory: impl FnOnce(
             Store,
             peregrine_api::budget::SharedRateBudget,
+            &Path,
         ) -> anyhow::Result<Arc<dyn DownloadPort>>,
     ) -> anyhow::Result<Self> {
         let path = match db_path {
@@ -248,7 +272,7 @@ impl Daemon {
         let bus = EventBus::default();
         let tm = Arc::new(TaskManager::new(store.clone(), bus.clone()));
         let global_budget = peregrine_api::budget::RateBudget::unlimited();
-        let port = port_factory(store.clone(), global_budget.clone())?;
+        let port = port_factory(store.clone(), global_budget.clone(), &path)?;
         let sched = Arc::new(Scheduler::new(
             tm,
             bus.clone(),

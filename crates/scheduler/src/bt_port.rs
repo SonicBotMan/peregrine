@@ -24,6 +24,15 @@ impl BtAutoPort {
             engine: BtEngine::new(),
         }
     }
+
+    /// B59: production wiring — persist the url→data-folder side
+    /// table beside the task DB so cross-restart purges can locate
+    /// `.torrent`-sourced data directories.
+    pub fn with_registry_persistence(path: std::path::PathBuf) -> Self {
+        Self {
+            engine: BtEngine::new().with_registry_persistence(path),
+        }
+    }
 }
 
 impl Default for BtAutoPort {

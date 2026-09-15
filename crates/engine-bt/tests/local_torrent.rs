@@ -523,3 +523,166 @@ async fn magnet_hash_fallback_respects_live_sibling() {
         "hash fallback killed live entry"
     );
 }
+
+// ---------------------------------------------------------------------
+// B59: cross-restart purge via the persisted url→folder side table.
+
+#[tokio::test(flavor = "multi_thread")]
+async fn b59_cross_restart_purge_deletes_data_folder_via_side_table() {
+    init_tls();
+    let src = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    let reg = tempfile::tempdir().unwrap();
+    let (torrent, bytes, name, _magnet) = make_torrent(src.path(), 256 * 1024).await;
+    let reg_path = reg.path().join("bt-registry.json");
+
+    // Session 1: complete the torrent (verified re-check) — the
+    // engine registers url→folder in memory AND in the side table.
+    std::fs::write(out.path().join(&name), &bytes).unwrap();
+    let e1 = BtEngine::offline().with_registry_persistence(reg_path.clone());
+    let url = format!("file://{}", torrent.display());
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(60),
+        e1.download(
+            job_for(&torrent, out.path()),
+            Arc::new(Recorder::new()) as _,
+            CancellationToken::new(),
+        ),
+    )
+    .await
+    .expect("verified torrent must finish (not hang)")
+    .unwrap();
+    assert!(outcome.completed);
+    // The side table must now exist and map the url to the
+    // torrent's PRECISE data path (output_folder.join(name)) —
+    // NEVER the shared output folder (B59 R2 P0-1: deleting it
+    // could take unrelated files in the same directory with it).
+    let table: std::collections::HashMap<String, std::path::PathBuf> =
+        serde_json::from_slice(&std::fs::read(&reg_path).unwrap()).unwrap();
+    assert_eq!(table.len(), 1, "side table: {table:?}");
+    assert_eq!(
+        table[&url],
+        out.path().join(&name),
+        "side table must record the precise data path, not the output folder"
+    );
+
+    // "Restart": new engine instance — in-memory registry empty,
+    // rqbit session gone; ONLY the side table survives.
+    drop(e1);
+    let e2 = BtEngine::offline().with_registry_persistence(reg_path.clone());
+    assert!(
+        out.path().join(&name).exists(),
+        "data still on disk before purge"
+    );
+    // An unrelated file shares the output folder — it must
+    // survive the purge (P0-1 collateral-deletion regression).
+    let bystander = out.path().join("stranger.txt");
+    std::fs::write(&bystander, "unrelated").unwrap();
+
+    // Purge of the pre-restart row (file:// url — no magnet hash
+    // to derive): without B59 the fallback only removed the sink
+    // path and the data folder survived forever.
+    let sink = out.path().join("file.bin");
+    e2.purge(&url, &sink, true).await.unwrap();
+
+    assert!(
+        !out.path().join(&name).exists(),
+        "B59: cross-restart purge must delete the torrent's data"
+    );
+    assert!(
+        bystander.exists(),
+        "B59 R2 P0-1: purge must NOT delete the shared output folder"
+    );
+    let table: std::collections::HashMap<String, std::path::PathBuf> =
+        serde_json::from_slice(&std::fs::read(&reg_path).unwrap()).unwrap();
+    assert!(table.is_empty(), "side table entry consumed: {table:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn b59_side_table_entry_freed_on_regular_purge() {
+    // A NORMAL (same-session) purge must also consume the side
+    // table entry — otherwise the next cross-restart purge of the
+    // same url would resurrect a delete on a folder the user may
+    // have re-created.
+    init_tls();
+    let src = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    let reg = tempfile::tempdir().unwrap();
+    let (torrent, bytes, name, _magnet) = make_torrent(src.path(), 256 * 1024).await;
+    let reg_path = reg.path().join("bt-registry.json");
+
+    std::fs::write(out.path().join(&name), &bytes).unwrap();
+    let engine = BtEngine::offline().with_registry_persistence(reg_path.clone());
+    let url = format!("file://{}", torrent.display());
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(60),
+        engine.download(
+            job_for(&torrent, out.path()),
+            Arc::new(Recorder::new()) as _,
+            CancellationToken::new(),
+        ),
+    )
+    .await
+    .expect("verified torrent must finish (not hang)")
+    .unwrap();
+    assert!(outcome.completed);
+
+    // Same-session purge (registry HAS the url → Last/Held path,
+    // not Unknown): side table entry must go too.
+    engine
+        .purge(&url, &out.path().join("file.bin"), true)
+        .await
+        .unwrap();
+    let table: std::collections::HashMap<String, std::path::PathBuf> =
+        serde_json::from_slice(&std::fs::read(&reg_path).unwrap()).unwrap();
+    assert!(
+        table.is_empty(),
+        "same-session purge consumed entry: {table:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn b59_keep_files_purge_neither_deletes_data_nor_consumes_entry() {
+    // purge_files=false (remove_keep_files semantics): the data
+    // stays on disk BY CONTRACT, so its cross-restart locator must
+    // stay too — consuming the entry would downgrade a future
+    // purge to the sink fallback (B59 R2 P1-1). And the data
+    // itself must not be deleted by the side-table hit.
+    init_tls();
+    let src = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    let reg = tempfile::tempdir().unwrap();
+    let (torrent, bytes, name, _magnet) = make_torrent(src.path(), 256 * 1024).await;
+    let reg_path = reg.path().join("bt-registry.json");
+
+    std::fs::write(out.path().join(&name), &bytes).unwrap();
+    let e1 = BtEngine::offline().with_registry_persistence(reg_path.clone());
+    let url = format!("file://{}", torrent.display());
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(60),
+        e1.download(
+            job_for(&torrent, out.path()),
+            Arc::new(Recorder::new()) as _,
+            CancellationToken::new(),
+        ),
+    )
+    .await
+    .expect("verified torrent must finish (not hang)")
+    .unwrap();
+    assert!(outcome.completed);
+
+    // "Restart", then a keep-files purge: neither the data nor the
+    // side-table entry may be touched.
+    drop(e1);
+    let e2 = BtEngine::offline().with_registry_persistence(reg_path.clone());
+    e2.purge(&url, &out.path().join("file.bin"), false)
+        .await
+        .unwrap();
+    assert!(
+        out.path().join(&name).exists(),
+        "keep-files purge deleted data via side table"
+    );
+    let table: std::collections::HashMap<String, std::path::PathBuf> =
+        serde_json::from_slice(&std::fs::read(&reg_path).unwrap()).unwrap();
+    assert_eq!(table.len(), 1, "keep-files purge kept the entry: {table:?}");
+}

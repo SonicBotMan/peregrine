@@ -2329,9 +2329,11 @@ dependencies = [
  "peregrine-api",
  "peregrine-scheduler",
  "rustls",
+ "serde_json",
  "tempfile",
  "tokio",
  "tokio-util",
+ "tracing",
  "url",
 ]
 

@@ -122,6 +122,68 @@ fn add_source(job: &DownloadJob) -> Result<AddTorrent<'static>, ApiError> {
 struct Registry {
     url_to_id: HashMap<String, usize>,
     id_meta: HashMap<usize, TorrentMeta>,
+    /// B59: cross-restart purge locator — url → output_folder,
+    /// persisted to disk (json) beside the task DB. The in-memory
+    /// maps above die with the process (session ids are
+    /// meaningless after a restart); this side table is what lets
+    /// a purge of a pre-restart `.torrent` row still find (and
+    /// delete) the data directory, which neither magnet-hash
+    /// derivation nor the sink path can locate.
+    persist_path: Option<PathBuf>,
+    folders: HashMap<String, PathBuf>,
+}
+
+impl Registry {
+    /// B59: load the persisted url→precise-data-path table
+    /// (best-effort: a corrupt file ⇒ empty table + warn —
+    /// cross-restart purges degrade to the sink fallback, nothing
+    /// else breaks).
+    fn load_persisted(path: PathBuf) -> Self {
+        let folders = match std::fs::read(&path) {
+            Ok(b) if b.is_empty() => Default::default(),
+            Ok(b) => match serde_json::from_slice::<HashMap<String, PathBuf>>(&b) {
+                Ok(m) => m,
+                Err(e) => {
+                    tracing::warn!(error = %e, path = %path.display(), "BT registry side-table corrupt — starting empty");
+                    Default::default()
+                }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Default::default(),
+            Err(e) => {
+                tracing::warn!(error = %e, path = %path.display(), "reading BT registry side-table failed");
+                Default::default()
+            }
+        };
+        Self {
+            persist_path: Some(path),
+            folders,
+            ..Default::default()
+        }
+    }
+
+    /// Rewrite the persistence file atomically (tmp + rename — a
+    /// crash mid-write must not zero the table, B59 R2 P2-1).
+    /// Best-effort with a warn: a failed flush only downgrades a
+    /// FUTURE cross-restart purge to the sink-path fallback. Note:
+    /// blocking IO inside the registry mutex, called from async —
+    /// acceptable at tens-of-entries scale.
+    fn flush(&self) {
+        let Some(path) = &self.persist_path else {
+            return;
+        };
+        let tmp = path.with_extension("json.tmp");
+        match serde_json::to_vec(&self.folders) {
+            Ok(bytes) => {
+                if let Err(e) =
+                    std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path))
+                {
+                    tracing::warn!(error = %e, path = %path.display(), "flushing BT registry side-table failed");
+                    let _ = std::fs::remove_file(&tmp);
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "serializing BT registry side-table failed"),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -140,7 +202,21 @@ impl Registry {
     /// torrent is already downloading into a DIFFERENT folder —
     /// silently rerouting would break the second task's sink
     /// contract (its data would land in the first task's folder).
-    fn register(&mut self, url: &str, id: usize, output_folder: PathBuf) -> Result<(), ApiError> {
+    ///
+    /// `data_path` is the torrent's PRECISE on-disk entity
+    /// (`output_folder.join(torrent_name)` — the multi-file top
+    /// dir or the single file itself). It is what the cross-restart
+    /// purge deletes — NEVER the shared `output_folder`, which
+    /// other tasks' data may live in too (B59 R2 P0-1). `None`
+    /// (unresolved magnet) simply skips the side table: a leaked
+    /// folder is acceptable, collateral deletion is not.
+    fn register(
+        &mut self,
+        url: &str,
+        id: usize,
+        output_folder: PathBuf,
+        data_path: Option<PathBuf>,
+    ) -> Result<(), ApiError> {
         match self.id_meta.get_mut(&id) {
             Some(meta) if meta.output_folder != output_folder => {
                 return Err(ApiError::InvalidInput(format!(
@@ -158,14 +234,32 @@ impl Registry {
                 self.id_meta.insert(
                     id,
                     TorrentMeta {
-                        output_folder,
+                        output_folder: output_folder.clone(),
                         urls,
                     },
                 );
             }
         }
         self.url_to_id.insert(url.to_string(), id);
+        // B59: record the PRECISE data path durably — a purge after
+        // a daemon restart has no other way to find it. Only when
+        // known (resolved metadata).
+        if let Some(dp) = data_path {
+            self.folders.insert(url.to_string(), dp);
+            self.flush();
+        }
         Ok(())
+    }
+
+    /// Consume a side-table entry AFTER the data it pointed at was
+    /// actually deleted (B59 R2 P1-2: deleting the mapping before
+    /// the delete succeeds would turn a transient EACCES into a
+    /// permanent leak — scheduler retries can't resurrect a row it
+    /// already removed).
+    fn consume_side_entry(&mut self, url: &str) {
+        if self.folders.remove(url).is_some() {
+            self.flush();
+        }
     }
 
     /// Resolve a torrent locator for purging, falling back to
@@ -220,6 +314,10 @@ impl Registry {
         if last {
             self.url_to_id.remove(url);
             self.id_meta.remove(&id);
+            // NOTE: the B59 side-table entry is intentionally NOT
+            // removed here — detach is about the session mapping;
+            // the data locator is consumed only when the data is
+            // actually deleted (purge's Last/Unknown arms).
             Detach::Last(id)
         } else {
             Detach::Held
@@ -261,6 +359,14 @@ impl BtEngine {
             registry: Mutex::new(Registry::default()),
             dht: true,
         }
+    }
+
+    /// B59: persist the url→data-folder side table so purges of
+    /// pre-restart `.torrent` rows can still locate (and delete)
+    /// their data. Loads any existing table immediately.
+    pub fn with_registry_persistence(mut self, path: PathBuf) -> Self {
+        self.registry = Mutex::new(Registry::load_persisted(path));
+        self
     }
 
     /// No-network engine: DHT disabled entirely. For tests and
@@ -351,12 +457,22 @@ impl BtEngine {
             }
         };
 
+        // B59: the PRECISE data entity = output_folder.join(torrent
+        // name). None while a magnet is still resolving (name unknown
+        // yet) — then the side table simply doesn't cover this row
+        // and cross-restart purge degrades to the sink fallback.
+        let data_path = session
+            .get(TorrentIdOrHash::Id(id))
+            .and_then(|t| t.name())
+            .filter(|n| !n.is_empty())
+            .map(|n| output_folder_path.join(n));
+
         // Same torrent, different folder ⇒ refuse instead of
         // silently rerouting data (R2 F3).
         self.registry
             .lock()
             .unwrap()
-            .register(&job.url, id, output_folder_path)?;
+            .register(&job.url, id, output_folder_path, data_path)?;
 
         // AlreadyManaged → resume in place (unpause so the download
         // actually continues after a previous cancel-pause).
@@ -470,12 +586,20 @@ impl BtEngine {
         };
         match outcome {
             // Final reference gone: delete the session entry (and
-            // data, if asked). Errors are fine — the torrent may
-            // not be in this session at all (fresh daemon, old
-            // task row).
+            // data, if asked). The side-table entry is consumed
+            // ONLY after a successful data delete (B59 R2 P1-2) —
+            // and NEVER on purge_files=false, where the data stays
+            // on disk and so must its locator (B59 R2 P1-1: same
+            // semantics as the Unknown path below).
             Detach::Last(id) => {
-                if let Some(session) = self.session.get() {
-                    let _ = session.delete(TorrentIdOrHash::Id(id), purge_files).await;
+                if let Some(session) = self.session.get()
+                    && session
+                        .delete(TorrentIdOrHash::Id(id), purge_files)
+                        .await
+                        .is_ok()
+                    && purge_files
+                {
+                    self.registry.lock().unwrap().consume_side_entry(url);
                 }
             }
             // Siblings still hold the torrent: nothing may be
@@ -483,10 +607,27 @@ impl BtEngine {
             // the hash fallback and delete a live sibling's data).
             Detach::Held => {}
             // Unknown url (cross-restart row or foreign source):
-            // the hash fallback is allowed ONLY when no tracked url
-            // still maps to the same torrent (R2' P0-1).
+            // the B59 side table first — it holds the torrent's
+            // PRECISE data path (top-level dir/file), never the
+            // shared output folder (B59 R2 P0-1: an earlier draft
+            // remove_dir_all'd the parent and could take
+            // ~/Downloads with it). A hit deletes exactly that path
+            // and RETURNS — the same data has exactly one correct
+            // delete target, the by-hash/sink fallbacks are for
+            // rows the table never knew (B59 R2 P1-3). The hash
+            // fallback is allowed ONLY when no tracked url still
+            // maps to the same torrent (R2' P0-1).
             Detach::Unknown => {
                 if purge_files {
+                    let side_path = self.registry.lock().unwrap().folders.get(url).cloned();
+                    if let Some(data_path) = side_path {
+                        remove_sink(&data_path).await?;
+                        // Deleted successfully → NOW consume the
+                        // entry; on failure the `?` above returns
+                        // with the entry intact for the next try.
+                        self.registry.lock().unwrap().consume_side_entry(url);
+                        return Ok(());
+                    }
                     let by_hash = self.registry.lock().unwrap().resolve(url);
                     let id_alive = by_hash
                         .as_ref()

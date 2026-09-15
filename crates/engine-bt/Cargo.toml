@@ -15,6 +15,8 @@ tokio = { workspace = true }
 tokio-util = { workspace = true }
 url = { workspace = true }
 anyhow = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 peregrine-scheduler = { workspace = true }
@@ -22,3 +24,4 @@ tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-util = { workspace = true }
 peregrine-api = { workspace = true }
+serde_json = { workspace = true }
