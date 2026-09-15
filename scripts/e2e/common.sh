@@ -12,7 +12,10 @@ QA_DIR="${QA_DIR:-/tmp/pg-e2e}"
 SOCKET="${SOCKET:-tcp:8500}"
 
 pass() { echo "PASS: $*"; }
-fail() { echo "FAIL: $*"; exit 1; }
+fail() {
+    echo "FAIL: $*"
+    exit 1
+}
 
 pg() { "$PG_BIN" --socket "$SOCKET" "$@"; }
 
@@ -29,18 +32,28 @@ wait_status() { # wait_status <id> <expected> [timeout_s=600] [poll_s=3]
     while :; do
         st=$(pg get "$id" | grep -oP '(?<="status": ")[a-z]+' | head -1)
         [[ $st == "$want" ]] && return 0
-        [[ $st == failed ]] && { pg get "$id" | grep -E '"error"'; return 1; }
-        (( elapsed += poll )); (( elapsed >= tmo )) && { echo "timeout waiting $want (last=$st)"; return 1; }
+        [[ $st == failed ]] && {
+            pg get "$id" | grep -E '"error"'
+            return 1
+        }
+        ((elapsed += poll))
+        ((elapsed >= tmo)) && {
+            echo "timeout waiting $want (last=$st)"
+            return 1
+        }
         sleep "$poll"
     done
 }
 
 received() { pg get "$1" | grep -oP '(?<="received_bytes": )[0-9]+' | head -1; }
 
-kill_daemon9() { pkill -9 -x peregrined 2>/dev/null; sleep 1; }
+kill_daemon9() {
+    pkill -9 -x peregrined 2>/dev/null
+    sleep 1
+}
 
 start_daemon() { # start_daemon <db>
-    ( cd "$QA_DIR" && nohup "$DAEMON_BIN" --listen "$SOCKET" --db "$1" >daemon.log 2>&1 & )
+    (cd "$QA_DIR" && nohup "$DAEMON_BIN" --listen "$SOCKET" --db "$1" >daemon.log 2>&1 &)
     sleep 2
     pg ping >/dev/null 2>&1 || fail "daemon did not start"
 }
@@ -48,7 +61,8 @@ start_daemon() { # start_daemon <db>
 # Stop a background server tracked in a pidfile (avoids pkill -f self-match suicide).
 stop_bg() { # stop_bg <pidfile>
     local f=$1
-    [[ -f $f ]] && kill "$(cat "$f")" 2>/dev/null; rm -f "$f"
+    [[ -f $f ]] && kill "$(cat "$f")" 2>/dev/null
+    rm -f "$f"
 }
 
 bg_pid() { echo $!; }

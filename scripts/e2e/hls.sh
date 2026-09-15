@@ -13,7 +13,8 @@ ID=$(pg add "$VOD_URL" -o "$QA_DIR/hls/vod1.ts" | awk '{print $2}')
 wait_status "$ID" completed 900 || fail "vod run1 failed"
 ID=$(pg add "$VOD_URL" -o "$QA_DIR/hls/vod2.ts" | awk '{print $2}')
 wait_status "$ID" completed 900 || fail "vod run2 failed"
-M1=$(md5_of "$QA_DIR/hls/vod1.ts"); M2=$(md5_of "$QA_DIR/hls/vod2.ts")
+M1=$(md5_of "$QA_DIR/hls/vod1.ts")
+M2=$(md5_of "$QA_DIR/hls/vod2.ts")
 [[ $M1 == "$M2" ]] && pass "vod: two runs identical ($M1)" || fail "vod: md5 mismatch $M1 vs $M2"
 SZ=$(stat -c %s "$QA_DIR/hls/vod1.ts")
 python3 - "$QA_DIR/hls/vod1.ts" <<'EOF' || fail "vod: TS structure check failed"
@@ -32,8 +33,10 @@ pass "vod: TS structure ok ($SZ bytes)"
 # file from the recorded parts. This block is the regression guard.
 ID=$(pg add "$LIVE_URL" -o "$QA_DIR/hls/live.ts" | awk '{print $2}')
 sleep 45
-R=$(received "$ID"); (( R > 5_000_000 )) || fail "live: recorded too little ($R)"
-pg remove "$ID" >/dev/null; sleep 5
+R=$(received "$ID")
+((R > 5_000_000)) || fail "live: recorded too little ($R)"
+pg remove "$ID" >/dev/null
+sleep 5
 if [[ -f "$QA_DIR/hls/live.ts" ]]; then
     pass "live: finalize on cancel ($(stat -c %s "$QA_DIR/hls/live.ts") bytes)"
 else
