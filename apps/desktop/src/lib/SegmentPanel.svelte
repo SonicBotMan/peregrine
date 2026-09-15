@@ -6,7 +6,8 @@
    * events for list deltas; segment frames stay pull-based).
    */
   import type { Daemon } from './daemon';
-  import type { SegmentView, TaskView } from './types';
+  import type { SegmentView } from './types';
+  import type { TaskView } from './store.svelte';
   import { formatBytes, formatEta } from './format';
 
   let {

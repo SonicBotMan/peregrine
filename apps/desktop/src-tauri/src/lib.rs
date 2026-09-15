@@ -16,6 +16,7 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{Manager, WindowEvent};
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
+use std::io::Write as _;
 
 /// Box<dyn Error> matches `Builder::setup`'s error contract and
 /// gives us `From<String>` for the spawn/tray failure paths.
@@ -79,18 +80,49 @@ fn spawn_daemon(app: &tauri::AppHandle) -> ShellResult {
 
     match cmd {
         Ok((mut rx, _child)) => {
-            // Sidecar lifecycle: pump stdout/stderr into our logs and
-            // surface an unexpected death to the UI (the web layer
-            // already reconnects its WS; this is for the human).
+            // Sidecar lifecycle (B41): pump stdout/stderr into a log
+            // file in the app's log dir — in a RELEASE GUI binary
+            // stdout is void (no console attached), and `print!`
+            // there loses every daemon diagnostic. Dev keeps the
+            // console echo too. Unexpected death still surfaces to
+            // stderr for the human.
+            let log_file = open_sidecar_log(app);
             tauri::async_runtime::spawn(async move {
+                let mut log = log_file;
                 while let Some(evt) = rx.recv().await {
                     match evt {
                         CommandEvent::Stdout(line) | CommandEvent::Stderr(line) => {
                             let text = String::from_utf8_lossy(&line);
+                            let ts = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_millis())
+                                .unwrap_or(0);
+                            if let Some(f) = log.as_mut() {
+                                let _ = writeln!(f, "{ts} {text}");
+                            }
+                            #[cfg(debug_assertions)]
                             print!("[peregrined] {text}");
+                        }
+                        CommandEvent::Error(text) => {
+                            // Pipe-level failure (spawn/IO): belongs in
+                            // the log file as much as Terminated does —
+                            // surfacing it only on the console would
+                            // double-blind a release install (R2 P2-a1).
+                            let ts = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_millis())
+                                .unwrap_or(0);
+                            if let Some(f) = log.as_mut() {
+                                let _ = writeln!(f, "{ts} sidecar pipe error: {text}");
+                            }
+                            #[cfg(debug_assertions)]
+                            eprintln!("[peregrined] pipe error: {text}");
                         }
                         CommandEvent::Terminated(p) => {
                             eprintln!("[peregrined] terminated: {p:?}");
+                            if let Some(f) = log.as_mut() {
+                                let _ = writeln!(f, "--- peregrined terminated: {p:?} ---");
+                            }
                             break;
                         }
                         _ => {}
@@ -102,6 +134,30 @@ fn spawn_daemon(app: &tauri::AppHandle) -> ShellResult {
         Err(e) => {
             eprintln!("failed to spawn peregrined sidecar: {e}");
             Err(format!("failed to spawn peregrined: {e}").into())
+        }
+    }
+}
+
+/// Open (append) `<app_log_dir>/peregrined.log`. Best-effort with a
+/// warn: a read-only log dir must not block the daemon spawn — the
+/// pump task just runs without a file (dev console still echoes).
+fn open_sidecar_log(app: &tauri::AppHandle) -> Option<std::fs::File> {
+    let dir = match app.path().app_log_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("no app log dir, sidecar logs go to console only: {e}");
+            return None;
+        }
+    };
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("cannot create log dir {}: {e}", dir.display());
+        return None;
+    }
+    match std::fs::OpenOptions::new().create(true).append(true).open(dir.join("peregrined.log")) {
+        Ok(f) => Some(f),
+        Err(e) => {
+            eprintln!("cannot open sidecar log file in {}: {e}", dir.display());
+            None
         }
     }
 }

@@ -69,6 +69,36 @@ jobs:
         run: pnpm exec tauri build --bundles deb,appimage
         working-directory: apps/desktop
 
+      - name: Frontend type-check + unit tests (R2 P2-d1)
+        # svelte-check was never wired into any gate: two real type
+        # errors (plugin-notification 1.x `send`, TaskView imported
+        # from the wrong module) sat invisible because vite build
+        # skips type-checking. Both are fixed; keep the gate.
+        run: |
+          pnpm exec svelte-check --tsconfig ./tsconfig.app.json
+          pnpm test
+        working-directory: apps/desktop
+
+      - name: Verify deb dependency closure (B42)
+        # The deb installs on a clean box only if every webkit
+        # runtime lib lands in Depends. Print the control fields so
+        # a missing dependency is visible in the run log (and fails
+        # the step if dpkg-deb itself errors).
+        run: |
+          shopt -s globstar
+          found=0
+          for deb in apps/desktop/src-tauri/target/release/bundle/**/*.deb; do
+            [ -e "$deb" ] || continue
+            found=1
+            echo "=== $deb ==="
+            dpkg-deb -I "$deb"
+            if ! dpkg-deb -f "$deb" Depends | grep -qi 'webkit2gtk'; then
+              echo "::error::webkit2gtk missing from $deb Depends — the deb will not run on a clean install"
+              exit 1
+            fi
+          done
+          [ "$found" = 1 ] || { echo "::error::no .deb produced"; exit 1; }
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -140,3 +140,24 @@ section h2 small { color: var(--line); }
 }
 .error { color: var(--err); margin: 0; font-size: 13px; }
 .btns { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* B39: transient action-failure banner */
+.error-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  margin: 6px 16px 0;
+  padding: 8px 12px;
+  border: 1px solid #b35900;
+  border-radius: 8px;
+  background: #fff4e6;
+  color: #7a3e00;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+.error-banner small {
+  color: #a06a3a;
+  font-size: 0.75rem;
+  white-space: nowrap;
+}

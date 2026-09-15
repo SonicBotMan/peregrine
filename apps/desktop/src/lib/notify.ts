@@ -23,7 +23,7 @@ export async function notifyCompleted(
     const t = task();
     const name = t ? fileName(t.url) : id;
     const pct = t?.fraction != null ? Math.round(t.fraction * 100) : 100;
-    mod.send({
+    mod.sendNotification({
       title: 'Peregrine — download complete',
       body: `${name} finished (${pct}%)`,
     });

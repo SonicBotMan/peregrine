@@ -66,7 +66,10 @@
     void store
       .setGlobalLimit(Number(v))
       .then((s) => (globalLimit = s.global_limit_bps))
-      .catch((e) => console.warn('global limit failed', e));
+      .catch((e) => {
+        console.warn('global limit failed', e);
+        banner(String(e instanceof Error ? e.message : e));
+      });
   }
 
   function commitCustomGlobal() {
@@ -74,7 +77,10 @@
       void store
         .setGlobalLimit(Math.round(customGlobal))
         .then((s) => (globalLimit = s.global_limit_bps))
-        .catch((e) => console.warn('global limit failed', e));
+        .catch((e) => {
+          console.warn('global limit failed', e);
+          banner(String(e instanceof Error ? e.message : e));
+        });
     }
     customGlobal = null;
   }
@@ -94,10 +100,21 @@
     try {
       await p;
     } catch (e) {
-      // Action failures surface as a transient banner row for now;
-      // M3-c adds toast + retry UX.
+      // B39: an action failure must reach the HUMAN — a console.warn
+      // is invisible in the packaged app. Transient banner, and
+      // keep the console line for dev triage.
       console.warn('action failed', e);
+      banner(String(e instanceof Error ? e.message : e));
     }
+  }
+
+  // ---- error banner (B39) -------------------------------------
+  let bannerMsg = $state<string | null>(null);
+  let bannerTimer: ReturnType<typeof setTimeout> | undefined;
+  function banner(msg: string) {
+    bannerMsg = msg;
+    clearTimeout(bannerTimer);
+    bannerTimer = setTimeout(() => (bannerMsg = null), 6000);
   }</script>
 
 <main>
@@ -129,6 +146,14 @@
     </span>
     <button class="primary" onclick={() => (showAdd = true)}>＋ Add</button>
   </header>
+
+  {#if bannerMsg}
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <div class="error-banner" role="alert" onclick={() => (bannerMsg = null)}>
+      <span>⚠ {bannerMsg}</span>
+      <small>click to dismiss</small>
+    </div>
+  {/if}
 
   <section>
     <h2>Active <small>({active.length})</small></h2>
