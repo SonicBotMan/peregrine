@@ -32,19 +32,24 @@ tokio-util = { workspace = true }
 tempfile = { workspace = true }
 axum = { workspace = true }
 
-# M6-a packaging: `cargo deb` builds a headless package with the `pg`
-# CLI (the daemon runs as `pg daemon`). No system deps: pure-Rust TLS
-# (rustls/ring), so `depends` stays empty ($auto would pull libc only).
+# M6-a packaging: `cargo deb` builds a headless package with the full
+# binary set — `pg` CLI + `peregrined` daemon + `peregrine-mcp` bridge.
+# scripts/package.sh builds the whole workspace first, so all three
+# exist in target/release/ (the shared workspace target dir).
+# No system deps: pure-Rust TLS (rustls/ring), so `depends` stays
+# empty ($auto would pull libc only).
 [package.metadata.deb]
 name = "peregrine"
 maintainer = "SonicBotMan <SonicBotMan@users.noreply.github.com>"
 copyright = "2026, SonicBotMan"
 license-file = ["../../LICENSE", "0"]
 extended-description-file = "README.md"
-depends = ""
+depends = "$auto"
 section = "net"
 priority = "optional"
 assets = [
     ["target/release/pg", "usr/bin/", "755"],
+    ["target/release/peregrined", "usr/bin/", "755"],
+    ["target/release/peregrine-mcp", "usr/bin/", "755"],
     ["../../README.md", "usr/share/doc/peregrine/README.md", "644"],
 ]

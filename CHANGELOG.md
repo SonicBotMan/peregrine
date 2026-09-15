@@ -1,5 +1,25 @@
 # Changelog
 
+## v2.0.0-alpha.3 — 2026-09-15
+
+Packaging repair release over alpha.2 (the alpha.2 tarball shipped
+the thin client alone — it cannot run without its daemon).
+
+### Fixed
+
+- **The headless tarball now ships the FULL binary set** — `pg`,
+  `peregrined`, `peregrine-mcp` (alpha.2's tarball had only `pg`).
+  The `.deb` assets list matches (verified by unpacking the built
+  deb). `depends` is now `$auto` so dpkg keeps the glibc floor
+  check. sha256 files carry the bare tarball name so
+  `sha256sum -c` works at any download location, and the tarball
+  is built reproducibly (stable ownership/ordering, mtime pinned
+  to the commit timestamp, `gzip -n`).
+- Test suite: a full-chain regression test pins the re-add
+  instant-complete contract (real daemon + real store + real
+  engine + real HTTP server): re-adding a completed (url, sink)
+  completes with ZERO server fetches and absolute progress.
+
 ## v2.0.0-alpha.2 — 2026-09-15
 
 Fix-and-polish round over alpha.1, all from real-machine
@@ -30,8 +50,8 @@ acceptance (GUI walkthrough + CLI speed benchmarks) findings.
 - CLI: shell completions (`pg completions`), man pages
   (`pg gen-man`), TCP client transport (`--socket tcp:HOST:PORT` /
   `PGRG_SOCKET`).
-- systemd units (`peregrined.service`/`.socket`, `docs/systemd/`)
-  for socket-activated daemon deployment.
+- systemd units (`assets/peregrined.service`, `assets/peregrined@.service`)
+  for daemon deployment (per-user and templated multi-instance).
 - Desktop: single-instance guard, sidecar daemon auto-start with
   explicit-path fallback; shell-completion generators.
 - README: GUI section with real screenshots (live segment panel,
