@@ -425,9 +425,21 @@ impl ProtocolEngine for FtpEngine {
 
             let bytes_done = resume_offset + written;
             if let Some(size) = total.filter(|t| bytes_done != *t) {
-                return Err(ApiError::Network(format!(
-                    "short body: got {bytes_done} of {size} bytes"
-                )));
+                // B56: SIZE-vs-RETR skew is normal (remote appended
+                // or rotated between the two commands) — say WHICH
+                // way it skewed instead of a bare "short body".
+                let skew = if bytes_done < size {
+                    format!(
+                        "short body: got {bytes_done} of {size} bytes (remote shrank or \
+                         connection dropped early)"
+                    )
+                } else {
+                    format!(
+                        "body longer than SIZE: got {bytes_done} of {size} bytes \
+                         (remote grew between SIZE and RETR)"
+                    )
+                };
+                return Err(ApiError::Network(skew));
             }
             progress.on_progress(&DownloadProgress { bytes_done, total });
             Ok(DownloadOutcome {
@@ -455,7 +467,16 @@ async fn open_sink(sink: &Path, truncate: bool) -> Result<tokio::fs::File, ApiEr
             .append(true)
             .open(sink)
             .await
-            .map_err(|e| ApiError::Io(format!("open {}: {e}", sink.display())))?
+            // B52: align with engine-http B19 — a resume into a
+            // missing file is a FRIENDLY error, not a bare ENOENT.
+            .map_err(|e| match e.kind() {
+                std::io::ErrorKind::NotFound => ApiError::Io(format!(
+                    "resume target missing: {} — the partial file was deleted or the \
+                     path is wrong; start a fresh download instead",
+                    sink.display()
+                )),
+                _ => ApiError::Io(format!("open {}: {e}", sink.display())),
+            })?
     };
     Ok(file)
 }

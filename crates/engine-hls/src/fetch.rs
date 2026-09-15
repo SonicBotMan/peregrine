@@ -191,6 +191,14 @@ pub(crate) fn is_cancel(e: &HlsError) -> bool {
     matches!(e, HlsError::Network(m) if m == "cancelled")
 }
 
+/// Permanent HTTP failures no retry can fix (B50): 4xx client
+/// errors, except 408 (request timeout — origin-side, retryable)
+/// and 429 (rate limit — exactly what backoff is for).
+pub(crate) fn is_permanent(e: &HlsError) -> bool {
+    matches!(e, HlsError::Http { status, .. }
+        if (400..500).contains(status) && *status != 408 && *status != 429)
+}
+
 /// Read a whole small body (playlist text, key bytes).
 pub(crate) async fn read_all(body: Incoming) -> Result<Vec<u8>, HlsError> {
     let collected = body.collect().await.map_err(HlsError::network)?.to_bytes();

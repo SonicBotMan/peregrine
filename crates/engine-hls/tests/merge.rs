@@ -1038,3 +1038,72 @@ async fn salvage_replaces_a_stale_sink_atomically() {
     assert_eq!(std::fs::read(&sink).unwrap(), vec![1u8; 8]);
     assert!(!parts.exists());
 }
+
+/// B50: a permanently-404 segment must fail FAST — exactly one
+/// request, no 3× retry backoff (~450ms wasted) against a resource
+/// that is gone for good.
+#[tokio::test]
+async fn permanent_404_segment_is_not_retried() {
+    init_tls();
+    use axum::Router;
+    use axum::http::StatusCode;
+    use axum::routing::get;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let hits = Arc::new(AtomicUsize::new(0));
+    let app = Router::new()
+        .route(
+            "/vod.m3u8",
+            get(|| async {
+                "#EXTM3U
+#EXT-X-TARGETDURATION:4
+#EXTINF:4.0,
+seg0.ts
+#EXTINF:4.0,
+gone.ts
+#EXT-X-ENDLIST
+"
+            }),
+        )
+        .route("/seg0.ts", get(|| async { vec![7u8; 32] }))
+        .route(
+            "/gone.ts",
+            get({
+                let hits = hits.clone();
+                move || {
+                    let hits = hits.clone();
+                    async move {
+                        hits.fetch_add(1, Ordering::SeqCst);
+                        StatusCode::NOT_FOUND
+                    }
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let dir = TempDir::new().unwrap();
+    let sink = dir.path().join("out.ts");
+    let engine = HlsEngine::new().unwrap();
+    let budget = unlimited();
+    let err = engine
+        .download_merge(
+            &job(&format!("http://{addr}/vod.m3u8"), &sink),
+            Arc::new(NoProgress),
+            tokio_util::sync::CancellationToken::new(),
+            &budget,
+        )
+        .await
+        .expect_err("404 segment must fail the download");
+
+    let msg = format!("{err}");
+    assert!(msg.contains("404"), "error should carry the status: {msg}");
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        1,
+        "permanent 404 must NOT be retried (B50)"
+    );
+}

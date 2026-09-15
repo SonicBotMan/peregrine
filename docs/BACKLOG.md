@@ -81,4 +81,6 @@ milestone noted. (R1 review, 2026-02-27)
 - **B58** FTP 分段并行（多控制连接 + REST 分片；服务器兼容性差，v2 研究）。
 - B59 (M4-b2 R2' P2): 跨重启的非 magnet BT 行 purge 删不掉数据——registry 是内存态，重启即空；`.torrent` 行的 hash 无法从 url 推导，只能 remove_sink 兜底。修法：任务完成时把 infohash/torrent 名落任务行，purge 据此定位数据目录。
 - B60 (M4-b2 R2' P2): BT per-task 限速未接（librqbit SessionOptions.ratelimits 支持全局不对称限速，per-torrent 无一等 API）；daemon 侧已 warn 拒绝，接入待上游或轮询节流。
+- B62 (轮C R2 P2): fetch_part_retry 未收敛到 retry_blips（BACKOFF 常量与 arm 顺序双份维护，差异仅在成功路径读 part 长度）。
+- B63 (轮C R2 P2): live 边缘——encoder 先写 playlist 后写 media 的短暂 404 现立即终止录制（旧 3 次重试后同样终止，时间差 ~450ms，非回归）。
 - B61 (M6-a): cargo-dist / systemd unit / 签名（deb 已有；CI 发布链路 M6-b 落）。

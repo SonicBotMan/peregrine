@@ -240,9 +240,22 @@ impl HlsEngine {
             let init = dir.join("init.mp4");
             if !init.exists() {
                 let tmp = dir.join("init.mp4.tmp");
-                self.fetcher
-                    .fetch_part(&map.uri, map.byterange, budget, &cancel, &tmp, &init)
-                    .await?;
+                // B50: same retry posture as segments — a transient
+                // blip on the (tiny, critical) init fetch must not
+                // kill the whole download.
+                let map_uri = map.uri.clone();
+                let map_range = map.byterange;
+                let cancel2 = cancel.clone();
+                Self::retry_blips(&cancel, 3, move || {
+                    let f = &self.fetcher;
+                    let (tmp, init) = (tmp.clone(), init.clone());
+                    let (map_uri, cancel2) = (map_uri.clone(), cancel2.clone());
+                    async move {
+                        f.fetch_part(&map_uri, map_range, budget, &cancel2, &tmp, &init)
+                            .await
+                    }
+                })
+                .await?;
             }
         }
 
@@ -588,6 +601,49 @@ impl HlsEngine {
         std::time::Duration::from_secs_f64((td_eff * 3.0).clamp(1.0, 180.0))
     }
 
+    /// Shared retry core for small critical fetches (B50): 3
+    /// attempts, 50ms/400ms backoff, permanent 4xx fails fast (no
+    /// point hammering a 404 three times), cancel honored before
+    /// every attempt and during every backoff wait.
+    async fn retry_blips<F, Fut>(
+        cancel: &CancellationToken,
+        attempts: u32,
+        mut op: F,
+    ) -> Result<(), HlsError>
+    where
+        F: FnMut() -> Fut,
+        Fut: Future<Output = Result<(), HlsError>>,
+    {
+        const BACKOFF: [std::time::Duration; 2] = [
+            std::time::Duration::from_millis(50),
+            std::time::Duration::from_millis(400),
+        ];
+        for attempt in 0..attempts.max(1) {
+            if cancel.is_cancelled() {
+                return Err(HlsError::Network("cancelled".into()));
+            }
+            match op().await {
+                Ok(()) => return Ok(()),
+                Err(e) if fetch::is_cancel(&e) => return Err(e),
+                Err(e) if fetch::is_permanent(&e) => {
+                    tracing::warn!(attempt, "permanent failure, not retrying: {e}");
+                    return Err(e);
+                }
+                Err(e) if attempt + 1 == attempts => return Err(e),
+                Err(e) => {
+                    tracing::warn!(attempt, "fetch failed, retrying: {e}");
+                    tokio::select! {
+                        _ = cancel.cancelled() => {
+                            return Err(HlsError::Network("cancelled".into()))
+                        }
+                        _ = tokio::time::sleep(BACKOFF[attempt.min(1) as usize]) => {}
+                    }
+                }
+            }
+        }
+        unreachable!("retry loop returns on its final attempt")
+    }
+
     /// Fetch one segment with retries (R2 P1-3): a single 503 blip
     /// must not kill an hours-long recording — and an unretried
     /// failure whose seq slides out of the live window becomes an
@@ -621,6 +677,12 @@ impl HlsEngine {
                     return Ok(len);
                 }
                 Err(e) if fetch::is_cancel(&e) => return Err(e),
+                Err(e) if fetch::is_permanent(&e) => {
+                    // B50: a 404/410/403 segment is gone for good —
+                    // hammering it 3× wastes ~450ms and buys nothing.
+                    tracing::warn!(seq = seg.seq, "permanent failure, not retrying: {e}");
+                    return Err(e);
+                }
                 Err(e) => {
                     let last = attempt + 1 == ATTEMPTS;
                     if last {
