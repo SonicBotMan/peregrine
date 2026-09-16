@@ -24,19 +24,27 @@
 
 ## 界面
 
-深色单栏布局（860px 居中，Inter 字体）：顶栏是品牌 + 实时连接灯（● live / ◌ connecting / ✕ down，WS 断线秒级感知）+ 全局速度与限速预设（off / 512K / 1M / 2M / 4M / 自定义，改完全局即时生效）+ ＋ Add；下方 Active / Completed 两组任务卡片。
+UI V2 —— 对标 Linear 的平铺网格（sharp edges，无圆角卡片）：左侧 192px 过滤侧栏（状态 × 分类 × 计数）+ 40px 全局状态条（↓↑ 实时速率、活动/失败计数，断连时整条变琥珀并冻结列表保留数据）+ 主区任务列表。每行 40px：文件名 / 大小 / 速度 / ETA / 状态 pill，tabular-nums 等宽数字，悬停浮出动作，选中行内嵌展开段级视图（每 Range 一条微条，IDM 招牌视角）。亮暗双主题同构（同一套 OKLCH token，主文字对比度双双 AAA 级）。
 
-每张卡片：文件名 + 保存路径 + 状态胶囊（running 蓝 / completed 绿 / failed 红 / paused 黄）、进度条（probing 阶段滑动动画）、实时速度与百分比、任务级限速下拉、⏸ / ▶ / ✕ 操作。点行尾 ▸ 展开详情：完整 URL / 引擎 / 重试次数等事实行 + **段级实时网格**——每个 Range 一条独立进度条，多段并行的内部视角一目了然（IDM 的招牌视图）。
+键盘优先：⌘K 命令面板（动作 + 任务模糊搜索，`/` 直达）、⌘N 新任务、Space 暂停/恢复、Del 移除（5s undo toast）、`?` 速查表。所有操作乐观更新（实测反馈 ≤120ms）+ REST 回执替换，失败自动回滚。
 
-GUI 是纯薄客户端（Svelte 5，约 1100 行）：零业务逻辑，全部走 daemon 的 REST + WS，所以 CLI / MCP / GUI 三端能力永远一致。桌面形态为 Tauri 2 壳：系统托盘、下载完成原生通知、sidecar 自动拉起 daemon、单实例守护。
+GUI 是纯薄客户端（Svelte 5 + Tailwind 4）：零业务逻辑，全部走 daemon 的 REST + WS，所以 CLI / MCP / GUI 三端能力永远一致。桌面形态为 Tauri 2 壳：系统托盘、下载完成原生通知、sidecar 自动拉起 daemon、单实例守护。
 
-**下载中**（8 段并行 + 全局 512 KB/s 限速 + 段面板展开）：
+**暗色主题**（运行中 / 暂停 / 完成 / 失败混态，真实下载截图）：
 
-![GUI downloading with segment panel](assets/gui-active.png)
+![GUI dark theme with mixed task states](assets/gui-v2-dark.png)
 
-**完成后**（Completed 区 + 100% 终态）：
+**段级视图**（选中行内嵌展开，连接级遥微条）：
 
-![GUI completed tasks](assets/gui-completed.png)
+![Segment panel expanded under selected row](assets/gui-v2-segments.png)
+
+**⌘K 命令面板**（动作 + 任务搜索）：
+
+![Command palette](assets/gui-v2-palette.png)
+
+**亮色主题**（同构 token，一秒切换）：
+
+![GUI light theme](assets/gui-v2-light.png)
 
 ## 真机基准（v2.0.0-alpha.1）
 
