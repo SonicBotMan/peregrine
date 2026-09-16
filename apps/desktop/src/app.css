@@ -404,3 +404,38 @@
   background: var(--line);
   margin: 4px 6px;
 }
+
+/* ---- U3: motion tokens -----------------------------------------
+   One duration/easing for every interactive transition (ui-proposal
+   §4 "restrained motion"). Components reference the vars with a
+   fallback so they also work if this block loads late. */
+:root {
+  --dur: 200ms;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* Row hover/selection/progress-line transitions (TaskRow uses these
+   via .row; the 2px progress-line width animates smoothly too). */
+.row,
+.ctl,
+.ctx-item {
+  transition:
+    background var(--dur) var(--ease),
+    color var(--dur) var(--ease),
+    box-shadow var(--dur) var(--ease);
+}
+.row .progress-line {
+  transition: width var(--dur) var(--ease);
+}
+
+/* SegmentPanel reveal: mount animation instead of measuring height
+   (cheap, no layout thrash at 60fps while rows stream updates). */
+.detail {
+  animation: detail-in var(--dur) var(--ease);
+}
+@keyframes detail-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}

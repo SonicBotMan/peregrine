@@ -12,16 +12,24 @@
     theme,
     onToggleTheme,
     onAdd,
+    onPalette,
   }: {
     theme: Theme;
     onToggleTheme: () => void;
     onAdd: () => void;
+    onPalette: () => void;
   } = $props();
 </script>
 
 <header class="toolbar">
   <span class="brand">Peregrine</span>
   <div class="right">
+    <!-- U3: palette entry — visible affordance for ⌘K//; the
+         dialog itself lives in App (single instance, {#if}-mounted) -->
+    <button class="ctl search" onclick={onPalette} title="Command palette (⌘K or /)">
+      <span class="mag">⌕</span>
+      <span class="sk">⌘K</span>
+    </button>
     <button
       class="ctl icon"
       onclick={onToggleTheme}
@@ -61,6 +69,28 @@
     display: flex;
     align-items: center;
     gap: 8px;
+  }
+  .search {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--dim);
+    font-size: 12px;
+    padding: 3px 10px;
+    min-width: 120px;
+  }
+  .search:hover {
+    color: var(--text);
+  }
+  .mag {
+    font-size: 13px;
+  }
+  .sk {
+    margin-left: auto;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 0 5px;
+    font-size: 11px;
   }
   .ctl.icon {
     padding: 5px 8px;

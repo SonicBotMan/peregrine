@@ -19,6 +19,10 @@
   import type { Conn } from './lib/store.svelte';
   import { notifyCompleted } from './lib/notify';
   import { revealSaved } from './lib/open';
+  import Toasts from './lib/Toasts.svelte';
+  import CommandPalette from './lib/CommandPalette.svelte';
+  import ShortcutsDialog from './lib/ShortcutsDialog.svelte';
+  import { toast } from './lib/toast.svelte';
 
   // Runtime-dependent endpoints: relative under the vite proxy
   // (dev/served), absolute loopback inside the Tauri webview
@@ -32,12 +36,19 @@
       () => void store.resync(),
       () => connDown(),
     ),
-    (id) => void notifyCompleted(id, () => store.list.find((t) => t.id === id)),
+    (id) => {
+      const t = store.list.find((x) => x.id === id);
+      if (t) toast.push(`✓ ${fileName(t.url)} complete`);
+      void notifyCompleted(id, () => store.list.find((t) => t.id === id));
+    },
   );
 
   let showAdd = $state(false);
   let addUrl = $state(''); // drop payload → AddDialog prefill
   let conn: Conn = $state('connecting');
+  // U3 overlays: command palette (⌘K / /) + shortcuts cheat sheet (?)
+  let paletteOpen = $state(false);
+  let helpOpen = $state(false);
   // Plain subscribe (not `$store.conn`): conn is a nested property
   // holding a Svelte store, not a store-valued binding target.
   // WS death flips the badge immediately (resync only runs on
@@ -87,6 +98,7 @@
 
   const visible = $derived(
     store.list.filter((t) => {
+      if (removalHidden.has(t.id)) return false; // optimistic removal window
       if (statusFilter === 'active' && !isActive(t.status)) return false;
       if (statusFilter === 'completed' && t.status !== 'completed') return false;
       if (statusFilter === 'failed' && t.status !== 'failed') return false;
@@ -147,6 +159,108 @@
     }
   }
 
+  // ---- U3: optimistic removal + undo --------------------------------
+  // Remove hides the row immediately and defers the daemon call by
+  // 5s; Undo cancels the timer and un-hides. If the timer fires the
+  // row is already gone from view, so store.remove() is just the
+  // backend truth catching up with the UI.
+  let hidden = $state<string[]>([]);
+  const removalHidden = $derived(new Set(hidden));
+  const removalTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  function removeTask(id: string) {
+    const t = store.list.find((x) => x.id === id);
+    if (!t || hidden.includes(id)) return;
+    hidden.push(id);
+    if (selectedId === id) selectedId = null;
+    const name = fileName(t.url);
+    removalTimers.set(
+      id,
+      setTimeout(() => {
+        removalTimers.delete(id);
+        hidden = hidden.filter((h) => h !== id); // store.remove re-folds
+        void act(store.remove(id));
+      }, 5000),
+    );
+    toast.push(`Removed ${name}`, {
+      undo: () => {
+        const tm = removalTimers.get(id);
+        if (tm) {
+          clearTimeout(tm);
+          removalTimers.delete(id);
+        }
+        hidden = hidden.filter((h) => h !== id); // row returns, data intact
+      },
+    });
+  }
+
+  function fileName(url: string): string {
+    try {
+      const u = new URL(url);
+      const last = u.pathname.split('/').filter(Boolean).pop();
+      return last ? decodeURIComponent(last) : url;
+    } catch {
+      return url;
+    }
+  }
+
+  // ---- U3: keyboard layer -------------------------------------------
+  // Global bindings live here, overlay-local keys (Esc) live in the
+  // overlay components. These are page-level handlers — inside the
+  // Tauri webview they behave exactly like in a browser tab; no
+  // OS-global-shortcut plugin is involved (that risk from the
+  // proposal applies to system-wide hotkeys, which we don't claim).
+  function isTyping(e: KeyboardEvent): boolean {
+    const el = e.target as HTMLElement | null;
+    if (!el) return false;
+    return (
+      el.isContentEditable ||
+      el instanceof HTMLInputElement ||
+      el instanceof HTMLTextAreaElement ||
+      el instanceof HTMLSelectElement
+    );
+  }
+
+  function togglePauseSelected() {
+    if (!selectedId) return;
+    const t = store.list.find((x) => x.id === selectedId);
+    if (!t) return;
+    if (t.status === 'running' || t.status === 'queued') void act(store.pause(t.id));
+    else if (t.status === 'paused') void act(store.resume(t.id));
+  }
+
+  function onKeydown(e: KeyboardEvent) {
+    const mod = e.metaKey || e.ctrlKey;
+    if (mod && e.key.toLowerCase() === 'k') {
+      e.preventDefault();
+      paletteOpen = !paletteOpen;
+      return;
+    }
+    if (mod && e.key.toLowerCase() === 'n') {
+      e.preventDefault();
+      addUrl = '';
+      showAdd = true;
+      return;
+    }
+    if (paletteOpen || helpOpen) return; // overlays own the keyboard
+    if (isTyping(e)) return;
+    if (e.key === ' ') {
+      e.preventDefault(); // Space also scrolls the list — own it
+      togglePauseSelected();
+    } else if (e.key === 'Delete' || e.key === 'Backspace') {
+      if (selectedId) {
+        e.preventDefault();
+        removeTask(selectedId);
+      }
+    } else if (e.key === '/') {
+      e.preventDefault();
+      paletteOpen = true;
+    } else if (e.key === '?') {
+      e.preventDefault();
+      helpOpen = true;
+    }
+  }
+
   // ---- U2: window-wide URL drag & drop -------------------------
   let dropping = $state(false);
   let dragDepth = 0; // enter/leave nest — net counter, not booleans
@@ -197,6 +311,7 @@
   ondragenter={onDragEnter}
   ondragleave={onDragLeave}
   ondrop={onDrop}
+  onkeydown={onKeydown}
 />
 
 <div class="shell">
@@ -210,7 +325,7 @@
     />
   </aside>
 
-  <Toolbar {theme} onToggleTheme={toggleTheme} onAdd={() => ((addUrl = ''), (showAdd = true))} />
+  <Toolbar {theme} onToggleTheme={toggleTheme} onAdd={() => ((addUrl = ''), (showAdd = true))} onPalette={() => (paletteOpen = true)} />
 
   <StatusBar totalSpeed={totalSpeed} active={counts.active} failed={counts.failed} {conn} />
 
@@ -242,7 +357,7 @@
           selected={selectedId === task.id}
           onPause={(id) => void act(store.pause(id))}
           onResume={(id) => void act(store.resume(id))}
-          onRemove={(id) => void act(store.remove(id))}
+          onRemove={(id) => removeTask(id)}
           onLimit={(id, bps) => void act(store.setTaskLimit(id, bps))}
           onSelect={select}
           onOpenFile={(id) => void openFile(id)}
@@ -261,6 +376,27 @@
     defaultDir="~/Downloads"
   />
 {/if}
+
+{#if paletteOpen}
+  <CommandPalette
+    {store}
+    onClose={() => (paletteOpen = false)}
+    onAdd={() => ((addUrl = ''), (showAdd = true))}
+    onToggleTheme={toggleTheme}
+    onSelectTask={(id) => {
+      // bring the row into view whatever the current filters are
+      statusFilter = 'all';
+      categoryFilter = null;
+      selectedId = id;
+    }}
+  />
+{/if}
+
+{#if helpOpen}
+  <ShortcutsDialog onClose={() => (helpOpen = false)} />
+{/if}
+
+<Toasts />
 
 <style>
   .shell {
