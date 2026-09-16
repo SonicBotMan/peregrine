@@ -1,141 +1,292 @@
 <script lang="ts">
   /**
-   * One task row: name, progress bar (or spinner for unknown size),
-   * derived speed, status chip, throttle select, and the action
-   * cluster (pause / resume / remove). Nearly dumb by design — all
-   * list truth lives in the store; the row owns only its expand
-   * toggle + throttle select state.
+   * One task row (U2 rebuild): flat tiled column grid —
+   *   chevron | name | pct | done/total | speed | eta | status chip
+   * with a 2px status-tinted progress underline (indeterminate
+   * shimmer when size is unknown) and a hover-revealed action
+   * cluster fading over the tail columns. Click / Enter / Space
+   * toggles selection (inline SegmentPanel expansion below the
+   * row); double-click a completed row reveals the artifact;
+   * right-click opens the context menu. The row element is ours
+   * (bits-ui `child` snippet pattern) so scoped styles apply.
+   * All list truth lives in the store — the row stays dumb.
    */
+  import { ContextMenu } from 'bits-ui';
   import SegmentPanel from './SegmentPanel.svelte';
-  import { LIMIT_PRESETS, presetFor, formatBytes } from './format';
+  import { formatBytes, formatBps, formatEta } from './format';
   import type { TaskView } from './store.svelte';
+  import { Pause, Play, X } from '@lucide/svelte';
 
   let {
     task,
     daemon,
+    selected = false,
     onPause,
     onResume,
     onRemove,
     onLimit,
+    onSelect,
+    onOpenFile,
+    onCopyUrl,
   }: {
     task: TaskView;
     daemon: import('./daemon').Daemon;
+    selected?: boolean;
     onPause: (id: string) => void;
     onResume: (id: string) => void;
     onRemove: (id: string) => void;
     onLimit: (id: string, bps: number) => void;
+    onSelect: (id: string) => void;
+    onOpenFile: (id: string) => void;
+    onCopyUrl: (id: string) => void;
   } = $props();
 
-  let open = $state(false);
-  let custom = $state<number | null>(null); // non-preset value being typed
-
   const name = $derived(task.url.split('/').filter(Boolean).pop() ?? task.url);
-  const size = $derived(formatBytes(task.total_bytes));
-  const done = $derived(formatBytes(task.received_bytes));
   const pct = $derived(task.fraction !== null ? Math.round(task.fraction * 100) : null);
-  const statusClass = $derived(task.status);
-
-  /** Select value: preset bps as string, or 'custom'. */
-  const limitSel = $derived(
-    custom !== null ? 'custom' : (presetFor(task.speed_limit_bps) ?? 'custom'),
+  const done = $derived(formatBytes(task.received_bytes));
+  const size = $derived(formatBytes(task.total_bytes));
+  const speed = $derived(
+    task.speed !== null && task.status === 'running' ? formatBps(task.speed) : '—',
   );
+  const eta = $derived(
+    task.status === 'running' &&
+      task.total_bytes !== null &&
+      task.speed !== null &&
+      task.speed > 0
+      ? formatEta(task.total_bytes - task.received_bytes, task.speed)
+      : '—',
+  );
+  const running = $derived(task.status === 'running' || task.status === 'queued');
+  const resumable = $derived(task.status === 'paused' || task.status === 'failed');
 
-  function pickLimit(ev: Event) {
-    const v = (ev.currentTarget as HTMLSelectElement).value;
-    if (v === 'custom') {
-      custom = task.speed_limit_bps; // start editing from current
-      return;
-    }
-    custom = null;
-    onLimit(task.id, Number(v));
-  }
-
-  function commitCustom() {
-    if (custom !== null && Number.isFinite(custom) && custom >= 0) {
-      onLimit(task.id, Math.round(custom));
-    }
-    custom = null;
+  function stop<T extends () => void>(fn: T) {
+    return (e: Event) => {
+      e.stopPropagation();
+      fn();
+    };
   }
 </script>
 
-<div class="row" data-status={statusClass}>
-  <div class="main">
-    <div class="title">
-      <span class="name" title={task.url}>{name}</span>
-      <span class="path" title={task.save_path}>{task.save_path}</span>
-    </div>
-
-    <div class="progress" class:indeterminate={pct === null}>
-      {#if pct !== null}
-        <div class="bar" style:width="{pct}%"></div>
-      {:else}
-        <div class="bar anim"></div>
-      {/if}
-    </div>
-
-    <div class="meta">
-      <button
-        class="chevron"
-        class:open
-        aria-expanded={open}
-        aria-label="Toggle segment details"
-        onclick={() => (open = !open)}
-        title="Details"
+<ContextMenu.Root>
+  <ContextMenu.Trigger>
+    {#snippet child({ props })}
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
+      <div
+        {...props}
+        class="row {selected ? 'selected' : ''}"
+        data-id={task.id}
+        data-status={task.status}
+        role="button"
+        tabindex={0}
+        aria-pressed={selected}
+        aria-label={`${name} — ${task.status}`}
+        title={task.error ? task.error : task.url}
+        onclick={() => onSelect(task.id)}
+        ondblclick={() => task.status === 'completed' && onOpenFile(task.id)}
+        onkeydown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            onSelect(task.id);
+          }
+        }}
       >
-        {open ? '▾' : '▸'}
-      </button>
-      <span class="chip" data-kind={task.status}>{task.status}</span>
-      <span>{done}{size !== '—' ? ` / ${size}` : ''}</span>
-      {#if pct !== null}
-        <span>{pct}%</span>
-      {/if}
-      {#if task.speed !== null && task.status === 'running'}
-        <span>{formatBytes(task.speed)}/s</span>
-      {/if}
-      {#if task.error}
-        <span class="err" title={task.error}>{task.error}</span>
-      {/if}
-      <span class="limit">
-        {#if custom !== null}
-          <input
-            class="ctl-input"
-            type="number"
-            min="0"
-            bind:value={custom}
-            onblur={commitCustom}
-            onkeydown={(e) => e.key === 'Enter' && commitCustom()}
-            title="bytes/sec"
-          />
-        {:else}
-          <select
-            class="ctl-select"
-            value={limitSel}
-            onchange={pickLimit}
-            title="Speed limit"
-            aria-label={`Speed limit for ${name}`}
+        <span class="chev" class:open={selected} aria-hidden="true">▸</span>
+        <span class="name" class:errored={!!task.error}>{name}</span>
+        <span class="col pct">{pct !== null ? `${pct}%` : '—'}</span>
+        <span class="col size">{done}{size !== '—' ? ` / ${size}` : ''}</span>
+        <span class="col speed">{speed}</span>
+        <span class="col eta">{eta}</span>
+        <span class="chip" data-kind={task.status}>{task.status}</span>
+
+        <span class="cluster" role="group" aria-label="Row actions">
+          {#if running}
+            <button
+              class="ctl icon"
+              title="Pause"
+              aria-label={`Pause ${name}`}
+              onclick={stop(() => onPause(task.id))}
+            >
+              <Pause size={13} />
+            </button>
+          {:else if resumable}
+            <button
+              class="ctl icon"
+              title={task.status === 'failed' ? 'Retry' : 'Resume'}
+              aria-label={`${task.status === 'failed' ? 'Retry' : 'Resume'} ${name}`}
+              onclick={stop(() => onResume(task.id))}
+            >
+              <Play size={13} />
+            </button>
+          {/if}
+          <button
+            class="ctl icon danger"
+            title="Remove"
+            aria-label={`Remove ${name}`}
+            onclick={stop(() => onRemove(task.id))}
           >
-            {#each LIMIT_PRESETS as p (p.bps)}
-              <option value={String(p.bps)}>{p.label}</option>
-            {/each}
-            <option value="custom">custom…</option>
-          </select>
-        {/if}
-        <span class="unit">B/s</span>
-      </span>
-    </div>
-  </div>
+            <X size={13} />
+          </button>
+        </span>
 
-  <div class="actions">
-    {#if task.status === 'running' || task.status === 'queued'}
-      <button class="ctl" onclick={() => onPause(task.id)} title="Pause">⏸</button>
-    {/if}
-    {#if task.status === 'paused' || task.status === 'failed'}
-      <button class="ctl" onclick={() => onResume(task.id)} title="Resume">▶</button>
-    {/if}
-    <button class="ctl danger" onclick={() => onRemove(task.id)} title="Remove">✕</button>
-  </div>
-</div>
+        <span class="line" aria-hidden="true">
+          {#if pct !== null}
+            <i style:width="{pct}%"></i>
+          {:else}
+            <i class="anim"></i>
+          {/if}
+        </span>
+      </div>
+    {/snippet}
+  </ContextMenu.Trigger>
 
-{#if open}
-  <SegmentPanel {task} {daemon} onLimit={onLimit} />
+  <ContextMenu.Content class="ctx">
+    {#if running}
+      <ContextMenu.Item class="ctx-item" onSelect={() => onPause(task.id)}>Pause</ContextMenu.Item>
+    {/if}
+    {#if resumable}
+      <ContextMenu.Item class="ctx-item" onSelect={() => onResume(task.id)}>
+        {task.status === 'failed' ? 'Retry' : 'Resume'}
+      </ContextMenu.Item>
+    {/if}
+    <ContextMenu.Item class="ctx-item" onSelect={() => onCopyUrl(task.id)}>Copy URL</ContextMenu.Item>
+    {#if task.status === 'completed'}
+      <ContextMenu.Item class="ctx-item" onSelect={() => onOpenFile(task.id)}>
+        Show in folder
+      </ContextMenu.Item>
+    {/if}
+    <ContextMenu.Separator class="ctx-sep" />
+    <ContextMenu.Item class="ctx-item danger" onSelect={() => onRemove(task.id)}>
+      Remove…
+    </ContextMenu.Item>
+  </ContextMenu.Content>
+</ContextMenu.Root>
+
+{#if selected}
+  <SegmentPanel {task} {daemon} {onLimit} />
 {/if}
+
+<style>
+  .row {
+    position: relative;
+    display: grid;
+    grid-template-columns: 22px minmax(0, 1fr) 48px 118px 72px 56px 84px;
+    align-items: center;
+    column-gap: 10px;
+    height: 40px;
+    padding: 0 14px 0 10px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--line-subtle);
+    cursor: default;
+    user-select: none;
+    transition: background 0.12s ease;
+  }
+  .row:hover {
+    background: var(--elevated);
+  }
+  .row:focus-visible {
+    outline: none;
+    box-shadow: inset 0 0 0 2px var(--accent);
+  }
+  .row.selected {
+    box-shadow: inset 0 0 0 2px var(--accent);
+  }
+  .chev {
+    color: var(--dim);
+    font-size: 11px;
+    line-height: 1;
+    text-align: center;
+    transition: transform 0.15s ease;
+  }
+  .chev.open {
+    transform: rotate(90deg);
+    color: var(--text);
+  }
+  .name {
+    font-weight: 600;
+    font-size: 13px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .name.errored {
+    color: var(--err);
+  }
+  .col {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 12px;
+    color: var(--dim);
+    text-align: right;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .row:hover .col,
+  .row.selected .col {
+    color: var(--text);
+  }
+  /* hover action cluster — fades over the tail columns */
+  .cluster {
+    position: absolute;
+    right: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    display: flex;
+    gap: 6px;
+    padding-left: 28px;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      color-mix(in oklch, var(--elevated) 88%, transparent) 35%
+    );
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.12s ease;
+  }
+  .row:hover .cluster,
+  .row:focus-within .cluster {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .cluster button {
+    padding: 4px 7px;
+    line-height: 0;
+  }
+  /* 2px progress underline */
+  .line {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: -1px; /* overlap the row border — the line IS the border while active */
+    height: 2px;
+    background: transparent;
+    pointer-events: none;
+  }
+  .line i {
+    display: block;
+    height: 100%;
+    background: var(--accent);
+    transition: width 0.3s ease;
+  }
+  .row[data-status='completed'] .line i {
+    background: var(--ok);
+  }
+  .row[data-status='paused'] .line i {
+    background: var(--warn);
+  }
+  .row[data-status='failed'] .line i {
+    background: var(--err);
+  }
+  .line i.anim {
+    width: 30%;
+    animation: row-slide 1.1s ease-in-out infinite;
+  }
+  @keyframes row-slide {
+    0% {
+      margin-left: -30%;
+    }
+    100% {
+      margin-left: 100%;
+    }
+  }
+</style>

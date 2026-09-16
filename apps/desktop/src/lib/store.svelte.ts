@@ -16,6 +16,7 @@
  * once silently broke every delta computation (M3-a R2 P1-2).
  */
 import { writable } from 'svelte/store';
+import { SvelteMap } from 'svelte/reactivity';
 import type { Daemon, EventStream } from './daemon';
 import type { EngineEvent, Task } from './types';
 
@@ -69,7 +70,15 @@ export function createStore(
    * the caller). Wired to OS notifications in Tauri, no-op on web. */
   onCompleted?: (id: string) => void,
 ) {
-  let tasks = $state(new Map<string, TaskView>());
+  // SvelteMap, NOT $state(new Map()): $state's deep proxy only
+  // wraps plain objects/arrays — a raw Map passes through unproxied
+  // (proxy.js returns non-plain prototypes as-is), so `.set()` folds
+  // would mutate invisibly and the GUI would freeze at its snapshot
+  // (U2 bug: pct stuck while the daemon streamed). SvelteMap carries
+  // its own version signals, so mutations invalidate readers directly;
+  // resync() therefore clear()+set()s in place instead of replacing
+  // the instance (a bare reassignment would be untracked).
+  const tasks = new SvelteMap<string, TaskView>();
   const conn = writable<Conn>('connecting');
 
   // resync throttle: startup + reconnect + unknown-id events can all
@@ -107,9 +116,10 @@ export function createStore(
     lastAt = Date.now();
     try {
       const rows = await daemon.list();
-      const next = new Map<string, TaskView>();
-      for (const t of rows) next.set(t.id, view(t, tasks.get(t.id)));
-      tasks = next;
+      // In-place clear+set: every mutation path must go through the
+      // SvelteMap's tracked methods (see declaration comment).
+      tasks.clear();
+      for (const t of rows) tasks.set(t.id, view(t, tasks.get(t.id)));
       conn.set('live');
     } catch {
       conn.set('down');

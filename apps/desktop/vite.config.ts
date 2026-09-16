@@ -7,6 +7,10 @@ import tailwindcss from '@tailwindcss/vite';
 // Production (Tauri) bundles the built assets; the webview's fetch
 // base is wired in M3-b.
 export default defineConfig({
+  // Under vitest, resolve svelte to the client (browser) build —
+  // otherwise `mount()` throws lifecycle_function_unavailable
+  // (server exports) and component reactivity tests can't run.
+  ...(process.env.VITEST ? { resolve: { conditions: ['browser'] } } : {}),
   plugins: [tailwindcss(), svelte()],
   server: {
     port: 5199,

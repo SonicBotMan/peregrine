@@ -1,10 +1,11 @@
 {
   "$schema": "gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Peregrine web layer capabilities: notifications only. The daemon sidecar is spawned from the RUST shell (no JS shell perms needed — least privilege), and the download surface is daemon REST/WS over loopback, not IPC commands.",
+  "description": "Peregrine web layer capabilities: notifications + opener (reveal finished file). The daemon sidecar is spawned from the RUST shell (no JS shell perms needed — least privilege), and the download surface is daemon REST/WS over loopback, not IPC commands.",
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "notification:default"
+    "notification:default",
+    "opener:default"
   ]
 }

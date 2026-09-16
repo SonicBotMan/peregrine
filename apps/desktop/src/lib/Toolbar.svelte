@@ -1,11 +1,12 @@
 <script lang="ts">
   /**
-   * Top toolbar (U1): 48px strip. Kept minimal — actions live next
-   * to their objects (row buttons / context menu in U2/U3); the
-   * toolbar hosts only app-level chrome: title, theme, Add.
-   * The ⌘K search box lands here in U3.
+   * Top toolbar (U1): 46px strip. Kept minimal — actions live next
+   * to their objects (row cluster / context menu); the toolbar
+   * hosts only app-level chrome: title, theme, Add. U2: lucide
+   * icons replace text glyphs. The ⌘K search box lands here in U3.
    */
   import type { Theme } from './theme';
+  import { Sun, Moon, Plus } from '@lucide/svelte';
 
   let {
     theme,
@@ -27,9 +28,16 @@
       title={theme === 'dark' ? 'Switch to light' : 'Switch to dark'}
       aria-label="Toggle theme"
     >
-      {theme === 'dark' ? '☾' : '☀'}
+      {#if theme === 'dark'}
+        <Sun size={14} />
+      {:else}
+        <Moon size={14} />
+      {/if}
     </button>
-    <button class="ctl primary" onclick={onAdd}>＋ Add</button>
+    <button class="ctl primary" onclick={onAdd}>
+      <Plus size={14} />
+      Add
+    </button>
   </div>
 </header>
 
@@ -55,7 +63,10 @@
     gap: 8px;
   }
   .ctl.icon {
-    padding: 4px 9px;
-    font-size: 13px;
+    padding: 5px 8px;
+    line-height: 0;
+  }
+  .ctl.primary {
+    line-height: 1;
   }
 </style>

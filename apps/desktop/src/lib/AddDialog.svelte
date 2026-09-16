@@ -1,27 +1,42 @@
 <script lang="ts">
   /** Add-download dialog: URL, save path, priority. Validates the
-   * same rules the daemon enforces (client-side hint only — the
-   * daemon's 422/409 remains the authority). */
+   * same schemes the daemon's auto-router accepts (client-side
+   * hint only — the daemon's 422/409 remains the authority).
+   * U2: `initialUrl` prefills from drag-and-drop; the last save
+   * dir persists in localStorage so the second add is one field
+   * shorter. */
   let {
     onAdd,
     onClose,
     defaultDir,
+    initialUrl = '',
   }: {
     onAdd: (url: string, savePath: string, priority: 'low' | 'normal' | 'high') => Promise<void>;
     onClose: () => void;
     defaultDir: string;
+    initialUrl?: string;
   } = $props();
 
-  let url = $state('');
-  let path = $state('');
+  const LAST_DIR_KEY = 'peregrine-last-dir';
+
+  // Intentional snapshot: the dialog remounts per open ({#if}), so
+  // $state(initialUrl) seeds from the CURRENT drop payload.
+  // svelte-ignore state_referenced_locally
+  let url = $state(initialUrl);
+  let path = $state(localStorage.getItem(LAST_DIR_KEY) ?? '');
   let priority = $state<'low' | 'normal' | 'high'>('normal');
   let error = $state<string | null>(null);
   let busy = $state(false);
 
+  // Schemes the engine registry routes today (http/hls via
+  // auto-router, ftp, magnet/bt, .torrent via file://). Anything
+  // else would 422 at the daemon anyway.
+  const URL_OK = /^(https?|ftps?|magnet|bt|file):/i;
+
   async function submit() {
     error = null;
-    if (!/^https?:\/\//.test(url)) {
-      error = 'URL must be http(s)';
+    if (!URL_OK.test(url)) {
+      error = 'URL must be http(s), ftp, magnet:, bt: or file:';
       return;
     }
     if (!path.trim()) {
@@ -31,6 +46,7 @@
     busy = true;
     try {
       await onAdd(url.trim(), path.trim(), priority);
+      localStorage.setItem(LAST_DIR_KEY, path.trim());
       onClose();
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
@@ -40,9 +56,20 @@
   }
 </script>
 
+<!-- Modal open ⇒ window-level Escape closes (U2 keyboard floor;
+component mounts/unmounts with the dialog, so no leak). -->
+<svelte:window onkeydown={(e) => e.key === 'Escape' && onClose()} />
+
+<!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
 <div class="overlay" onclick={onClose}>
   <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-  <div class="dialog" onclick={(e) => e.stopPropagation()} role="dialog" aria-label="Add download">
+  <div
+    class="dialog"
+    onclick={(e) => e.stopPropagation()}
+    role="dialog"
+    aria-label="Add download"
+    tabindex={-1}
+  >
     <h2>Add download</h2>
     <label>
       URL
