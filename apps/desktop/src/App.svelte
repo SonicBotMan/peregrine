@@ -1,9 +1,20 @@
 <script lang="ts">
+  /**
+   * App shell (U1): inverted-L layout (ui-proposal §5) —
+   *   sidebar (filters + global limit) | toolbar / statusbar / main
+   * Flat tiled grid, sharp edges, zero gaps; the task list owns the
+   * pixel budget. All task truth stays in the runes store; this
+   * component wires filters + banner + dialog state only.
+   */
   import { Daemon, EventStream, detectBases } from './lib/daemon';
   import { createStore, type TaskStore } from './lib/store.svelte';
   import TaskRow from './lib/TaskRow.svelte';
   import AddDialog from './lib/AddDialog.svelte';
-  import { LIMIT_PRESETS, presetFor } from './lib/format';
+  import Sidebar, { type StatusFilter } from './lib/Sidebar.svelte';
+  import Toolbar from './lib/Toolbar.svelte';
+  import StatusBar from './lib/StatusBar.svelte';
+  import { categorize, type Category } from './lib/categorize';
+  import { initialTheme, applyTheme, saveTheme, type Theme } from './lib/theme';
   import type { Conn } from './lib/store.svelte';
   import { notifyCompleted } from './lib/notify';
 
@@ -33,67 +44,59 @@
   }
   store.conn.subscribe((c: Conn) => (conn = c));
 
-  const active = $derived(store.list.filter((t) => t.status !== 'completed'));
-  const done = $derived(store.list.filter((t) => t.status === 'completed'));
-  const totalSpeed = $derived(
-    active.reduce((sum, t) => sum + (t.speed ?? 0), 0),
-  );
+  // ---- filters (sidebar state lifted here; store stays pure) ---
+  let statusFilter = $state<StatusFilter>('all');
+  let categoryFilter = $state<Category | null>(null);
 
-  // ---- global limit (settings domain, not task truth) ----------
-  let globalLimit = $state(0);
-  let customGlobal = $state<number | null>(null);
+  const isActive = (s: string) => s === 'queued' || s === 'running' || s === 'paused';
 
-  $effect(() => {
-    // One-shot bootstrap; live changes by OTHER clients are
-    // out of scope for v1 (B37 family: events carry task deltas only).
-    void store
-      .getSettings()
-      .then((s) => (globalLimit = s.global_limit_bps))
-      .catch(() => {});
+  const counts = $derived.by(() => {
+    const c = {
+      all: store.list.length,
+      active: 0,
+      completed: 0,
+      failed: 0,
+      categories: {} as Record<Category, number>,
+    };
+    for (const t of store.list) {
+      if (t.status === 'completed') c.completed++;
+      else if (t.status === 'failed') c.failed++;
+      else c.active++;
+      const cat = categorize(t.url);
+      c.categories[cat] = (c.categories[cat] ?? 0) + 1;
+    }
+    return c;
   });
 
-  const globalSel = $derived(
-    customGlobal !== null ? 'custom' : (presetFor(globalLimit) ?? 'custom'),
+  const visible = $derived(
+    store.list.filter((t) => {
+      if (statusFilter === 'active' && !isActive(t.status)) return false;
+      if (statusFilter === 'completed' && t.status !== 'completed') return false;
+      if (statusFilter === 'failed' && t.status !== 'failed') return false;
+      if (categoryFilter !== null && categorize(t.url) !== categoryFilter) return false;
+      return true;
+    }),
   );
 
-  function pickGlobal(ev: Event) {
-    const v = (ev.currentTarget as HTMLSelectElement).value;
-    if (v === 'custom') {
-      customGlobal = globalLimit;
-      return;
-    }
-    customGlobal = null;
-    void store
-      .setGlobalLimit(Number(v))
-      .then((s) => (globalLimit = s.global_limit_bps))
-      .catch((e) => {
-        console.warn('global limit failed', e);
-        banner(String(e instanceof Error ? e.message : e));
-      });
+  const totalSpeed = $derived(
+    store.list.reduce((sum, t) => sum + (t.speed ?? 0), 0),
+  );
+
+  // ---- theme --------------------------------------------------
+  let theme = $state<Theme>(initialTheme());
+  function toggleTheme() {
+    theme = theme === 'dark' ? 'light' : 'dark';
+    applyTheme(theme);
+    saveTheme(theme);
   }
 
-  function commitCustomGlobal() {
-    if (customGlobal !== null && Number.isFinite(customGlobal) && customGlobal >= 0) {
-      void store
-        .setGlobalLimit(Math.round(customGlobal))
-        .then((s) => (globalLimit = s.global_limit_bps))
-        .catch((e) => {
-          console.warn('global limit failed', e);
-          banner(String(e instanceof Error ? e.message : e));
-        });
-    }
-    customGlobal = null;
-  }
-
-  function fmtSpeed(n: number): string {
-    const units = ['B/s', 'KB/s', 'MB/s', 'GB/s'];
-    let v = n;
-    let i = 0;
-    while (v >= 1024 && i < units.length - 1) {
-      v /= 1024;
-      i++;
-    }
-    return `${v >= 100 || i === 0 ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
+  // ---- B39 banner ---------------------------------------------
+  let bannerMsg = $state<string | null>(null);
+  let bannerTimer: ReturnType<typeof setTimeout> | undefined;
+  function banner(msg: string) {
+    bannerMsg = msg;
+    clearTimeout(bannerTimer);
+    bannerTimer = setTimeout(() => (bannerMsg = null), 6000);
   }
 
   async function act(p: Promise<unknown>) {
@@ -107,60 +110,45 @@
       banner(String(e instanceof Error ? e.message : e));
     }
   }
+</script>
 
-  // ---- error banner (B39) -------------------------------------
-  let bannerMsg = $state<string | null>(null);
-  let bannerTimer: ReturnType<typeof setTimeout> | undefined;
-  function banner(msg: string) {
-    bannerMsg = msg;
-    clearTimeout(bannerTimer);
-    bannerTimer = setTimeout(() => (bannerMsg = null), 6000);
-  }</script>
+<div class="shell">
+  <aside>
+    <Sidebar
+      {store}
+      bind:status={statusFilter}
+      bind:category={categoryFilter}
+      {counts}
+      onBanner={banner}
+    />
+  </aside>
 
-<main>
-  <header>
-    <h1>Peregrine</h1>
-    <span class="conn" data-kind={conn}>
-      {conn === 'live' ? '●' : conn === 'connecting' ? '◌' : '✕'}
-      {conn}
-    </span>
-    <span class="speed">{fmtSpeed(totalSpeed)}</span>
-    <span class="global-limit" title="Global speed limit">
-      {#if customGlobal !== null}
-        <input
-          type="number"
-          min="0"
-          bind:value={customGlobal}
-          onblur={commitCustomGlobal}
-          onkeydown={(e) => e.key === 'Enter' && commitCustomGlobal()}
-        />
-      {:else}
-        <select value={globalSel} onchange={pickGlobal}>
-          {#each LIMIT_PRESETS as p (p.bps)}
-            <option value={String(p.bps)}>{p.label}</option>
-          {/each}
-          <option value="custom">custom…</option>
-        </select>
-      {/if}
-      <span class="unit">B/s</span>
-    </span>
-    <button class="primary" onclick={() => (showAdd = true)}>＋ Add</button>
-  </header>
+  <Toolbar {theme} onToggleTheme={toggleTheme} onAdd={() => (showAdd = true)} />
+
+  <StatusBar totalSpeed={totalSpeed} active={counts.active} failed={counts.failed} {conn} />
 
   {#if bannerMsg}
-    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_click_events_have_key_events -->
     <div class="error-banner" role="alert" onclick={() => (bannerMsg = null)}>
       <span>⚠ {bannerMsg}</span>
       <small>click to dismiss</small>
     </div>
   {/if}
 
-  <section>
-    <h2>Active <small>({active.length})</small></h2>
-    {#if active.length === 0}
-      <p class="empty">Nothing in flight.</p>
+  <main>
+    {#if visible.length === 0}
+      <div class="empty">
+        <div class="empty-icon">↓</div>
+        {#if store.list.length === 0}
+          <p>No downloads yet</p>
+          <p class="hint">Hit ＋ Add to start your first download</p>
+        {:else}
+          <p>Nothing matches this filter</p>
+          <p class="hint">{counts.all} task{counts.all === 1 ? '' : 's'} in other views</p>
+        {/if}
+      </div>
     {:else}
-      {#each active as task (task.id)}
+      {#each visible as task (task.id)}
         <TaskRow
           {task}
           {daemon}
@@ -171,27 +159,68 @@
         />
       {/each}
     {/if}
-  </section>
+  </main>
+</div>
 
-  <section>
-    <h2>Completed <small>({done.length})</small></h2>
-    {#each done as task (task.id)}
-      <TaskRow
-        {task}
-        {daemon}
-        onPause={(id) => void act(store.pause(id))}
-        onResume={(id) => void act(store.resume(id))}
-        onRemove={(id) => void act(store.remove(id))}
-        onLimit={(id, bps) => void act(store.setTaskLimit(id, bps))}
-      />
-    {/each}
-  </section>
+{#if showAdd}
+  <AddDialog
+    onAdd={(url, path, prio) => store.add(url, path, prio)}
+    onClose={() => (showAdd = false)}
+    defaultDir="~/Downloads"
+  />
+{/if}
 
-  {#if showAdd}
-    <AddDialog
-      onAdd={(url, path, prio) => store.add(url, path, prio)}
-      onClose={() => (showAdd = false)}
-      defaultDir="~/Downloads"
-    />
-  {/if}
-</main>
+<style>
+  .shell {
+    display: grid;
+    height: 100vh;
+    grid-template-columns: 192px 1fr;
+    grid-template-rows: 46px 36px auto 1fr;
+    grid-template-areas:
+      'sidebar toolbar'
+      'sidebar statusbar'
+      'sidebar banner'
+      'sidebar main';
+    overflow: hidden;
+  }
+  aside {
+    grid-area: sidebar;
+    min-height: 0;
+  }
+  .shell > :global(header) {
+    grid-area: toolbar;
+  }
+  .shell > :global(.statusbar) {
+    grid-area: statusbar;
+  }
+  .shell > :global(.error-banner) {
+    grid-area: banner;
+  }
+  main {
+    grid-area: main;
+    overflow-y: auto;
+    min-height: 0;
+  }
+  .empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    height: 100%;
+    color: var(--dim);
+  }
+  .empty p {
+    margin: 0;
+    font-size: 14px;
+  }
+  .empty .hint {
+    font-size: 12px;
+    color: var(--dim);
+  }
+  .empty-icon {
+    font-size: 28px;
+    color: var(--line-strong);
+    margin-bottom: 6px;
+  }
+</style>

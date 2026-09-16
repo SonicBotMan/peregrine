@@ -98,6 +98,7 @@
       <span class="limit">
         {#if custom !== null}
           <input
+            class="ctl-input"
             type="number"
             min="0"
             bind:value={custom}
@@ -107,6 +108,7 @@
           />
         {:else}
           <select
+            class="ctl-select"
             value={limitSel}
             onchange={pickLimit}
             title="Speed limit"
@@ -125,12 +127,12 @@
 
   <div class="actions">
     {#if task.status === 'running' || task.status === 'queued'}
-      <button onclick={() => onPause(task.id)} title="Pause">⏸</button>
+      <button class="ctl" onclick={() => onPause(task.id)} title="Pause">⏸</button>
     {/if}
     {#if task.status === 'paused' || task.status === 'failed'}
-      <button onclick={() => onResume(task.id)} title="Resume">▶</button>
+      <button class="ctl" onclick={() => onResume(task.id)} title="Resume">▶</button>
     {/if}
-    <button class="danger" onclick={() => onRemove(task.id)} title="Remove">✕</button>
+    <button class="ctl danger" onclick={() => onRemove(task.id)} title="Remove">✕</button>
   </div>
 </div>
 

@@ -1,12 +1,13 @@
 import { defineConfig } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
+import tailwindcss from '@tailwindcss/vite';
 
 // Dev server proxies to the daemon's loopback TCP (start it with
 // `peregrined --listen tcp:8420` or the dual `tcp:8420+unix:…`).
 // Production (Tauri) bundles the built assets; the webview's fetch
 // base is wired in M3-b.
 export default defineConfig({
-  plugins: [svelte()],
+  plugins: [tailwindcss(), svelte()],
   server: {
     port: 5199,
     proxy: {

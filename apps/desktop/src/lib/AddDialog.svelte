@@ -64,8 +64,8 @@
       <p class="error">{error}</p>
     {/if}
     <div class="btns">
-      <button onclick={onClose}>Cancel</button>
-      <button class="primary" onclick={submit} disabled={busy}>
+      <button class="ctl" onclick={onClose}>Cancel</button>
+      <button class="ctl primary" onclick={submit} disabled={busy}>
         {busy ? 'Adding…' : 'Add'}
       </button>
     </div>
