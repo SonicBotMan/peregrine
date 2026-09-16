@@ -19,12 +19,14 @@
     onAdd,
     onToggleTheme,
     onSelectTask,
+    onBanner,
   }: {
     store: TaskStore;
     onClose: () => void;
     onAdd: () => void;
     onToggleTheme: () => void;
     onSelectTask: (id: string) => void;
+    onBanner: (msg: string) => void;
   } = $props();
 
   function fileName(url: string): string {
@@ -37,28 +39,38 @@
     }
   }
 
-  function pauseAll() {
-    let n = 0;
-    for (const t of store.list) {
-      if (t.status === 'running' || t.status === 'queued') {
-        n++;
-        void store.pause(t.id).catch(() => {});
-      }
+  // Fire-and-report bulk action (R2 P2): every call settles, only
+  // failures surface — a bulk action must not die silently.
+  function bulk(action: (id: string) => Promise<unknown>, ids: string[], verb: string) {
+    if (!ids.length) {
+      toast.push(`Nothing to ${verb.toLowerCase()}`);
+      onClose();
+      return;
     }
-    toast.push(n ? `Pausing ${n} task${n === 1 ? '' : 's'}…` : 'Nothing to pause');
+    toast.push(`${verb} ${ids.length} task${ids.length === 1 ? '' : 's'}…`);
+    void Promise.allSettled(ids.map((id) => action(id))).then((rs) => {
+      const failed = rs.filter((r) => r.status === 'rejected').length;
+      if (failed > 0) onBanner(`${verb}: ${failed}/${ids.length} failed`);
+    });
     onClose();
   }
 
+  function pauseAll() {
+    bulk(
+      (id) => store.pause(id),
+      store.list
+        .filter((t) => t.status === 'running' || t.status === 'queued')
+        .map((t) => t.id),
+      'Pausing',
+    );
+  }
+
   function resumeAll() {
-    let n = 0;
-    for (const t of store.list) {
-      if (t.status === 'paused') {
-        n++;
-        void store.resume(t.id).catch(() => {});
-      }
-    }
-    toast.push(n ? `Resuming ${n} task${n === 1 ? '' : 's'}…` : 'Nothing to resume');
-    onClose();
+    bulk(
+      (id) => store.resume(id),
+      store.list.filter((t) => t.status === 'paused').map((t) => t.id),
+      'Resuming',
+    );
   }
 </script>
 
@@ -115,18 +127,27 @@
     width: min(560px, calc(100vw - 32px));
     background: var(--elevated);
     border: 1px solid var(--line-strong);
-    border-radius: 10px;
+    border-radius: 8px;
     overflow: hidden;
     box-shadow:
       0 24px 64px rgb(0 0 0 / 0.35),
       0 4px 16px rgb(0 0 0 / 0.25);
     animation: palette-in var(--dur, 200ms) var(--ease, ease-out);
   }
-  .root {
+  /* Bits-ui renders .root/.pinput/.plist/.pempty/.pitem itself; Svelte
+     scopes our selectors with a hash class that lands only on elements
+     from THIS template — child-component elements never get it, so
+     plain scoped selectors silently miss (R2 P1: palette grew to 2075px
+     because .plist's max-height never applied, pushing the input above
+     the viewport on long task lists — svelte-check had flagged these as
+     "Unused CSS selector" all along). Child-rendered selectors must be
+     fully :global(); our own in-snippet elements (.tname/.tmeta/.go/
+     .kbd-hint) stay scoped. */
+  :global(.root) {
     display: flex;
     flex-direction: column;
   }
-  .pinput {
+  :global(.pinput) {
     width: 100%;
     padding: 13px 16px;
     border: 0;
@@ -136,21 +157,21 @@
     font-size: 14px;
     outline: none;
   }
-  .pinput::placeholder {
+  :global(.pinput::placeholder) {
     color: var(--dim);
   }
-  .plist {
+  :global(.plist) {
     max-height: 56vh;
     overflow-y: auto;
     padding: 6px;
   }
-  .pempty {
+  :global(.pempty) {
     padding: 18px 12px;
     text-align: center;
     color: var(--dim);
     font-size: 13px;
   }
-  .pitem {
+  :global(.pitem) {
     display: flex;
     align-items: center;
     gap: 10px;
@@ -164,15 +185,15 @@
     transition: background 80ms ease-out;
   }
   /* bits-ui marks the keyboard-moved selection on the item element */
-  .pitem:global([data-selected='true']),
-  .pitem:global([data-highlighted]),
-  .pitem:hover {
+  :global(.pitem[data-selected='true']),
+  :global(.pitem[data-highlighted]),
+  :global(.pitem:hover) {
     background: var(--line);
   }
-  .pitem:global([data-selected='true']) {
+  :global(.pitem[data-selected='true']) {
     background: var(--line-strong);
   }
-  .pitem > :global(svg) {
+  :global(.pitem > svg) {
     color: var(--dim);
     flex-shrink: 0;
   }
@@ -192,8 +213,8 @@
     opacity: 0;
     transition: opacity var(--dur, 200ms) ease-out;
   }
-  .pitem:hover .go,
-  .pitem:global([data-selected='true']) .go {
+  :global(.pitem:hover) .go,
+  :global(.pitem[data-selected='true']) .go {
     opacity: 0.7;
   }
   .kbd-hint {

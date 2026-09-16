@@ -27,6 +27,7 @@
     onLimit,
     onSelect,
     onOpenFile,
+    onOpenSaved,
     onCopyUrl,
   }: {
     task: TaskView;
@@ -38,6 +39,7 @@
     onLimit: (id: string, bps: number) => void;
     onSelect: (id: string) => void;
     onOpenFile: (id: string) => void;
+    onOpenSaved: (id: string) => void;
     onCopyUrl: (id: string) => void;
   } = $props();
 
@@ -82,9 +84,13 @@
         aria-label={`${name} — ${task.status}`}
         title={task.error ? task.error : task.url}
         onclick={() => onSelect(task.id)}
-        ondblclick={() => task.status === 'completed' && onOpenFile(task.id)}
+        ondblclick={() => task.status === 'completed' && onOpenSaved(task.id)}
         onkeydown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') {
+          // Enter only: Space belongs to the global layer (pause/
+          // resume selected) — a row-local Space would double-fire
+          // after bubbling to window (R2 P0). Buttons inside the row
+          // keep native Space activation (exempted in App.onKeydown).
+          if (e.key === 'Enter') {
             e.preventDefault();
             onSelect(task.id);
           }
@@ -150,13 +156,16 @@
     {/if}
     <ContextMenu.Item class="ctx-item" onSelect={() => onCopyUrl(task.id)}>Copy URL</ContextMenu.Item>
     {#if task.status === 'completed'}
+      <ContextMenu.Item class="ctx-item" onSelect={() => onOpenSaved(task.id)}>
+        Open file
+      </ContextMenu.Item>
       <ContextMenu.Item class="ctx-item" onSelect={() => onOpenFile(task.id)}>
         Show in folder
       </ContextMenu.Item>
     {/if}
     <ContextMenu.Separator class="ctx-sep" />
     <ContextMenu.Item class="ctx-item danger" onSelect={() => onRemove(task.id)}>
-      Remove…
+      Remove
     </ContextMenu.Item>
   </ContextMenu.Content>
 </ContextMenu.Root>

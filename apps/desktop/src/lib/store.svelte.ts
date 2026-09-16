@@ -118,8 +118,12 @@ export function createStore(
       const rows = await daemon.list();
       // In-place clear+set: every mutation path must go through the
       // SvelteMap's tracked methods (see declaration comment).
+      // Snapshot prevs BEFORE clear() — after it they'd all be
+      // undefined and the EMA would reset on every resync (R2 P2:
+      // dead `tasks.get` after clear).
+      const prevs = new Map(tasks);
       tasks.clear();
-      for (const t of rows) tasks.set(t.id, view(t, tasks.get(t.id)));
+      for (const t of rows) tasks.set(t.id, view(t, prevs.get(t.id)));
       conn.set('live');
     } catch {
       conn.set('down');
@@ -235,24 +239,46 @@ export function createStore(
       tasks.set(t.id, view(t));
     },
     async pause(id: string) {
-      const t = await daemon.pause(id);
-      tasks.set(id, view(t, tasks.get(id)));
+      // 100ms rule (R2 P0): the click must gray the row NOW; the
+      // REST echo replaces the optimistic row with truth. Failure
+      // rolls back to the pre-click row and rethrows (App banners it).
+      const prev = tasks.get(id);
+      if (prev) tasks.set(id, { ...prev, status: 'paused', speed: null });
+      try {
+        const t = await daemon.pause(id);
+        tasks.set(id, view(t, tasks.get(id)));
+      } catch (e) {
+        if (prev) tasks.set(id, prev);
+        throw e;
+      }
     },
     async resume(id: string) {
-      const t = await daemon.resume(id);
-      tasks.set(id, view(t, tasks.get(id)));
+      const prev = tasks.get(id);
+      if (prev) tasks.set(id, { ...prev, status: 'queued', speed: null });
+      try {
+        const t = await daemon.resume(id);
+        tasks.set(id, view(t, tasks.get(id)));
+      } catch (e) {
+        if (prev) tasks.set(id, prev);
+        throw e;
+      }
     },
     async remove(id: string) {
       await daemon.remove(id);
       tasks.delete(id);
     },
-    /** Optimistic: the daemon echoes the full Task back, so a
-     * success replaces the row with truth (no rollback window). A
-     * failure leaves the row untouched — the select re-reads the
-     * still-old value on the next render. */
+    /** Optimistic limit (R2): apply locally, replace with the
+     * daemon's echoed row on success, roll back on failure. */
     async setTaskLimit(id: string, bps: number) {
-      const t = await daemon.setTaskLimit(id, bps);
-      tasks.set(id, view(t, tasks.get(id)));
+      const prev = tasks.get(id);
+      if (prev) tasks.set(id, { ...prev, speed_limit_bps: bps });
+      try {
+        const t = await daemon.setTaskLimit(id, bps);
+        tasks.set(id, view(t, tasks.get(id)));
+      } catch (e) {
+        if (prev) tasks.set(id, prev);
+        throw e;
+      }
     },
     async setGlobalLimit(bps: number) {
       return daemon.setGlobalLimit(bps);

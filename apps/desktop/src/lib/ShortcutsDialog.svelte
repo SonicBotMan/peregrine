@@ -62,7 +62,7 @@
     width: min(460px, calc(100vw - 32px));
     background: var(--elevated);
     border: 1px solid var(--line-strong);
-    border-radius: 10px;
+    border-radius: 8px;
     padding: 18px 22px;
     box-shadow:
       0 24px 64px rgb(0 0 0 / 0.35),
@@ -100,7 +100,7 @@
     border-bottom-width: 2px;
     border-radius: 5px;
     background: var(--panel);
-    font-family: var(--mono, ui-monospace, monospace);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 11.5px;
   }
   @keyframes sheet-in {

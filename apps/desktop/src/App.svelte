@@ -18,7 +18,7 @@
   import { initialTheme, applyTheme, saveTheme, type Theme } from './lib/theme';
   import type { Conn } from './lib/store.svelte';
   import { notifyCompleted } from './lib/notify';
-  import { revealSaved } from './lib/open';
+  import { revealSaved, openSaved } from './lib/open';
   import Toasts from './lib/Toasts.svelte';
   import CommandPalette from './lib/CommandPalette.svelte';
   import ShortcutsDialog from './lib/ShortcutsDialog.svelte';
@@ -65,11 +65,26 @@
   // row at a time; deselected on filter change (the row may leave
   // the visible set — a selected row behind a filter is a trap).
   let selectedId = $state<string | null>(null);
+  // Filter changes clear the selection ONLY when the selected row
+  // would be hidden — a blanket clear erased palette selections in
+  // the same batch (R2 P1-2: filters reset to all + row selected →
+  // the effect still fired and nulled it).
+  function passesFilters(t: (typeof store.list)[number]): boolean {
+    if (statusFilter === 'active' && !isActive(t.status)) return false;
+    if (statusFilter === 'completed' && t.status !== 'completed') return false;
+    if (statusFilter === 'failed' && t.status !== 'failed') return false;
+    if (categoryFilter !== null && categorize(t.url) !== categoryFilter) return false;
+    return true;
+  }
   $effect(() => {
-    // deps: re-run when either filter changes
-    statusFilter;
-    categoryFilter;
-    selectedId = null;
+    // deps: re-run when either filter changes (void: rune reads for
+    // the dependency graph, not for their values)
+    void statusFilter;
+    void categoryFilter;
+    if (selectedId !== null) {
+      const t = store.list.find((x) => x.id === selectedId);
+      if (t && !passesFilters(t)) selectedId = null;
+    }
   });
 
   function select(id: string) {
@@ -97,14 +112,7 @@
   });
 
   const visible = $derived(
-    store.list.filter((t) => {
-      if (removalHidden.has(t.id)) return false; // optimistic removal window
-      if (statusFilter === 'active' && !isActive(t.status)) return false;
-      if (statusFilter === 'completed' && t.status !== 'completed') return false;
-      if (statusFilter === 'failed' && t.status !== 'failed') return false;
-      if (categoryFilter !== null && categorize(t.url) !== categoryFilter) return false;
-      return true;
-    }),
+    store.list.filter((t) => !removalHidden.has(t.id) && passesFilters(t)),
   );
 
   const totalSpeed = $derived(
@@ -149,11 +157,20 @@
     else if (r === 'failed') banner(`Could not open ${t.save_path}`);
   }
 
+  async function openSavedFile(id: string) {
+    const t = store.list.find((x) => x.id === id);
+    if (!t || t.status !== 'completed') return;
+    const r = await openSaved(t);
+    if (r === 'unsupported') banner('Opening files is available in the desktop app');
+    else if (r === 'failed') banner(`Could not open ${t.save_path}`);
+  }
+
   async function copyUrl(id: string) {
     const t = store.list.find((x) => x.id === id);
     if (!t) return;
     try {
       await navigator.clipboard.writeText(t.url);
+      toast.push('URL copied'); // success is visible too (R2 P2: no silent actions)
     } catch {
       banner('Copy failed — clipboard unavailable');
     }
@@ -179,6 +196,10 @@
       setTimeout(() => {
         removalTimers.delete(id);
         hidden = hidden.filter((h) => h !== id); // store.remove re-folds
+        // Guard (R2 P2): another window may have removed the task
+        // during the undo window — the store fold already deleted it,
+        // and calling daemon.remove would 404 and banner at no one.
+        if (!store.list.some((x) => x.id === id)) return;
         void act(store.remove(id));
       }, 5000),
     );
@@ -233,18 +254,45 @@
     const mod = e.metaKey || e.ctrlKey;
     if (mod && e.key.toLowerCase() === 'k') {
       e.preventDefault();
+      helpOpen = false; // overlays are exclusive (R2 P2: no stacking)
       paletteOpen = !paletteOpen;
       return;
     }
     if (mod && e.key.toLowerCase() === 'n') {
       e.preventDefault();
+      paletteOpen = false;
+      helpOpen = false;
       addUrl = '';
       showAdd = true;
       return;
     }
-    if (paletteOpen || helpOpen) return; // overlays own the keyboard
-    if (isTyping(e)) return;
+    if (isTyping(e)) return; // never steal keys from any open input (palette search, add URL field)
+    // `/` and `?` REPLACE any open overlay (R2 P2: exclusivity) —
+    // they sit above the overlay guard for that, but below isTyping
+    // so typed characters still land in inputs.
+    if (e.key === '/') {
+      e.preventDefault();
+      showAdd = false;
+      helpOpen = false;
+      paletteOpen = true;
+      return;
+    }
+    if (e.key === '?') {
+      e.preventDefault();
+      paletteOpen = false;
+      showAdd = false;
+      helpOpen = true;
+      return;
+    }
+    if (paletteOpen || helpOpen || showAdd) return; // one overlay owns the keyboard
     if (e.key === ' ') {
+      // Native Space activation on focused interactive elements must
+      // survive (R2 P0): buttons/links/menu items own their Space —
+      // swallowing it here broke keyboard activation app-wide.
+      const el = e.target as HTMLElement | null;
+      if (el?.closest('button, [role="button"], a, select, option, [role="menuitem"]')) {
+        return;
+      }
       e.preventDefault(); // Space also scrolls the list — own it
       togglePauseSelected();
     } else if (e.key === 'Delete' || e.key === 'Backspace') {
@@ -252,12 +300,6 @@
         e.preventDefault();
         removeTask(selectedId);
       }
-    } else if (e.key === '/') {
-      e.preventDefault();
-      paletteOpen = true;
-    } else if (e.key === '?') {
-      e.preventDefault();
-      helpOpen = true;
     }
   }
 
@@ -361,6 +403,7 @@
           onLimit={(id, bps) => void act(store.setTaskLimit(id, bps))}
           onSelect={select}
           onOpenFile={(id) => void openFile(id)}
+          onOpenSaved={(id) => void openSavedFile(id)}
           onCopyUrl={(id) => void copyUrl(id)}
         />
       {/each}
@@ -381,6 +424,7 @@
   <CommandPalette
     {store}
     onClose={() => (paletteOpen = false)}
+    onBanner={banner}
     onAdd={() => ((addUrl = ''), (showAdd = true))}
     onToggleTheme={toggleTheme}
     onSelectTask={(id) => {
