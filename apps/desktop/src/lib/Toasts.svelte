@@ -41,9 +41,11 @@
     background: var(--elevated);
     border: 1px solid var(--line-strong);
     border-radius: 8px;
+    /* VLM V3 note: must read as floating ABOVE the list, not part of
+     * it — stronger shadow + darker translucent lift */
     box-shadow:
-      0 8px 24px rgb(0 0 0 / 0.25),
-      0 2px 6px rgb(0 0 0 / 0.2);
+      0 12px 32px rgb(0 0 0 / 0.45),
+      0 3px 8px rgb(0 0 0 / 0.3);
     font-size: 12.5px;
     color: var(--text);
     animation: toast-in var(--dur, 200ms) var(--ease, ease-out);

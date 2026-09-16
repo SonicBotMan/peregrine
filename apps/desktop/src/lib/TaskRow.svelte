@@ -234,6 +234,22 @@
   .row.selected .col {
     color: var(--text);
   }
+  /* pct carries the row's status tint — the number itself becomes
+   * the scan anchor (VLM V3 note), dimmer than the chip so the chip
+   * still wins on priority */
+  .col.pct {
+    color: color-mix(in oklch, var(--accent) 70%, var(--dim));
+    font-weight: 500;
+  }
+  .row[data-status='completed'] .col.pct {
+    color: color-mix(in oklch, var(--ok) 70%, var(--dim));
+  }
+  .row[data-status='paused'] .col.pct {
+    color: color-mix(in oklch, var(--warn) 70%, var(--dim));
+  }
+  .row[data-status='failed'] .col.pct {
+    color: color-mix(in oklch, var(--err) 70%, var(--dim));
+  }
   /* hover action cluster — fades over the tail columns */
   .cluster {
     position: absolute;
@@ -261,13 +277,14 @@
     padding: 4px 7px;
     line-height: 0;
   }
-  /* 2px progress underline */
+  /* 3px progress underline (VLM: 2px was too light to scan —
+   * the eye needs an anchor that says "downloading here") */
   .line {
     position: absolute;
     left: 0;
     right: 0;
     bottom: -1px; /* overlap the row border — the line IS the border while active */
-    height: 2px;
+    height: 3px;
     background: transparent;
     pointer-events: none;
   }

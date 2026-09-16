@@ -10,24 +10,29 @@
 
 :root {
   color-scheme: dark;
+  /* V3 palette (VLM-audited): fix the three things that made V2
+   * look "ugly" — collapsed gray ramp (bg≈elevated), over-saturated
+   * status colors × 16 pills, and dim text at 2.1:1. Follows
+   * Motrix-class dark UI: two-layer background with a visible gap,
+   * desaturated statuses (#16A34A / #2563EB / #DC2626 class). */
   /* surfaces (3-step elevation ladder) */
-  --bg: oklch(17% 0.012 262);
-  --panel: oklch(20.5% 0.014 262);
-  --elevated: oklch(24.5% 0.017 262);
+  --bg: oklch(14.5% 0.014 270); /* deeper, slight violet lean (#0F0F1A class) */
+  --panel: oklch(17.5% 0.015 270);
+  --elevated: oklch(21% 0.017 270); /* visible float above bg, not a twin */
   /* text */
-  --text: oklch(93% 0.008 262);
-  --dim: oklch(64% 0.024 262);
+  --text: oklch(95% 0.007 270);
+  --dim: oklch(73% 0.02 268);
   /* border hierarchy: strong=region, default=control, subtle=row */
-  --line-strong: oklch(33% 0.02 264);
-  --line: oklch(28% 0.018 264);
-  --line-subtle: oklch(24% 0.015 263);
-  /* semantic — the ONLY colors allowed on screen */
-  --accent: oklch(70% 0.15 250);
-  --ok: oklch(70% 0.16 150);
-  --warn: oklch(79% 0.14 80);
-  --err: oklch(67% 0.19 25);
+  --line-strong: oklch(36% 0.018 270);
+  --line: oklch(31% 0.016 270);
+  --line-subtle: oklch(27% 0.014 270);
+  /* semantic — desaturated so 16 status pills don't scream */
+  --accent: oklch(65% 0.14 262);
+  --ok: oklch(63% 0.13 150);
+  --warn: oklch(72% 0.13 75);
+  --err: oklch(58% 0.18 27);
   /* floating overlay scrim */
-  --scrim: oklch(10% 0.01 262 / 0.6);
+  --scrim: oklch(10% 0.014 270 / 0.65);
 }
 
 :root[data-theme='light'] {
@@ -40,10 +45,10 @@
   --line-strong: oklch(82% 0.01 262);
   --line: oklch(89% 0.005 262);
   --line-subtle: oklch(93% 0.004 262);
-  --accent: oklch(58% 0.16 250);
-  --ok: oklch(56% 0.16 150);
-  --warn: oklch(62% 0.14 75);
-  --err: oklch(55% 0.2 25);
+  --accent: oklch(56% 0.14 262);
+  --ok: oklch(56% 0.13 150);
+  --warn: oklch(64% 0.12 75);
+  --err: oklch(55% 0.17 25);
   --scrim: oklch(20% 0.01 262 / 0.4);
 }
 
@@ -139,13 +144,15 @@
     background: var(--elevated);
   }
   .ctl.primary {
-    background: var(--accent);
+    /* one saturated accent on screen is enough — VLM V3 note:
+     * keep the primary button calm, let it win on weight not color */
+    background: color-mix(in oklch, var(--accent) 82%, var(--elevated));
     border-color: var(--accent);
     color: oklch(99% 0 0);
-    font-weight: 500;
+    font-weight: 600;
   }
   .ctl.primary:hover {
-    background: color-mix(in oklch, var(--accent) 88%, white);
+    background: var(--accent);
   }
   .ctl.danger:hover {
     border-color: var(--err);
