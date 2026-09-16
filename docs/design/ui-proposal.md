@@ -1,6 +1,6 @@
 # Peregrine 桌面 UI 设计提案 — V2 皮肤
 
-> 版本: v1.0-draft · 日期: 2026-09-16 · 状态: 待评审
+> 版本: v1.0-draft · 日期: 2026-09-16 · 状态: 三轮实施完成（U1 commit 9302e1d 前身、U2 9302e1d、U3 f56fd0d，验证记录 docs/reviews/ui-U2-verify.md / ui-U3-verify.md），待 R2 独立评审
 > 输入: 知名下载软件 UI 调研（ABDM / Motrix / IDM / AriaNg）+ 开源设计系统（Linear Design System、shadcn-svelte/Bits UI 生态）
 > 目标（用户原话）: **高级、精美、现代**，且**符合用户直觉和第一性原理**
 > 作用域: `apps/desktop`（Svelte 5 + Tauri 2 webview），不动 daemon/协议
@@ -161,6 +161,8 @@
 ---
 
 ## 7. 实施计划（三轮，沿用 R1→R2→R3 流程）
+
+> 实施状态：三轮全部完成并通过真机验证（详见 docs/reviews/ui-U2-verify.md、ui-U3-verify.md）。
 
 ### 轮 U1 — 骨架与设计 token（布局重构）
 
