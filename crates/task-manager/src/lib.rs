@@ -60,10 +60,8 @@ fn expand_home(p: &str) -> String {
     if p == "~" {
         return std::env::var("HOME").unwrap_or_else(|_| p.to_string());
     }
-    if let Some(rest) = p.strip_prefix("~/") {
-        if let Ok(home) = std::env::var("HOME") {
-            return format!("{home}/{rest}");
-        }
+    if let (Some(rest), Ok(home)) = (p.strip_prefix("~/"), std::env::var("HOME")) {
+        return format!("{home}/{rest}");
     }
     p.to_string()
 }
