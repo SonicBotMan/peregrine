@@ -109,13 +109,19 @@
     {:else if tab === 'speed'}
       <div class="speedbox">
         {#if points}
-          <svg viewBox="0 0 {W} {H}" width="{W}" height="{H}" preserveAspectRatio="none" aria-hidden="true">
-            <polyline class="fill" points="{points} {W},{H} 0,{H}" />
-            <polyline class="line" points={points} />
-          </svg>
+          <div class="sparkwrap">
+            <svg viewBox="0 0 {W} {H}" width="{W}" height="{H}" preserveAspectRatio="none" aria-hidden="true">
+              <polyline class="fill" points="{points} {W},{H} 0,{H}" />
+              <polyline class="line" points={points} />
+            </svg>
+            <span class="taxis">recent</span>
+            <span class="taxis right">now</span>
+          </div>
           <span class="now num">{task.speed !== null ? formatBps(task.speed) : '—'}</span>
-        {:else}
+        {:else if task.status === 'running' || task.status === 'queued'}
           <span class="hint">collecting speed samples…</span>
+        {:else}
+          <span class="hint">no speed samples — task is {task.status}</span>
         {/if}
       </div>
     {:else}
@@ -214,6 +220,25 @@
     min-height: 0;
     overflow: auto;
     padding: 8px 12px;
+  }
+  .sparkwrap {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+    align-self: stretch;
+    display: flex;
+    align-items: stretch;
+  }
+  .taxis {
+    position: absolute;
+    bottom: 2px;
+    font-size: 9.5px;
+    color: var(--dim);
+    opacity: 0.7;
+    pointer-events: none;
+  }
+  .taxis.right {
+    right: 6px;
   }
   .speedbox {
     display: flex;

@@ -12,16 +12,29 @@
   import { formatBytes, formatBps, formatEta } from './format';
   import type { TaskView } from './store.svelte';
   import { Pause, Play, X } from '@lucide/svelte';
+  import {
+    FileArchive,
+    FileVideo,
+    FileAudio,
+    FileImage,
+    FileText,
+    Binary,
+  } from '@lucide/svelte';
 
-  // file-type glyph: one 10px letter tile (A/V/I/D/⬢/?) — cheaper
-  // and calmer than a full icon set, scannable by color + shape.
-  const FILE_KINDS: Record<string, { ch: string; color: string }> = {
-    archive: { ch: 'A', color: 'var(--warn)' }, // zip tar gz 7z
-    video: { ch: 'V', color: 'var(--err)' }, // mp4 mkv avi
-    audio: { ch: 'D', color: 'var(--accent)' }, // mp3 flac
-    image: { ch: 'I', color: 'var(--ok)' }, // png jpg svg
-    doc: { ch: 'T', color: 'var(--info)' }, // pdf epub txt md
-    bin: { ch: 'B', color: 'var(--dim)' }, // exe iso bin dat
+  // file-type glyph: a 15px outlined lucide icon, tinted by kind —
+  // recognizable semantics (archive≠video≠image) without a full
+  // 32px file-icon system. Letter tiles (B/A/V) failed VLM review:
+  // nobody knows what the letters mean.
+  const FILE_KINDS: Record<
+    string,
+    { icon: typeof FileArchive; color: string }
+  > = {
+    archive: { icon: FileArchive, color: 'var(--warn)' }, // zip tar gz 7z
+    video: { icon: FileVideo, color: 'var(--err)' }, // mp4 mkv avi
+    audio: { icon: FileAudio, color: 'var(--accent)' }, // mp3 flac
+    image: { icon: FileImage, color: 'var(--ok)' }, // png jpg svg
+    doc: { icon: FileText, color: 'var(--info)' }, // pdf epub txt md
+    bin: { icon: Binary, color: 'var(--dim)' }, // exe iso bin dat
   };
   const kind = $derived.by(() => {
     const ext = name.split('.').pop()?.toLowerCase() ?? '';
@@ -30,7 +43,7 @@
     if (['mp3', 'flac', 'wav', 'ogg', 'm4a', 'opus'].includes(ext)) return FILE_KINDS.audio;
     if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp'].includes(ext)) return FILE_KINDS.image;
     if (['pdf', 'epub', 'txt', 'md', 'doc', 'docx', 'mobi'].includes(ext)) return FILE_KINDS.doc;
-    if (['exe', 'msi', 'iso', 'bin', 'dat', 'dmg', 'AppImage'].includes(ext)) return FILE_KINDS.bin;
+    if (['exe', 'msi', 'iso', 'bin', 'dat', 'dmg', 'appimage'].includes(ext)) return FILE_KINDS.bin;
     return null;
   });
 
@@ -115,7 +128,10 @@
       >
         <span class="c namecell">
           {#if kind}
-            <span class="ftype" aria-hidden="true" style="--k: {kind.color}">{kind.ch}</span>
+            {@const Icon = kind.icon}
+            <span class="ftype" aria-hidden="true" style="--k: {kind.color}">
+              <Icon size={14} stroke-width={1.75} />
+            </span>
           {/if}
           <span class="name" title={name}>{name}</span>
         </span>
@@ -240,6 +256,12 @@
   /* light: err-tinted rows read as pastel pink on white; a red
    * hairline carries 'failed' without painting the row — keep the
    * hairline faint (35%) so it reads as a cue, not a siren. */
+  /* light: status pills wash out at 12%/32% mix — deepen fill so
+   * the semantic color survives on white without going neon. */
+  :root[data-theme='light'] .status {
+    background: color-mix(in srgb, currentColor 16%, transparent);
+    border-color: color-mix(in srgb, currentColor 40%, transparent);
+  }
   :root[data-theme='light'] .row[data-status='failed'] {
     background: transparent;
     box-shadow: inset 2px 0 0 color-mix(in oklch, var(--err) 35%, transparent);
@@ -261,17 +283,15 @@
     min-width: 0;
   }
   .ftype {
-    width: 20px;
-    height: 20px;
+    width: 21px;
+    height: 21px;
     border-radius: 5px;
     flex: none;
     display: grid;
     place-items: center;
-    font-size: 10px;
-    font-weight: 700;
     color: var(--k);
-    background: color-mix(in srgb, var(--k) 14%, transparent);
-    border: 1px solid color-mix(in srgb, var(--k) 30%, transparent);
+    background: color-mix(in srgb, var(--k) 11%, transparent);
+    border: 1px solid color-mix(in srgb, var(--k) 26%, transparent);
     margin-right: 8px;
   }
   .name {

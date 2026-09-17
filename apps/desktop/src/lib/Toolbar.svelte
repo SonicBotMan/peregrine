@@ -168,10 +168,15 @@
     cursor: pointer;
   }
   .tool:hover:not(:disabled) {
-    background: var(--elevated);
+    background: var(--hover-tint);
     border-color: var(--line-strong);
     box-shadow: 0 1px 2px var(--shade-1);
     color: var(--text);
+  }
+  /* light: paper-on-paper hover needs a visible dark tint */
+  :root[data-theme='light'] .tool:hover:not(:disabled) {
+    background: oklch(22% 0.01 262 / 0.07);
+    border-color: var(--line-strong);
   }
   .tool:active:not(:disabled) {
     box-shadow: inset 0 1px 3px var(--shade-2);
