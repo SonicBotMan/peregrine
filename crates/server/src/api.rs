@@ -357,12 +357,7 @@ async fn put_settings(
     JsonBody(b): JsonBody<PutSettingsBody>,
 ) -> Result<Json<SettingsBody>, (StatusCode, Json<ApiErrorBody>)> {
     if let Some(bps) = b.global_limit_bps {
-        state
-            .0
-            .sched
-            .set_global_limit(bps)
-            .await
-            .map_err(map_err)?;
+        state.0.sched.set_global_limit(bps).await.map_err(map_err)?;
     }
     if let Some(dir) = b.default_dir {
         let dir = dir.trim().to_string();
