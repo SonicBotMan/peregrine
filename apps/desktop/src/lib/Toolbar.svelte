@@ -45,10 +45,8 @@
     searchEl?.focus();
   }
 
-  const filterLabel = $derived(
-    categoryFilter
-      ? (CATEGORIES.find((c) => c.id === categoryFilter)?.label ?? 'All')
-      : (STATUS.find((s) => s.id === statusFilter)?.label ?? 'All'),
+  const catLabel = $derived(
+    categoryFilter ? (CATEGORIES.find((c) => c.id === categoryFilter)?.label ?? 'Type') : 'Type',
   );
 </script>
 
@@ -85,25 +83,31 @@
 
   <div class="spacer"></div>
 
+  <div class="seg" role="tablist" aria-label="Filter tasks by status">
+    {#each STATUS as st (st.id)}
+      <button
+        class="seg-btn"
+        role="tab"
+        aria-selected={statusFilter === st.id && !categoryFilter}
+        class:on={statusFilter === st.id && !categoryFilter}
+        onclick={() => {
+          statusFilter = st.id;
+          categoryFilter = null;
+        }}
+      >
+        {st.label}
+      </button>
+    {/each}
+  </div>
+
+  <div class="tdiv segdiv"></div>
+
   <DropdownMenu.Root>
-    <DropdownMenu.Trigger class="filter-btn" title="Filter tasks">
-      {filterLabel}
+    <DropdownMenu.Trigger class="filter-btn" title="Filter by file type">
+      {catLabel}
       <ChevronDown size={12} />
     </DropdownMenu.Trigger>
     <DropdownMenu.Content class="fmenu" align="end" sideOffset={6}>
-      {#each STATUS as s (s.id)}
-        <DropdownMenu.Item
-          class="fitem"
-          onclick={() => {
-            statusFilter = s.id;
-            categoryFilter = null;
-          }}
-        >
-          {s.label}
-          {#if statusFilter === s.id && !categoryFilter}<span class="on">✓</span>{/if}
-        </DropdownMenu.Item>
-      {/each}
-      <DropdownMenu.Separator class="fsep" />
       {#each CATEGORIES as c (c.id)}
         <DropdownMenu.Item
           class="fitem"
@@ -195,8 +199,43 @@
    * mass sit ~2px high to the eye — nudge the pair down. */
   .tool { padding-top: 2px; }
 
+  .segdiv {
+    align-self: center;
+    margin-left: 6px;
+  }
+  .seg {
+    align-self: center;
+    margin-left: 8px;
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    height: 26px;
+    padding: 2px;
+    border: 1px solid var(--line-strong);
+    border-radius: 5px;
+    background: var(--bg);
+  }
+  .seg-btn {
+    height: 20px;
+    padding: 0 10px;
+    border-radius: 3px;
+    font: 500 11.5px var(--font-sans);
+    color: var(--dim);
+    white-space: nowrap;
+  }
+  .seg-btn:hover {
+    color: var(--text);
+    background: var(--hover-tint);
+  }
+  .seg-btn.on {
+    color: var(--text);
+    background: var(--elevated);
+    box-shadow: 0 1px 2px var(--shade-1), inset 0 1px 0 var(--inset-hl);
+    font-weight: 600;
+  }
   .filter-btn {
     align-self: center;
+    margin-left: 8px;
     display: inline-flex;
     align-items: center;
     gap: 6px;
@@ -213,6 +252,7 @@
 
   .search {
     align-self: center;
+    margin-left: 8px;
     display: inline-flex;
     align-items: center;
     gap: 6px;
