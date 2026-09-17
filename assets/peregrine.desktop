@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Peregrine
+GenericName=Download Manager
+Comment=IDM-class segmented downloader with AI-agent native MCP control
+Exec=peregrine-desktop %u
+Terminal=false
+Categories=Network;FileTransfer;
+Keywords=download;transfer;magnet;torrent;bittorrent;
+MimeType=x-scheme-handler/magnet;
+StartupWMClass=peregrine-desktop
+NoDisplay=false

@@ -1,11 +1,18 @@
 {
   "$schema": "gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Peregrine web layer capabilities: notifications + opener (reveal finished file). The daemon sidecar is spawned from the RUST shell (no JS shell perms needed — least privilege), and the download surface is daemon REST/WS over loopback, not IPC commands.",
-  "windows": ["main"],
+  "description": "Peregrine web layer capabilities: notifications + opener (reveal finished file) + dialog (native save-dir picker). The daemon sidecar is spawned from the RUST shell (no JS shell perms needed \u2014 least privilege), and the download surface is daemon REST/WS over loopback, not IPC commands. Batch-2 adds autostart (launch-at-login toggle) and window-state restore.",
+  "windows": [
+    "main"
+  ],
   "permissions": [
     "core:default",
     "notification:default",
-    "opener:default"
+    "opener:default",
+    "dialog:allow-open",
+    "autostart:allow-enable",
+    "autostart:allow-disable",
+    "autostart:allow-is-enabled",
+    "window-state:default"
   ]
 }

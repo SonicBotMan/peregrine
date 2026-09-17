@@ -1,5 +1,53 @@
 # Changelog
 
+## Unreleased (GUI-verify rounds)
+
+### Added
+
+- **Native save-dir picker** (desktop): `tauri-plugin-dialog` wired with
+  a Browse… button on the Add-dialog's Save-to field; plain-browser
+  mode keeps the text input (the picker is a desktop enhancement, the
+  path semantics are shared).
+- **`default_dir` in `/settings`** (GET/PUT, partial-update safe): the
+  default save DIRECTORY is daemon truth shared by GUI quick-add, the
+  AddDialog prefill, CLI and MCP clients — `~` resolves against the
+  daemon's home at task-add time, so a systemd-deployed daemon no
+  longer misplaces quick-added files.
+- **magnet: deep link** (desktop): `.desktop` MimeType +
+  single-instance argv forwarding — clicking a magnet link (or a
+  dropped-onto-icon .torrent) lands in the running app's quick-add.
+  Cold start carries a 2 s emit delay by design.
+- **Native .torrent file drag-drop** (desktop): dragging a .torrent
+  FILE onto the window queues the torrent (HTML5 drag only carried
+  link text).
+- **Launch at login** (desktop): autostart plugin + File-menu toggle.
+- **Window state restore** (desktop): size/position persist across
+  launches (window-state plugin).
+- **Follow the OS theme** while the user has not pinned one; the first
+  manual toggle pins the choice.
+
+### Fixed
+
+- **Quick-add saved every file into one file named `Downloads`**: the
+  bare default dir was passed as the save_path; quick-add now composes
+  `dir + URL filename`, and BT sources (magnet:/bt:/.torrent) pass the
+  dir (the engine contract: the BT sink is the download directory).
+- **Resumed sessions could report received > total** (completed row
+  showed 18.3 MB / 15.5 MB): flush() clamps to the known total before
+  the store's MAX() freezes an overshoot (regression test pinned).
+- **Global speed-limit select rendered blank** after choosing a preset
+  (setting persisted; display only): the select value re-asserts via
+  an explicit effect.
+- **Context menu could wedge the app**: a menu open across a status
+  transition left bits-ui's dismissible layer blocking all clicks;
+  the menu is controlled now and closes on status change.
+- **Space on a mouse-selected row did nothing** (swallowed by button
+  activation): the row redirects Space to pause/resume.
+- **Remove dialog answers to Enter** (keyboard parity with the table).
+- **`pnpm tauri dev` was unstartable as configured** (devUrl port
+  drift) and the webview was CORS-blocked (stale allowlist) — both
+  ports track vite.config now.
+
 ## Unreleased (post-alpha.3 hardening rounds)
 
 Five engineering rounds driven by the QA-E2E audit and backlog

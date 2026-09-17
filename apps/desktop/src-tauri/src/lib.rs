@@ -27,14 +27,119 @@ type ShellResult = Result<(), Box<dyn std::error::Error>>;
 /// a fixed loopback port is guarded by the daemon's host check.
 pub const DAEMON_PORT: u16 = 8420;
 
+/// A launch argument the download surface can act on (GUI-verify
+/// batch-2): magnet: links and .torrent paths arrive as argv when
+/// the OS hands them over (`.desktop` MimeType → xdg-open → Exec).
+/// Plain http(s) stays with the system browser on purpose.
+fn deep_link_arg(args: &[String]) -> Option<String> {
+    // NOTE: the single-instance callback hands args WITHOUT argv[0],
+    // while cold-start env::args() includes it — scan everything; the
+    // binary path can never match magnet:/…torrent patterns.
+    args.iter().find_map(|a| {
+        let lower = a.to_lowercase();
+        if lower.starts_with("magnet:")
+            || (lower.starts_with("file:") && lower.ends_with(".torrent"))
+            || (lower.ends_with(".torrent") && std::path::Path::new(a).is_absolute())
+        {
+            Some(a.clone())
+        } else {
+            None
+        }
+    })
+}
+
+fn forward_deep_link(app: &tauri::AppHandle, url: &str) {
+    use tauri::Emitter;
+    // Surface the window first, then hand the URL to the daemon REST
+    // directly (GUI-verify batch-2): the WS TaskAdded event refreshes
+    // every client, so the task creation does NOT depend on webview
+    // listener lifecycle — the shell-side call works even when the
+    // window was closed to tray for days. The emit is UI focus only.
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.show();
+        let _ = win.set_focus();
+    }
+    let _ = app.emit("peregrine://deep-link", url);
+    // A bare .torrent path from the OS becomes a file:// URL; the
+    // auto-router accepts file:// for torrent sources.
+    let url = if !url.contains(':') {
+        format!("file://{url}")
+    } else {
+        url.to_string()
+    };
+    tauri::async_runtime::spawn(async move {
+        // Same composition rule as the GUI (batch-1): Save-to is a
+        // FOLDER; BT sources take the dir as sink, http/ftp compose
+        // dir + URL filename. The default dir comes from the daemon's
+        // own /settings — the shell is just another REST client here.
+        let client = reqwest::Client::new();
+        let mut dir = "~/Downloads".to_string();
+        let settings = client
+            .get(format!("http://127.0.0.1:{DAEMON_PORT}/settings"))
+            .send()
+            .await;
+        if let Ok(resp) = settings {
+            if let Ok(v) = resp.json::<serde_json::Value>().await {
+                if let Some(d) = v.get("default_dir").and_then(|d| d.as_str()) {
+                    dir = d.to_string();
+                }
+            }
+        }
+        let is_torrent_src = url.starts_with("magnet:")
+            || url.starts_with("bt:")
+            || url.to_lowercase().ends_with(".torrent");
+        let save_path = if is_torrent_src {
+            dir.trim_end_matches('/').to_string()
+        } else {
+            let base = url.split('/').filter(|s| !s.is_empty()).last().unwrap_or("");
+            format!("{}/{}", dir.trim_end_matches('/'), base)
+        };
+        let body = serde_json::json!({
+            "url": url,
+            "save_path": save_path,
+            "priority": "normal",
+        });
+        match client
+            .post(format!("http://127.0.0.1:{DAEMON_PORT}/tasks"))
+            .json(&body)
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                eprintln!("[deep-link] task add status: {}", resp.status());
+            }
+            Err(e) => {
+                eprintln!("[deep-link] task add failed: {e}");
+            }
+        }
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            // Second launch: surface the running window instead.
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            eprintln!("[single-instance] args={args:?}");
+            // Second launch: surface the running window, and forward
+            // a deep-link URL if the OS handed one over (magnet: via
+            // .desktop MimeType, or a dropped-onto-icon .torrent).
+            match deep_link_arg(&args) {
+                Some(url) => {
+                    eprintln!("[single-instance] deep-link: {url}");
+                    forward_deep_link(app, &url);
+                    return;
+                }
+                None => eprintln!("[single-instance] no deep-link arg"),
+            }
             if let Some(win) = app.get_webview_window("main") {
                 let _ = win.show();
                 let _ = win.set_focus();
@@ -43,6 +148,20 @@ pub fn run() {
         .setup(|app| {
             spawn_daemon(app.handle())?;
             build_tray(app.handle())?;
+            // Cold start with a deep link (xdg-open while closed):
+            // the webview is not listening yet, so hold the URL and
+            // emit it once the frontend's listener can plausibly be
+            // up (listen registration happens on first paint). Warm
+            // starts skip this — the single-instance hook above is
+            // immediate.
+            let argv: Vec<String> = std::env::args().collect();
+            if let Some(url) = deep_link_arg(&argv) {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    forward_deep_link(&handle, &url);
+                });
+            }
             Ok(())
         })
         .on_window_event(|window, event| match event {

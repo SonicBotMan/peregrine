@@ -52,4 +52,5 @@ assets = [
     ["target/release/peregrined", "usr/bin/", "755"],
     ["target/release/peregrine-mcp", "usr/bin/", "755"],
     ["../../README.md", "usr/share/doc/peregrine/README.md", "644"],
+    ["../assets/peregrine.desktop", "usr/share/applications/peregrine.desktop", "644"],
 ]

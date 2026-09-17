@@ -18,6 +18,8 @@ import { CATEGORIES, type Category } from './categorize';
     onShortcuts,
     categoryFilter = null,
     onCategoryFilter = () => {},
+    launchAtLogin,
+    onToggleAutostart,
   }: {
     onAdd: () => void;
     onPauseAll: () => void;
@@ -29,6 +31,8 @@ import { CATEGORIES, type Category } from './categorize';
     onShortcuts: () => void;
     categoryFilter?: Category | null;
     onCategoryFilter?: (c: Category | null) => void;
+    launchAtLogin?: boolean;
+    onToggleAutostart?: () => void;
   } = $props();
 </script>
 
@@ -45,6 +49,12 @@ import { CATEGORIES, type Category } from './categorize';
           Command Palette
           <span class="mk">⌘K</span>
         </MB.Item>
+        {#if onToggleAutostart}
+          <MB.Item class="mitem" onclick={onToggleAutostart}>
+            Launch at login
+            <span class="mk" data-on={launchAtLogin}>{launchAtLogin ? '✓' : ''}</span>
+          </MB.Item>
+        {/if}
       </MB.Content>
     </MB.Menu>
 
