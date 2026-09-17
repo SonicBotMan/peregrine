@@ -10,6 +10,18 @@
   import { CATEGORIES, type Category } from './categorize';
   import { LIMIT_PRESETS, presetFor } from './format';
   import type { TaskStore } from './store.svelte';
+  import {
+    ArrowDownToLine,
+    CircleCheck,
+    CircleX,
+    FileArchive,
+    FileAudio,
+    FileText,
+    FileVideo,
+    Globe,
+    Layers,
+  } from '@lucide/svelte';
+  import type { Component } from 'svelte';
 
   export type StatusFilter = 'all' | 'active' | 'completed' | 'failed';
 
@@ -33,12 +45,22 @@
     onBanner: (msg: string) => void;
   } = $props();
 
-  const STATUS_ITEMS: readonly { id: StatusFilter; label: string }[] = [
-    { id: 'all', label: 'All' },
-    { id: 'active', label: 'Active' },
-    { id: 'completed', label: 'Completed' },
-    { id: 'failed', label: 'Failed' },
+  const STATUS_ITEMS: readonly { id: StatusFilter; label: string; icon: Component<{ size?: number }> }[] = [
+    { id: 'all', label: 'All', icon: Layers },
+    { id: 'active', label: 'Active', icon: ArrowDownToLine },
+    { id: 'completed', label: 'Completed', icon: CircleCheck },
+    { id: 'failed', label: 'Failed', icon: CircleX },
   ];
+
+  // category id → lucide icon (Motrix-style rail pictograms)
+  const CATEGORY_ICONS: Record<Category, Component<{ size?: number }>> = {
+    video: FileVideo,
+    audio: FileAudio,
+    doc: FileText,
+    archive: FileArchive,
+    program: FileArchive,
+    other: Globe,
+  };
 
   function setStatus(id: StatusFilter) {
     status = id;
@@ -104,6 +126,7 @@
       class:active={status === it.id}
       onclick={() => setStatus(it.id)}
     >
+      <span class="nav-ic" aria-hidden="true"><it.icon size={15} /></span>
       <span class="truncate">{it.label}</span>
       {#if it.id === 'failed' && counts.failed > 0}
         <span class="nav-count danger">{counts.failed}</span>
@@ -116,12 +139,14 @@
   <div class="sec">Category</div>
   {#each CATEGORIES as it (it.id)}
     {@const n = counts.categories[it.id]}
+    {@const Ico = CATEGORY_ICONS[it.id]}
     {#if n > 0 || category === it.id}
       <button
         class="nav-item"
         class:active={category === it.id}
         onclick={() => (category = category === it.id ? null : it.id)}
       >
+        <span class="nav-ic" aria-hidden="true"><Ico size={15} /></span>
         <span class="truncate">{it.label}</span>
         <span class="nav-count">{n}</span>
       </button>
@@ -191,8 +216,7 @@
   .nav-item {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 8px;
+    gap: 9px;
     margin: 2px 8px;
     padding: 6px 10px;
     font-size: 13px;
@@ -201,6 +225,16 @@
     border: none;
     transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
     text-align: left;
+  }
+  .nav-ic {
+    display: inline-flex;
+    flex-shrink: 0;
+    color: inherit;
+    opacity: 0.75;
+  }
+  .nav-item .truncate {
+    flex: 1;
+    min-width: 0;
   }
   .nav-item:hover {
     color: var(--text);
@@ -216,6 +250,7 @@
     color: var(--accent);
   }
   .nav-count {
+    margin-left: auto;
     font-size: 11px;
     font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
@@ -223,6 +258,10 @@
   }
   .nav-count.danger {
     color: var(--err);
+    /* chip, not floating text (VLM V4: a failed count is an alarm) */
+    background: color-mix(in oklch, var(--err) 16%, transparent);
+    border-radius: 999px;
+    padding: 1px 7px;
   }
   .nav-item.active .nav-count {
     color: inherit;

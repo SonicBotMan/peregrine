@@ -6,7 +6,7 @@
    * next to their objects (row cluster / context menu).
    */
   import type { Theme } from './theme';
-  import { Sun, Moon, Plus } from '@lucide/svelte';
+  import { Sun, Moon, Plus, Search } from '@lucide/svelte';
 
   let {
     theme,
@@ -25,7 +25,7 @@
   <span class="title">Tasks</span>
   <div class="right">
     <button class="flat" onclick={onPalette} title="Command palette (⌘K or /)">
-      <span class="mag">⌕</span>
+      <span class="mag"><Search size={13} /></span>
       <span class="sk">⌘K</span>
     </button>
     <button
@@ -96,7 +96,7 @@
     border-color: var(--line);
   }
   .mag {
-    font-size: 13px;
+    display: inline-flex;
     line-height: 1;
   }
   .sk {

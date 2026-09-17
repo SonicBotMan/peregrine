@@ -21,6 +21,7 @@
   import { revealSaved, openSaved } from './lib/open';
   import Toasts from './lib/Toasts.svelte';
   import CommandPalette from './lib/CommandPalette.svelte';
+  import { ArrowDownToLine, ClipboardPaste, TriangleAlert } from '@lucide/svelte';
   import ShortcutsDialog from './lib/ShortcutsDialog.svelte';
   import { toast } from './lib/toast.svelte';
 
@@ -38,7 +39,7 @@
     ),
     (id) => {
       const t = store.list.find((x) => x.id === id);
-      if (t) toast.push(`✓ ${fileName(t.url)} complete`);
+      if (t) toast.push(`${fileName(t.url)} complete`);
       void notifyCompleted(id, () => store.list.find((t) => t.id === id));
     },
   );
@@ -451,7 +452,8 @@
   {#if bannerMsg}
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_click_events_have_key_events -->
     <div class="error-banner" role="alert" onclick={() => (bannerMsg = null)}>
-      <span>⚠ {bannerMsg}</span>
+      <span class="banner-ic" aria-hidden="true"><TriangleAlert size={14} /></span>
+      <span class="banner-txt">{bannerMsg}</span>
       <small>click to dismiss</small>
     </div>
   {/if}
@@ -462,14 +464,17 @@
            Sticky inside <main>; suppressed when the empty state is
            visible because the empty state already IS an add form. -->
       <div class="clip-banner" role="status">
-        <span class="clip-url" title={clipHint.url}>📋 {clipHint.label || clipHint.url}</span>
+        <span class="clip-url" title={clipHint.url}>
+          <ClipboardPaste size={14} aria-hidden="true" />
+          <span class="clip-label">{clipHint.label || clipHint.url}</span>
+        </span>
         <button class="ctl primary" onclick={() => void acceptClip()}>Download</button>
         <button class="ctl" onclick={dismissClip}>Dismiss</button>
       </div>
     {/if}
     {#if visible.length === 0}
       <div class="empty">
-        <div class="empty-icon">↓</div>
+        <div class="empty-icon" aria-hidden="true"><ArrowDownToLine size={30} strokeWidth={1.5} /></div>
         {#if store.list.length === 0}
           <!-- P0-2a: the empty state IS the add form — paste a link,
                press Enter, done. No dialog for the first download. -->
@@ -495,7 +500,7 @@
           {#if quickErr}
             <p class="quick-err">{quickErr}</p>
           {/if}
-          <p class="hint">or drop a link anywhere — ＋ Add for save path &amp; priority</p>
+          <p class="hint">or drop a link anywhere — press N for save path &amp; priority</p>
         {:else}
           <p>Nothing matches this filter</p>
           <p class="hint">{counts.all} task{counts.all === 1 ? '' : 's'} in other views</p>
@@ -653,10 +658,17 @@
   .clip-url {
     flex: 1;
     min-width: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text);
+    overflow: hidden;
+  }
+  .clip-label {
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: var(--text);
   }
   .empty p {
     margin: 0;
@@ -667,8 +679,12 @@
     color: var(--dim);
   }
   .empty-icon {
-    font-size: 28px;
+    display: inline-flex;
     color: var(--line-strong);
     margin-bottom: 6px;
+    padding: 14px;
+    border: 1px solid var(--line-subtle);
+    border-radius: 999px;
+    background: var(--panel);
   }
 </style>

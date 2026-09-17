@@ -13,7 +13,7 @@
   import SegmentPanel from './SegmentPanel.svelte';
   import { formatBytes, formatBps, formatEta } from './format';
   import type { TaskView } from './store.svelte';
-  import { Pause, Play, X } from '@lucide/svelte';
+  import { Pause, Play, X, Check } from '@lucide/svelte';
 
   let {
     task,
@@ -117,7 +117,7 @@
           </svg>
           <span class="ring-num">
             {#if task.status === 'completed'}
-              <span class="check">✓</span>
+              <span class="check"><Check size={14} strokeWidth={3} /></span>
             {:else if task.status === 'failed'}
               <span class="bang">!</span>
             {:else if pct !== null}
@@ -295,7 +295,8 @@
   }
   .ring-num .check {
     color: var(--ok);
-    font-size: 15px;
+    display: inline-flex;
+    line-height: 1;
   }
   .ring-num .bang {
     color: var(--err);

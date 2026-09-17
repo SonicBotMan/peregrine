@@ -6,6 +6,7 @@
    * optimistically-removed row).
    */
   import { toast } from './toast.svelte';
+  import { X } from '@lucide/svelte';
 </script>
 
 {#if toast.list.length > 0}
@@ -16,7 +17,9 @@
         {#if t.undo}
           <button class="undo" onclick={() => toast.runUndo(t.id)}>Undo</button>
         {/if}
-        <button class="x" aria-label="Dismiss" onclick={() => toast.dismiss(t.id)}>×</button>
+        <button class="x" aria-label="Dismiss" onclick={() => toast.dismiss(t.id)}>
+          <X size={13} />
+        </button>
       </div>
     {/each}
   </div>
@@ -77,6 +80,7 @@
   .x {
     color: var(--dim);
     padding: 2px 6px;
+    display: inline-flex;
   }
   .x:hover {
     color: var(--text);

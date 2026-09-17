@@ -5,6 +5,7 @@
    * Mono tabular numerals so live values never jitter width.
    */
   import { formatBytes } from './format';
+  import { ArrowDown, Circle, CircleDashed, Unplug } from '@lucide/svelte';
 
   let {
     totalSpeed,
@@ -24,9 +25,10 @@
 </script>
 
 <div class="statusbar" class:down={conn === 'down'}>
-  <span class="stat num" title="Aggregate download speed"
-    ><i class="arrow" aria-hidden="true">↓</i> {formatBytes(totalSpeed)}/s</span
-  >
+  <span class="stat num" title="Aggregate download speed">
+    <i class="arrow" aria-hidden="true"><ArrowDown size={12} strokeWidth={2.5} /></i>
+    {formatBytes(totalSpeed)}/s
+  </span>
   <span class="sep"></span>
   <span class="stat num">{active} active</span>
   {#if failed > 0}
@@ -34,7 +36,14 @@
     <span class="stat num danger">{failed} failed</span>
   {/if}
   <span class="conn" data-kind={conn}>
-    {conn === 'live' ? '●' : conn === 'connecting' ? '◌' : '✕'} {connLabel}
+    {#if conn === 'live'}
+      <Circle size={8} strokeWidth={0} fill="currentColor" aria-hidden="true" />
+    {:else if conn === 'connecting'}
+      <CircleDashed size={11} aria-hidden="true" />
+    {:else}
+      <Unplug size={11} aria-hidden="true" />
+    {/if}
+    {connLabel}
   </span>
 </div>
 
@@ -64,7 +73,8 @@
   .arrow {
     font-style: normal;
     color: var(--ok);
-    font-weight: 700;
+    display: inline-flex;
+    vertical-align: -2px;
   }
   .stat.danger {
     color: var(--err);
@@ -94,6 +104,9 @@
     border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
     border-radius: 999px;
     padding: 2px 10px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
   }
   .conn[data-kind='live'] {
     color: var(--ok);
