@@ -1,0 +1,347 @@
+<!doctype html>
+<!-- V5 "tool-grade" mock: dense table, inline progress bars, toolbar with
+     explicit actions, bottom detail panel. Same palette as the app. -->
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  :root {
+    --bg: oklch(14.5% 0.014 270);
+    --panel: oklch(17.5% 0.015 270);
+    --elevated: oklch(21% 0.017 270);
+    --text: oklch(95% 0.007 270);
+    --dim: oklch(73% 0.02 268);
+    --line-strong: oklch(36% 0.018 270);
+    --line: oklch(31% 0.016 270);
+    --line-subtle: oklch(27% 0.014 270);
+    --accent: oklch(65% 0.14 262);
+    --ok: oklch(63% 0.13 150);
+    --warn: oklch(72% 0.13 75);
+    --err: oklch(58% 0.18 27);
+    --sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    --mono: ui-monospace, 'JetBrains Mono', 'SF Mono', monospace;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    font-family: var(--sans);
+    background: var(--bg); color: var(--text);
+    -webkit-font-smoothing: antialiased;
+    width: 1180px; height: 720px; overflow: hidden;
+    display: grid; grid-template-rows: 40px 1fr 32px;
+  }
+  svg { display: block; }
+
+  /* ===== toolbar: explicit tool buttons (IDM-style affordance) ===== */
+  .toolbar {
+    display: flex; align-items: center; gap: 6px;
+    padding: 0 10px; background: var(--panel);
+    border-bottom: 1px solid var(--line);
+  }
+  .tool {
+    display: inline-flex; align-items: center; gap: 7px;
+    height: 26px; padding: 0 11px; border: 1px solid transparent;
+    border-radius: 5px; background: none; color: var(--dim);
+    font: 500 12px var(--sans); cursor: pointer;
+  }
+  .tool:hover { background: var(--elevated); color: var(--text); border-color: var(--line); }
+  .tool.primary {
+    background: color-mix(in oklch, var(--accent) 18%, transparent);
+    color: var(--accent); border-color: color-mix(in oklch, var(--accent) 45%, transparent);
+    font-weight: 600;
+  }
+  .tool.primary:hover { background: color-mix(in oklch, var(--accent) 28%, transparent); }
+  .sep { width: 1px; height: 18px; background: var(--line); margin: 0 4px; }
+  .spacer { flex: 1; }
+  .search {
+    display: inline-flex; align-items: center; gap: 6px; height: 26px;
+    padding: 0 9px; border: 1px solid var(--line); border-radius: 5px;
+    color: var(--dim); font: 400 12px var(--sans); width: 170px;
+    background: var(--bg);
+  }
+  .search input { all: unset; color: var(--text); width: 100%; font: 400 12px var(--sans); }
+  .search kbd {
+    font: 500 10px var(--mono); padding: 1px 5px; border-radius: 3px;
+    border: 1px solid var(--line); color: var(--dim);
+  }
+
+  /* ===== main: table + detail ===== */
+  main { display: grid; grid-template-rows: 1fr 168px; min-height: 0; }
+
+  .thead, .trow {
+    display: grid;
+    grid-template-columns: 34px minmax(0, 1fr) 90px 150px 86px 64px 96px;
+    align-items: center; column-gap: 10px; padding: 0 14px 0 8px;
+  }
+  .thead {
+    height: 30px; font: 600 10.5px var(--sans); color: var(--dim);
+    text-transform: uppercase; letter-spacing: 0.06em;
+    background: var(--panel); border-bottom: 1px solid var(--line);
+    user-select: none;
+  }
+  .thead .sortable { display: flex; gap: 4px; align-items: center; cursor: pointer; }
+  .thead .sortable:hover { color: var(--text); }
+  .thead .arrow { opacity: 0.85; }
+
+  .table { overflow-y: auto; }
+  .trow {
+    height: 38px; border-bottom: 1px solid var(--line-subtle);
+    font: 400 12.5px var(--sans); cursor: default;
+  }
+  .trow:hover { background: color-mix(in oklch, var(--accent) 5%, transparent); }
+  .trow.sel { background: color-mix(in oklch, var(--accent) 11%, transparent);
+    box-shadow: inset 2px 0 0 var(--accent); }
+
+  .fname { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .fname .n { font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .fname .u { font: 400 10.5px var(--mono); color: var(--dim);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0.75; }
+  /* IDM-style inline bar under the filename */
+  .fname .bar { position: relative; height: 3px; border-radius: 2px; background: var(--line-subtle); }
+  .fname .bar i { position: absolute; inset: 0 auto 0 0; border-radius: 2px; background: var(--accent); }
+  .fname .bar i.ok { background: var(--ok); }
+  .fname .bar i.warn { background: var(--warn); }
+  .fname .bar i.err { background: var(--err); }
+
+  .num { font: 400 11.5px var(--mono); font-variant-numeric: tabular-nums; color: var(--dim); text-align: right; }
+  .pct { text-align: right; font: 500 11.5px var(--mono); font-variant-numeric: tabular-nums; }
+
+  .pill {
+    justify-self: start; display: inline-flex; align-items: center; gap: 5px;
+    height: 19px; padding: 0 8px; border-radius: 999px;
+    font: 500 10.5px var(--sans); letter-spacing: 0.02em;
+  }
+  .pill.running { color: var(--accent); background: color-mix(in oklch, var(--accent) 13%, transparent); }
+  .pill.paused  { color: var(--warn);  background: color-mix(in oklch, var(--warn) 13%, transparent); }
+  .pill.done    { color: var(--ok);    background: color-mix(in oklch, var(--ok) 13%, transparent); }
+  .pill.failed  { color: var(--err);   background: color-mix(in oklch, var(--err) 13%, transparent); }
+  .dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+
+  /* row action icons: appear on hover, tool-grade */
+  .acts { display: flex; gap: 2px; justify-self: end; opacity: 0; }
+  .trow:hover .acts, .trow.sel .acts { opacity: 1; }
+  .act {
+    width: 24px; height: 24px; display: grid; place-items: center;
+    border: none; background: none; color: var(--dim);
+    border-radius: 4px; cursor: pointer;
+  }
+  .act:hover { background: var(--elevated); color: var(--text); }
+  .act.danger:hover { color: var(--err); }
+
+  /* status icon column (retry for failed — the hard fix) */
+  .st { display: grid; place-items: center; color: var(--dim); }
+
+  /* ===== detail panel: fixed bottom, no row pushing ===== */
+  .detail {
+    border-top: 1px solid var(--line); background: var(--panel);
+    display: grid; grid-template-rows: 30px 1fr; min-height: 0;
+  }
+  .dtabs { display: flex; align-items: stretch; padding: 0 12px; gap: 2px; }
+  .dtab {
+    display: inline-flex; align-items: center; padding: 0 12px;
+    font: 500 11.5px var(--sans); color: var(--dim);
+    border-bottom: 2px solid transparent; cursor: pointer;
+  }
+  .dtab.on { color: var(--text); border-bottom-color: var(--accent); }
+  .dbody { display: grid; grid-template-columns: 1fr 320px; gap: 0; min-height: 0; }
+  .segs { padding: 8px 14px; display: flex; flex-direction: column; gap: 5px; overflow: hidden; }
+  .seg { display: grid; grid-template-columns: 46px 1fr 78px; gap: 10px; align-items: center;
+    font: 400 10.5px var(--mono); color: var(--dim); }
+  .seg .sbar { height: 4px; border-radius: 2px; background: var(--line-subtle); position: relative; }
+  .seg .sbar i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 2px; background: var(--accent); }
+  .meta { padding: 10px 16px; border-left: 1px solid var(--line);
+    display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; align-content: start;
+    font: 400 11px var(--sans); }
+  .meta dt { color: var(--dim); }
+  .meta dd { font: 400 11px var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
+
+  /* ===== statusbar ===== */
+  .statusbar {
+    display: flex; align-items: center; gap: 14px; padding: 0 12px;
+    background: var(--panel); border-top: 1px solid var(--line);
+    font: 400 11px var(--sans); color: var(--dim);
+  }
+  .statusbar .speed { color: var(--accent); font-weight: 600;
+    font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .statusbar .right { margin-left: auto; display: flex; gap: 14px; }
+</style>
+</head>
+<body>
+  <!-- toolbar -->
+  <div class="toolbar">
+    <button class="tool primary">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+      Add URL <kbd style="font:500 9.5px var(--mono); opacity:.7">⌘N</kbd>
+    </button>
+    <div class="sep"></div>
+    <button class="tool">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
+      Pause All
+    </button>
+    <button class="tool">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4l14 8-14 8z"/></svg>
+      Resume All
+    </button>
+    <button class="tool">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>
+      Retry Failed
+    </button>
+    <div class="sep"></div>
+    <button class="tool">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h18M8 7V4h8v3M6 7l1 13h10l1-13"/></svg>
+      Clear Finished
+    </button>
+    <button class="tool">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v5h5"/><path d="M5 3h9l5 5v13H5z"/></svg>
+      Open Folder
+    </button>
+    <div class="spacer"></div>
+    <div class="search">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+      <input placeholder="Filter tasks…" />
+    </div>
+  </div>
+
+  <main>
+    <!-- dense table -->
+    <div class="table">
+      <div class="thead">
+        <div class="st"></div>
+        <div class="sortable">Name <span class="arrow">▾</span></div>
+        <div class="sortable" style="justify-content:flex-end">Size <span class="arrow">▴</span></div>
+        <div class="sortable">Progress</div>
+        <div class="sortable" style="justify-content:flex-end">Speed</div>
+        <div class="sortable" style="justify-content:flex-end">ETA</div>
+        <div>Status</div>
+      </div>
+
+      <div class="trow sel">
+        <div class="st"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.2" stroke-linecap="round"><path d="M12 3v12M8 11l4 4 4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg></div>
+        <div class="fname">
+          <span class="n">model-weights-snapshot-v3.tar</span>
+          <span class="u">https://huggingface.co/lmstudio/models/…/snapshot-v3.tar</span>
+          <div class="bar"><i style="width: 62%"></i></div>
+        </div>
+        <div class="num">7.9 GB</div>
+        <div class="pct" style="color: var(--accent)">62.4%</div>
+        <div class="num" style="color: var(--text)">18.2 MB/s</div>
+        <div class="num">2:47</div>
+        <span class="pill running"><span class="dot"></span>Downloading</span>
+        <div class="acts">
+          <button class="act" title="Pause"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg></button>
+          <button class="act danger" title="Remove"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg></button>
+        </div>
+      </div>
+
+      <div class="trow">
+        <div class="st"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9" opacity=".4"/><path d="M12 7v5l3 3"/></svg></div>
+        <div class="fname">
+          <span class="n">llava-1.5-7b-finetune-checkpoint.tar</span>
+          <span class="u">https://huggingface.co/liuhaotian/llava…/checkpoint.tar</span>
+          <div class="bar"><i class="warn" style="width: 34%"></i></div>
+        </div>
+        <div class="num">13.2 GB</div>
+        <div class="pct" style="color: var(--warn)">34.1%</div>
+        <div class="num">—</div>
+        <div class="num">—</div>
+        <span class="pill paused"><span class="dot"></span>Paused</span>
+        <div class="acts">
+          <button class="act" title="Resume"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"><path d="M6 4l14 8-14 8z"/></svg></button>
+          <button class="act danger" title="Remove"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg></button>
+        </div>
+      </div>
+
+      <div class="trow">
+        <div class="st"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--ok)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></div>
+        <div class="fname">
+          <span class="n">r2.bin</span>
+          <span class="u">http://localhost:8931/r2.bin</span>
+          <div class="bar"><i class="ok" style="width: 100%"></i></div>
+        </div>
+        <div class="num">3.0 GB</div>
+        <div class="pct" style="color: var(--ok)">100%</div>
+        <div class="num">—</div>
+        <div class="num">—</div>
+        <span class="pill done"><span class="dot"></span>Completed</span>
+        <div class="acts">
+          <button class="act" title="Open file"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v10M8 10l4 4 4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg></button>
+          <button class="act" title="Open folder"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h6l2 2h10v10H3z"/></svg></button>
+        </div>
+      </div>
+
+      <div class="trow">
+        <div class="st"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--err)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M15 9l-6 6M9 9l6 6"/></svg></div>
+        <div class="fname">
+          <span class="n">nope.bin</span>
+          <span class="u">http://localhost:9999/nope.bin</span>
+          <div class="bar"><i class="err" style="width: 12%"></i></div>
+        </div>
+        <div class="num">—</div>
+        <div class="pct" style="color: var(--err)">12.0%</div>
+        <div class="num">—</div>
+        <div class="num">—</div>
+        <span class="pill failed"><span class="dot"></span>Failed · network</span>
+        <div class="acts">
+          <button class="act" title="Retry"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg></button>
+          <button class="act danger" title="Remove"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg></button>
+        </div>
+      </div>
+
+      <div class="trow">
+        <div class="st"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.2" stroke-linecap="round"><path d="M12 3v12M8 11l4 4 4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg></div>
+        <div class="fname">
+          <span class="n">peregrine-0.3.0.tar.zst</span>
+          <span class="u">https://example.com/files/peregrine-0.3.0.tar.zst</span>
+          <div class="bar"><i style="width: 8%"></i></div>
+        </div>
+        <div class="num">41 MB</div>
+        <div class="pct" style="color: var(--accent)">8.2%</div>
+        <div class="num" style="color: var(--text)">6.1 MB/s</div>
+        <div class="num">0:06</div>
+        <span class="pill running"><span class="dot"></span>Downloading</span>
+        <div class="acts">
+          <button class="act" title="Pause"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg></button>
+          <button class="act danger" title="Remove"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg></button>
+        </div>
+      </div>
+    </div>
+
+    <!-- fixed bottom detail panel -->
+    <div class="detail">
+      <div class="dtabs">
+        <div class="dtab on">Segments</div>
+        <div class="dtab">Speed graph</div>
+        <div class="dtab">Info</div>
+      </div>
+      <div class="dbody">
+        <div class="segs">
+          <div class="seg"><span>seg 1</span><div class="sbar"><i style="width:96%;left:0%"></i></div><span>96% · 2.4 MB/s</span></div>
+          <div class="seg"><span>seg 2</span><div class="sbar"><i style="width:88%"></i></div><span>88% · 2.2 MB/s</span></div>
+          <div class="seg"><span>seg 3</span><div class="sbar"><i style="width:71%"></i></div><span>71% · 1.8 MB/s</span></div>
+          <div class="seg"><span>seg 4</span><div class="sbar"><i style="width:52%"></i></div><span>52% · 1.4 MB/s</span></div>
+          <div class="seg"><span>seg 5</span><div class="sbar"><i style="width:41%"></i></div><span>41% · 1.1 MB/s</span></div>
+          <div class="seg"><span>seg 6</span><div class="sbar"><i style="width:0%"></i></div><span>queued</span></div>
+        </div>
+        <dl class="meta">
+          <dt>File</dt><dd>~/Downloads/model-weights-snapshot-v3.tar</dd>
+          <dt>Total size</dt><dd>7.94 GB</dd>
+          <dt>Downloaded</dt><dd>4.95 GB (62.4%)</dd>
+          <dt>Speed</dt><dd>18.2 MB/s</dd>
+          <dt>ETA</dt><dd>2 min 47 s</dd>
+          <dt>Connections</dt><dd>6 / 8</dd>
+        </dl>
+      </div>
+    </div>
+  </main>
+
+  <!-- statusbar -->
+  <div class="statusbar">
+    <span class="speed">↓ 24.3 MB/s</span>
+    <span>2 active · 1 paused · 1 done · 1 failed</span>
+    <span>Speed limit: none</span>
+    <div class="right">
+      <span>6 connections</span>
+      <span>Peregrine v0.1</span>
+    </div>
+  </div>
+</body>
+</html>
