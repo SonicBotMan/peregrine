@@ -246,12 +246,14 @@ fn build_tray(app: &tauri::AppHandle) -> ShellResult {
 
     // Live tooltip: the GUI periodically emits its aggregate
     // ("3 running · 2.4 MB/s") and the tray mirrors it. Rust owns
-    // no task state — it just relays the string to the OS.
+    // no task state — it just relays the string to the OS. The
+    // handler must be 'static, hence the Arc clone.
+    let app2 = app.clone();
     app.listen("tray://tooltip", move |event| {
         // event.payload() is the raw JSON string (tauri serializes
         // the emitted payload as JSON, even for plain Strings).
         if let Some(text) = serde_json::from_str::<String>(event.payload()).ok() {
-            if let Some(tray) = app.tray_by_id("main") {
+            if let Some(tray) = app2.tray_by_id("main") {
                 // v2 signature: Option (None clears the tooltip).
                 let _ = tray.set_tooltip(Some(text.trim()));
             }
