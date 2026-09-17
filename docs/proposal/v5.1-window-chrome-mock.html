@@ -1,0 +1,408 @@
+<!doctype html>
+<!-- V5.1 "real desktop app" mock: full window chrome (titlebar + menubar),
+     colored filled toolbar icons, hard layering, thin overlay scrollbar,
+     window floats on a desktop wallpaper with a real drop shadow. -->
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  :root {
+    --chrome-0: oklch(11.5% 0.012 270); /* titlebar — deepest */
+    --chrome-1: oklch(12.5% 0.013 270); /* menubar */
+    --chrome-2: oklch(15.5% 0.014 270); /* toolbar */
+    --bg:       oklch(14.5% 0.014 270); /* content */
+    --panel:    oklch(17.5% 0.015 270);
+    --elevated: oklch(21% 0.017 270);
+    --text: oklch(95% 0.007 270);
+    --dim: oklch(73% 0.02 268);
+    --line-strong: oklch(36% 0.018 270);
+    --line: oklch(31% 0.016 270);
+    --line-subtle: oklch(27% 0.014 270);
+    --accent: oklch(65% 0.14 262);
+    --ok: oklch(63% 0.13 150);
+    --warn: oklch(72% 0.13 75);
+    --err: oklch(58% 0.18 27);
+    --sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    --mono: ui-monospace, 'JetBrains Mono', 'SF Mono', monospace;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: var(--sans); -webkit-font-smoothing: antialiased;
+    /* desktop wallpaper */
+    background:
+      radial-gradient(1200px 800px at 70% 20%, oklch(24% 0.05 285), oklch(12% 0.03 280) 60%, oklch(8% 0.02 275));
+    display: grid; place-items: center;
+    padding: 26px;
+  }
+
+  /* ===== the window ===== */
+  .window {
+    width: 1180px; height: 720px;
+    background: var(--bg); color: var(--text);
+    border: 1px solid oklch(45% 0.02 270);
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow:
+      0 0 0 1px oklch(0% 0 0 / 0.55),
+      0 24px 70px oklch(0% 0 0 / 0.65),
+      0 4px 14px oklch(0% 0 0 / 0.5);
+    display: grid;
+    grid-template-rows: 38px 27px 46px 1fr 30px;
+  }
+  svg { display: block; }
+
+  /* ===== titlebar ===== */
+  .titlebar {
+    background: var(--chrome-0);
+    display: flex; align-items: center;
+    padding: 0 0 0 14px;
+    -webkit-app-region: drag; user-select: none;
+  }
+  .appicon {
+    width: 17px; height: 17px; margin-right: 9px;
+    border-radius: 4px;
+    background: linear-gradient(145deg, oklch(70% 0.15 262), oklch(52% 0.13 262));
+    display: grid; place-items: center; color: oklch(98% 0 0);
+    box-shadow: inset 0 1px 0 oklch(100% 0 0 / 0.35);
+  }
+  .title { font: 600 12.5px var(--sans); letter-spacing: 0.01em; }
+  .wctl { margin-left: auto; display: flex; height: 100%; }
+  .wctl .w {
+    width: 46px; height: 100%; display: grid; place-items: center;
+    color: oklch(75% 0.01 270);
+  }
+  .wctl .w.close:hover { background: oklch(58% 0.21 25); color: white; }
+
+  /* ===== menubar ===== */
+  .menubar {
+    background: var(--chrome-1);
+    display: flex; align-items: center; gap: 2px;
+    padding: 0 10px; border-bottom: 1px solid oklch(0% 0 0 / 0.35);
+    font: 400 12px var(--sans); color: var(--dim);
+  }
+  .menubar .m { padding: 3px 9px; border-radius: 4px; cursor: default; }
+  .menubar .m:hover { background: var(--elevated); color: var(--text); }
+
+  /* ===== toolbar: colored filled icons, IDM-style vertical groups ===== */
+  .toolbar {
+    background: linear-gradient(var(--chrome-2), oklch(14.8% 0.014 270));
+    border-bottom: 1px solid oklch(0% 0 0 / 0.4);
+    box-shadow: inset 0 1px 0 oklch(100% 0 0 / 0.045);
+    display: flex; align-items: stretch; padding: 0 10px; gap: 2px;
+  }
+  .tgroup { display: flex; gap: 2px; align-items: stretch; }
+  .tdiv { width: 1px; margin: 7px 8px; background: var(--line-strong); }
+  .tool {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 3px; min-width: 58px; padding: 0 8px;
+    border: 1px solid transparent; border-radius: 4px;
+    background: none; color: var(--dim); cursor: pointer;
+  }
+  .tool:hover { background: var(--elevated); border-color: var(--line-strong);
+    box-shadow: 0 1px 2px oklch(0% 0 0 / 0.4); color: var(--text); }
+  .tool:active { box-shadow: inset 0 1px 3px oklch(0% 0 0 / 0.5); }
+  .tool .lbl { font: 500 9.5px var(--sans); letter-spacing: 0.03em; }
+  .tool svg { width: 17px; height: 17px; }
+
+  .spacer { flex: 1; }
+  .search {
+    align-self: center; display: inline-flex; align-items: center; gap: 6px; height: 26px;
+    padding: 0 9px; border: 1px solid var(--line-strong); border-radius: 4px;
+    color: var(--dim); font: 400 12px var(--sans); width: 180px;
+    background: var(--bg);
+    box-shadow: inset 0 1px 2px oklch(0% 0 0 / 0.35);
+  }
+  .search input { all: unset; color: var(--text); width: 100%; font: 400 12px var(--sans); }
+  .search kbd { font: 500 10px var(--mono); padding: 1px 5px; border-radius: 3px;
+    border: 1px solid var(--line); color: var(--dim); background: var(--panel); }
+
+  /* ===== main ===== */
+  main { display: grid; grid-template-rows: 1fr 168px; min-height: 0; }
+
+  .thead, .trow {
+    display: grid;
+    grid-template-columns: 30px minmax(0, 1fr) 88px 74px 84px 58px 100px;
+    align-items: center; column-gap: 10px; padding: 0 14px 0 8px;
+  }
+  .thead {
+    height: 28px; font: 600 10.5px var(--sans); color: var(--dim);
+    text-transform: uppercase; letter-spacing: 0.06em;
+    background: var(--panel); border-bottom: 1px solid var(--line);
+    box-shadow: inset 0 -1px 0 oklch(0% 0 0 / 0.2);
+  }
+  .thead .sortable { display: flex; gap: 4px; align-items: center; cursor: pointer; }
+  .thead .arrow { opacity: 0.8; font-size: 8px; }
+
+  .table { overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
+  .table::-webkit-scrollbar { width: 8px; }
+  .table::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 4px;
+    border: 2px solid var(--bg); background-clip: content-box; }
+
+  .trow {
+    height: 38px; border-bottom: 1px solid var(--line-subtle);
+    font: 400 12.5px var(--sans);
+  }
+  .trow:hover { background: var(--elevated); }
+  .trow.sel { background: oklch(24% 0.025 264);
+    box-shadow: inset 2px 0 0 var(--accent); }
+
+  .fname { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .fname .n { font-weight: 530; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .fname .u { font: 400 10px var(--mono); color: var(--dim);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0.7; }
+  .fname .bar { position: relative; height: 3px; border-radius: 1.5px;
+    background: oklch(0% 0 0 / 0.35); box-shadow: inset 0 1px 1px oklch(0% 0 0 / 0.5); }
+  .fname .bar i { position: absolute; inset: 0 auto 0 0; border-radius: 1.5px;
+    background: linear-gradient(oklch(72% 0.13 262), oklch(58% 0.13 262)); }
+  .fname .bar i.ok { background: linear-gradient(oklch(70% 0.13 150), oklch(56% 0.12 150)); }
+  .fname .bar i.warn { background: linear-gradient(oklch(78% 0.12 75), oklch(64% 0.12 75)); }
+  .fname .bar i.err { background: linear-gradient(oklch(64% 0.17 27), oklch(52% 0.16 27)); }
+
+  .num { font: 400 11.5px var(--mono); font-variant-numeric: tabular-nums; color: var(--dim); text-align: right; }
+  .pct { text-align: right; font: 530 11.5px var(--mono); font-variant-numeric: tabular-nums; }
+
+  .pill { justify-self: start; display: inline-flex; align-items: center; gap: 5px;
+    height: 19px; padding: 0 8px; border-radius: 3px;
+    font: 550 10.5px var(--sans); letter-spacing: 0.02em;
+    border: 1px solid transparent;
+  }
+  .pill.running { color: oklch(78% 0.11 262); background: oklch(28% 0.05 262); border-color: oklch(38% 0.07 262); }
+  .pill.paused  { color: oklch(82% 0.10 75);  background: oklch(30% 0.045 75); border-color: oklch(40% 0.06 75); }
+  .pill.done    { color: oklch(76% 0.11 150); background: oklch(27% 0.045 150); border-color: oklch(37% 0.06 150); }
+  .pill.failed  { color: oklch(74% 0.14 27);  background: oklch(28% 0.06 27);  border-color: oklch(40% 0.09 27); }
+  .dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+
+  .st { display: grid; place-items: center; color: var(--dim); }
+
+  .acts { display: flex; gap: 2px; justify-self: end; opacity: 0; }
+  .trow:hover .acts, .trow.sel .acts { opacity: 1; }
+  .act { width: 23px; height: 23px; display: grid; place-items: center;
+    border: 1px solid transparent; background: none; color: var(--dim);
+    border-radius: 3px; cursor: pointer; }
+  .act:hover { background: var(--panel); color: var(--text); border-color: var(--line-strong); }
+  .act.danger:hover { color: oklch(70% 0.16 27); border-color: oklch(45% 0.12 27); }
+
+  /* ===== detail panel ===== */
+  .detail { border-top: 1px solid var(--line-strong); background: var(--panel);
+    box-shadow: inset 0 1px 0 oklch(100% 0 0 / 0.03);
+    display: grid; grid-template-rows: 28px 1fr; min-height: 0; }
+  .dtabs { display: flex; align-items: stretch; padding: 0 12px; gap: 2px; }
+  .dtab { display: inline-flex; align-items: center; padding: 0 12px;
+    font: 500 11.5px var(--sans); color: var(--dim);
+    border-bottom: 2px solid transparent; cursor: pointer; }
+  .dtab.on { color: var(--text); border-bottom-color: var(--accent); }
+  .dbody { display: grid; grid-template-columns: 1fr 320px; min-height: 0; }
+  .segs { padding: 7px 14px; display: flex; flex-direction: column; gap: 4px; overflow: hidden; }
+  .seg { display: grid; grid-template-columns: 44px 1fr 92px; gap: 10px; align-items: center;
+    font: 400 10.5px var(--mono); color: var(--dim); }
+  .seg .sbar { height: 5px; background: oklch(0% 0 0 / 0.35); position: relative;
+    box-shadow: inset 0 1px 1px oklch(0% 0 0 / 0.5); }
+  .seg .sbar i { position: absolute; left: 0; top: 0; bottom: 0;
+    background: linear-gradient(oklch(72% 0.13 262), oklch(58% 0.13 262)); }
+  .meta { padding: 9px 16px; border-left: 1px solid var(--line-strong);
+    display: grid; grid-template-columns: auto 1fr; gap: 3px 14px; align-content: start;
+    font: 400 11px var(--sans); }
+  .meta dt { color: var(--dim); }
+  .meta dd { font: 400 11px var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
+
+  /* ===== statusbar: sunken classic ===== */
+  .statusbar {
+    display: flex; align-items: center; padding: 0 10px; gap: 0;
+    background: var(--chrome-1); border-top: 1px solid oklch(0% 0 0 / 0.4);
+    font: 400 11px var(--sans); color: var(--dim);
+  }
+  .statusbar .cell { padding: 0 12px; height: 100%; display: flex; align-items: center; gap: 6px;
+    border-right: 1px solid var(--line); }
+  .statusbar .cell:first-child { padding-left: 4px; }
+  .statusbar .speed { color: var(--accent); font-weight: 600;
+    font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .statusbar .right { margin-left: auto; border: none; }
+</style>
+</head>
+<body>
+<div class="window">
+
+  <!-- titlebar -->
+  <div class="titlebar">
+    <div class="appicon">
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v10M7 10l5 5 5-5"/><path d="M5 20h14"/></svg>
+    </div>
+    <span class="title">Peregrine</span>
+    <div class="wctl">
+      <div class="w"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14"/></svg></div>
+      <div class="w"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="5" y="5" width="14" height="14" rx="1.5"/></svg></div>
+      <div class="w close"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 6l12 12M18 6L6 18"/></svg></div>
+    </div>
+  </div>
+
+  <!-- menubar -->
+  <div class="menubar">
+    <span class="m">File</span><span class="m">Edit</span><span class="m">View</span>
+    <span class="m">Task</span><span class="m">Help</span>
+  </div>
+
+  <!-- toolbar -->
+  <div class="toolbar">
+    <div class="tgroup">
+      <button class="tool">
+        <svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9.2" fill="oklch(62% 0.14 262)"/><path d="M12 7.5v9M7.5 12h9" stroke="white" stroke-width="2.2" stroke-linecap="round"/></svg>
+        <span class="lbl">Add URL</span>
+      </button>
+    </div>
+    <div class="tdiv"></div>
+    <div class="tgroup">
+      <button class="tool">
+        <svg viewBox="0 0 24 24" fill="none"><rect x="6" y="4.5" width="4" height="15" rx="1" fill="oklch(72% 0.13 75)"/><rect x="14" y="4.5" width="4" height="15" rx="1" fill="oklch(72% 0.13 75)"/></svg>
+        <span class="lbl">Pause All</span>
+      </button>
+      <button class="tool">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M7 4.8l11 7.2-11 7.2z" fill="oklch(63% 0.13 150)" stroke="oklch(50% 0.12 150)" stroke-width="1" stroke-linejoin="round"/></svg>
+        <span class="lbl">Resume All</span>
+      </button>
+      <button class="tool">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M19.5 12a7.5 7.5 0 1 1-2.4-5.5" stroke="oklch(72% 0.13 60)" stroke-width="2.4" stroke-linecap="round"/><path d="M19.8 3.5v3.6h-3.6" stroke="oklch(72% 0.13 60)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span class="lbl">Retry Failed</span>
+      </button>
+    </div>
+    <div class="tdiv"></div>
+    <div class="tgroup">
+      <button class="tool">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M4 7h16l-1.3 12.2a1.6 1.6 0 0 1-1.6 1.4H6.9a1.6 1.6 0 0 1-1.6-1.4z" fill="oklch(66% 0.09 260)" opacity=".85"/><path d="M8.5 9.5V6.8a3.5 3.5 0 0 1 7 0v2.7" stroke="oklch(66% 0.09 260)" stroke-width="1.8" stroke-linecap="round"/></svg>
+        <span class="lbl">Clear Done</span>
+      </button>
+      <button class="tool">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M3 7.5a1.8 1.8 0 0 1 1.8-1.8h4l2 2.2h8.4A1.8 1.8 0 0 1 21 9.7v7.5a1.8 1.8 0 0 1-1.8 1.8H4.8A1.8 1.8 0 0 1 3 17.2z" fill="oklch(70% 0.11 85)"/><path d="M3 11.5h18" stroke="oklch(58% 0.10 85)" stroke-width="1.4"/></svg>
+        <span class="lbl">Open Folder</span>
+      </button>
+      <button class="tool">
+        <svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="8.8" fill="oklch(58% 0.16 27)" opacity=".9"/><path d="M12 7.6v5.2M12 16.4v.2" stroke="white" stroke-width="2.3" stroke-linecap="round"/></svg>
+        <span class="lbl">Settings</span>
+      </button>
+    </div>
+    <div class="spacer"></div>
+    <div class="search">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+      <input placeholder="Filter tasks…" />
+      <kbd>⌘F</kbd>
+    </div>
+  </div>
+
+  <!-- main -->
+  <main>
+    <div class="table">
+      <div class="thead">
+        <div class="st"></div>
+        <div class="sortable">Name <span class="arrow">▾</span></div>
+        <div class="sortable" style="justify-content:flex-end">Size <span class="arrow">▴</span></div>
+        <div class="sortable">Progress</div>
+        <div class="sortable" style="justify-content:flex-end">Speed</div>
+        <div class="sortable" style="justify-content:flex-end">ETA</div>
+        <div>Status</div>
+      </div>
+
+      <div class="trow sel">
+        <div class="st"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.2" stroke-linecap="round"><path d="M12 3v12M8 11l4 4 4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg></div>
+        <div class="fname">
+          <span class="n">model-weights-snapshot-v3.tar</span>
+          <div class="bar"><i style="width: 62%"></i></div>
+        </div>
+        <div class="num">7.9 GB</div>
+        <div class="pct" style="color: var(--accent)">62.4%</div>
+        <div class="num" style="color: var(--text)">18.2 MB/s</div>
+        <div class="num">2:47</div>
+        <span class="pill running"><span class="dot"></span>Downloading</span>
+      </div>
+
+      <div class="trow">
+        <div class="st"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity=".55"><rect x="6.5" y="4.5" width="3.6" height="15" rx="1"/><rect x="13.9" y="4.5" width="3.6" height="15" rx="1"/></svg></div>
+        <div class="fname">
+          <span class="n">llava-1.5-7b-finetune-checkpoint.tar</span>
+          <div class="bar"><i class="warn" style="width: 34%"></i></div>
+        </div>
+        <div class="num">13.2 GB</div>
+        <div class="pct" style="color: var(--warn)">34.1%</div>
+        <div class="num">—</div>
+        <div class="num">—</div>
+        <span class="pill paused"><span class="dot"></span>Paused</span>
+      </div>
+
+      <div class="trow">
+        <div class="st"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--ok)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></div>
+        <div class="fname">
+          <span class="n">r2.bin · downloaded from localhost:8931</span>
+          <div class="bar"><i class="ok" style="width: 100%"></i></div>
+        </div>
+        <div class="num">3.0 GB</div>
+        <div class="pct" style="color: var(--ok)">100%</div>
+        <div class="num">—</div>
+        <div class="num">—</div>
+        <span class="pill done"><span class="dot"></span>Completed</span>
+      </div>
+
+      <div class="trow">
+        <div class="st"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--err)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M15 9l-6 6M9 9l6 6"/></svg></div>
+        <div class="fname">
+          <span class="n">nope.bin</span>
+          <div class="bar"><i class="err" style="width: 12%"></i></div>
+        </div>
+        <div class="num">—</div>
+        <div class="pct" style="color: var(--err)">12.0%</div>
+        <div class="num">—</div>
+        <div class="num">—</div>
+        <span class="pill failed"><span class="dot"></span>Failed · network</span>
+      </div>
+
+      <div class="trow">
+        <div class="st"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.2" stroke-linecap="round"><path d="M12 3v12M8 11l4 4 4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg></div>
+        <div class="fname">
+          <span class="n">peregrine-0.3.0.tar.zst</span>
+          <div class="bar"><i style="width: 8%"></i></div>
+        </div>
+        <div class="num">41 MB</div>
+        <div class="pct" style="color: var(--accent)">8.2%</div>
+        <div class="num" style="color: var(--text)">6.1 MB/s</div>
+        <div class="num">0:06</div>
+        <span class="pill running"><span class="dot"></span>Downloading</span>
+      </div>
+    </div>
+
+    <!-- detail panel -->
+    <div class="detail">
+      <div class="dtabs">
+        <div class="dtab on">Segments</div>
+        <div class="dtab">Speed graph</div>
+        <div class="dtab">Info</div>
+      </div>
+      <div class="dbody">
+        <div class="segs">
+          <div class="seg"><span>seg 1</span><div class="sbar"><i style="width:96%"></i></div><span>96% · 2.4 MB/s</span></div>
+          <div class="seg"><span>seg 2</span><div class="sbar"><i style="width:88%"></i></div><span>88% · 2.2 MB/s</span></div>
+          <div class="seg"><span>seg 3</span><div class="sbar"><i style="width:71%"></i></div><span>71% · 1.8 MB/s</span></div>
+          <div class="seg"><span>seg 4</span><div class="sbar"><i style="width:52%"></i></div><span>52% · 1.4 MB/s</span></div>
+          <div class="seg"><span>seg 5</span><div class="sbar"><i style="width:41%"></i></div><span>41% · 1.1 MB/s</span></div>
+          <div class="seg"><span>seg 6</span><div class="sbar"><i style="width:0%"></i></div><span>queued</span></div>
+        </div>
+        <dl class="meta">
+          <dt>File</dt><dd>~/Downloads/model-weights-snapshot-v3.tar</dd>
+          <dt>Total size</dt><dd>7.94 GB</dd>
+          <dt>Downloaded</dt><dd>4.95 GB (62.4%)</dd>
+          <dt>Speed</dt><dd>18.2 MB/s</dd>
+          <dt>ETA</dt><dd>2 min 47 s</dd>
+          <dt>Connections</dt><dd>6 / 8</dd>
+        </dl>
+      </div>
+    </div>
+  </main>
+
+  <!-- statusbar -->
+  <div class="statusbar">
+    <div class="cell"><span class="speed">↓ 24.3 MB/s</span></div>
+    <div class="cell">2 active · 1 paused · 1 done · 1 failed</div>
+    <div class="cell">Limit: none</div>
+    <div class="cell right">6 connections · Peregrine v0.1</div>
+  </div>
+
+</div>
+</body>
+</html>
