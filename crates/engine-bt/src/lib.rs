@@ -697,3 +697,98 @@ impl Default for BtEngine {
         Self::new()
     }
 }
+
+/// One peer row for the GUI's BT deep-link panel. Cumulative
+/// counters (rqbit semantics); the GUI derives instantaneous
+/// rates by differencing two snapshots, so the daemon stays a
+/// stateless mirror.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BtPeerInfo {
+    /// `ip:port` exactly as rqbit keys it.
+    pub addr: String,
+    /// Self-reported client ("qBittorrent 4.6"…), live peers only.
+    pub client: Option<String>,
+    /// rqbit state name: "live", "connecting", …
+    pub state: String,
+    /// Transport: "tcp"/"utp"/"socks" (live peers only).
+    pub conn_kind: Option<String>,
+    /// Cumulative payload bytes fetched from this peer.
+    pub fetched_bytes: u64,
+    /// Cumulative bytes uploaded to this peer.
+    pub uploaded_bytes: u64,
+    /// Connection errors so far.
+    pub errors: u32,
+}
+
+/// BT deep-link snapshot (`GET /tasks/{id}/peers`). `bt: false`
+/// marks a non-BT task: the REST layer answers one panel shape
+/// instead of a 404, so the GUI renders uniformly.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct BtPeersSnapshot {
+    pub bt: bool,
+    /// Torrent present in the session (may be paused).
+    pub live: bool,
+    pub paused: bool,
+    /// BT task whose add is still resolving metadata (magnet
+    /// before DHT/tracker answers): no session entry yet, so the
+    /// panel says "resolving…" instead of a misleading "not BT".
+    #[serde(default)]
+    pub resolving: bool,
+    pub total_bytes: u64,
+    pub peers: Vec<BtPeerInfo>,
+}
+
+impl BtEngine {
+    /// Live peer snapshot for a tracked url (the GUI peers panel,
+    /// REST `/tasks/{id}/peers`). `None` when this engine doesn't
+    /// know the url — the port layer turns that into `bt: false`
+    /// for non-BT tasks and for BT rows whose session entry is
+    /// gone (cross-restart: nothing is downloading until re-add).
+    /// Sync on purpose: everything it touches is lock/atomic
+    /// reads inside rqbit, no async surface to await.
+    pub fn peers(&self, url: &str) -> Option<BtPeersSnapshot> {
+        let id = *self.registry.lock().unwrap().url_to_id.get(url)?;
+        let session = self.session.get()?;
+        let handle = session.get(TorrentIdOrHash::Id(id))?;
+        let stats = handle.stats();
+        let mut snap = BtPeersSnapshot {
+            bt: true,
+            live: handle.live().is_some(),
+            paused: handle.is_paused(),
+            resolving: false,
+            total_bytes: stats.total_bytes,
+            peers: Vec::new(),
+        };
+        if let Some(live) = handle.live() {
+            // ::default() filter = live peers only — rqbit doesn't
+            // re-export the filter-state enum, and "connecting"
+            // rows carry no data for the panel anyway.
+            let raw =
+                live.per_peer_stats_snapshot(librqbit::http_api_types::PeerStatsFilter::default());
+            snap.peers = raw
+                .peers
+                .into_iter()
+                .map(|(addr, p)| BtPeerInfo {
+                    addr,
+                    client: p.client_name,
+                    state: p.state.to_string(),
+                    // ConnectionKind's module path is private in
+                    // librqbit; Debug-format is the stable spelling.
+                    conn_kind: p.conn_kind.map(|k| format!("{k:?}").to_lowercase()),
+                    fetched_bytes: p.counters.fetched_bytes,
+                    uploaded_bytes: p.counters.uploaded_bytes,
+                    errors: p.counters.errors,
+                })
+                .collect();
+            // Live peers first (the ones actually moving data),
+            // then by fetched bytes — the panel's default view.
+            snap.peers.sort_by(|a, b| {
+                let live_of = |s: &str| (s != "live") as u8;
+                live_of(&a.state)
+                    .cmp(&live_of(&b.state))
+                    .then(b.fetched_bytes.cmp(&a.fetched_bytes))
+            });
+        }
+        Some(snap)
+    }
+}

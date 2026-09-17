@@ -4,7 +4,16 @@
  * can only speak http(s) — hence TCP. `base` comes from
  * `VITE_DAEMON_URL` (dev: the Vite proxy; tauri: direct).
  */
-import type { EngineEvent, Health, Priority, SegmentView, Settings, Task, TaskStatus } from './types';
+import type {
+  BtPeersSnapshot,
+  EngineEvent,
+  Health,
+  Priority,
+  SegmentView,
+  Settings,
+  Task,
+  TaskStatus,
+} from './types';
 
 export class ApiError extends Error {
   constructor(
@@ -100,6 +109,12 @@ export class Daemon {
 
   segments(id: string): Promise<SegmentView[]> {
     return this.call('GET', `/tasks/${id}/segments`);
+  }
+
+  /** Connected BT peers for a task (one shape for all tasks:
+   * non-BT → {bt:false, peers:[]}). */
+  peers(id: string): Promise<BtPeersSnapshot> {
+    return this.call('GET', `/tasks/${id}/peers`);
   }
 
   /** Per-task throttle; 0 = unlimited. Persists + applies live. */

@@ -700,3 +700,40 @@ async fn host_guard_rejects_missing_host() {
         .unwrap();
     assert_eq!(res.status().as_u16(), 403);
 }
+
+#[tokio::test]
+async fn peers_of_unknown_task_is_404() {
+    let rig = rig().await;
+    let (status, body) = json_req(&rig.app, "GET", "/tasks/nope-0000/peers", None).await;
+    assert_eq!(status, 404, "{body}");
+    assert_eq!(body["error"], "not_found");
+}
+
+#[tokio::test]
+async fn peers_of_non_bt_task_is_bt_false() {
+    // One response shape: the fake port is not BT-aware, so the
+    // daemon answers a `bt: false` snapshot — the GUI renders the
+    // same panel shape for every task, no status-code branching.
+    let rig = rig().await;
+    let (status, task) = json_req(
+        &rig.app,
+        "POST",
+        "/tasks",
+        Some(serde_json::json!({
+            "url": "https://example.com/f.bin",
+            "save_path": "/tmp/peers-non-bt.bin",
+        })),
+    )
+    .await;
+    assert_eq!(status, 201, "{task}");
+    let id = task["id"].as_str().unwrap().to_string();
+
+    let (status, body) = json_req(&rig.app, "GET", &format!("/tasks/{id}/peers"), None).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["bt"], false, "non-BT task → bt:false snapshot");
+    assert_eq!(
+        body["peers"],
+        serde_json::json!([]),
+        "no peer rows for a non-BT task"
+    );
+}

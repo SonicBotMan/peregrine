@@ -686,3 +686,52 @@ async fn b59_keep_files_purge_neither_deletes_data_nor_consumes_entry() {
         serde_json::from_slice(&std::fs::read(&reg_path).unwrap()).unwrap();
     assert_eq!(table.len(), 1, "keep-files purge kept the entry: {table:?}");
 }
+
+/// Peers deep-link, no-network arm: an unknown url is `None` (the
+/// port layer turns that into `bt:false` for the REST surface), and
+/// a KNOWN url (offline completion path) yields `bt:true` with the
+/// session state — the peers list itself is empty offline, which is
+/// the honest answer, not a stub.
+#[tokio::test(flavor = "multi_thread")]
+async fn peers_snapshot_offline_semantics() {
+    init_tls();
+    let engine = BtEngine::offline();
+    assert!(
+        engine
+            .peers("magnet:?xt=urn:btih:0000000000000000000000000000000000000000")
+            .is_none(),
+        "untracked url → None (REST: bt:false)"
+    );
+
+    let src = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    let (torrent, bytes, name, _magnet) = make_torrent(src.path(), 256 * 1024).await;
+    std::fs::write(out.path().join(&name), &bytes).unwrap();
+
+    let rec = Recorder::new();
+    let cancel = CancellationToken::new();
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(60),
+        engine.download(
+            job_for(&torrent, out.path()),
+            Arc::new(rec.clone()) as _,
+            cancel,
+        ),
+    )
+    .await
+    .expect("verified torrent must finish (not hang)")
+    .unwrap();
+    assert!(outcome.completed, "pre-seeded data verifies instantly");
+
+    // job_for uses a file:// url — peers() must resolve the SAME
+    // url the engine registered.
+    let url = format!("file://{}", torrent.display());
+    let snap = engine.peers(&url).expect("tracked url → Some");
+    assert!(snap.bt, "BT task snapshot reports bt:true");
+    assert_eq!(
+        snap.total_bytes,
+        bytes.len() as u64,
+        "metadata known after completion"
+    );
+    assert!(snap.peers.is_empty(), "offline → zero live peers");
+}

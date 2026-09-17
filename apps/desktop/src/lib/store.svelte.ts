@@ -310,6 +310,25 @@ export function createStore(
     async getSettings() {
       return daemon.getSettings();
     },
+    /** Bulk pause/resume for palette + tray (one shared path so
+     * the two surfaces can't drift). AllSettled: every call
+     * settles; returns `{acted, failed}` for the caller's toast.
+     * acting on ids captured at call time — rows added mid-flight
+     * are untouched (bulk = snapshot semantics). */
+    async bulkPause(): Promise<{ acted: number; failed: number }> {
+      const ids = [...tasks.values()]
+        .filter((t) => t.status === 'running' || t.status === 'queued')
+        .map((t) => t.id);
+      const rs = await Promise.allSettled(ids.map((id) => this.pause(id)));
+      return { acted: ids.length, failed: rs.filter((r) => r.status === 'rejected').length };
+    },
+    async bulkResume(): Promise<{ acted: number; failed: number }> {
+      const ids = [...tasks.values()]
+        .filter((t) => t.status === 'paused')
+        .map((t) => t.id);
+      const rs = await Promise.allSettled(ids.map((id) => this.resume(id)));
+      return { acted: ids.length, failed: rs.filter((r) => r.status === 'rejected').length };
+    },
   };
 }
 

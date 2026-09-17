@@ -39,38 +39,24 @@
     }
   }
 
-  // Fire-and-report bulk action (R2 P2): every call settles, only
-  // failures surface — a bulk action must not die silently.
-  function bulk(action: (id: string) => Promise<unknown>, ids: string[], verb: string) {
-    if (!ids.length) {
-      toast.push(`Nothing to ${verb.toLowerCase()}`);
-      onClose();
-      return;
-    }
-    toast.push(`${verb} ${ids.length} task${ids.length === 1 ? '' : 's'}…`);
-    void Promise.allSettled(ids.map((id) => action(id))).then((rs) => {
-      const failed = rs.filter((r) => r.status === 'rejected').length;
-      if (failed > 0) onBanner(`${verb}: ${failed}/${ids.length} failed`);
-    });
+  // Fire-and-report bulk action (R2 P2): kept for callers that
+  // act on arbitrary id sets; the all-variants live on the store
+  // (shared with the tray).
+
+  // Bulk via the store (shared with the tray menu — one path so
+  // the two surfaces can't drift). Toast reports failures only.
+  async function pauseAll() {
+    const { acted, failed } = await store.bulkPause();
+    if (acted === 0) toast.push('Nothing to pause');
+    else if (failed > 0) onBanner(`Pausing: ${failed}/${acted} failed`);
     onClose();
   }
 
-  function pauseAll() {
-    bulk(
-      (id) => store.pause(id),
-      store.list
-        .filter((t) => t.status === 'running' || t.status === 'queued')
-        .map((t) => t.id),
-      'Pausing',
-    );
-  }
-
-  function resumeAll() {
-    bulk(
-      (id) => store.resume(id),
-      store.list.filter((t) => t.status === 'paused').map((t) => t.id),
-      'Resuming',
-    );
+  async function resumeAll() {
+    const { acted, failed } = await store.bulkResume();
+    if (acted === 0) toast.push('Nothing to resume');
+    else if (failed > 0) onBanner(`Resuming: ${failed}/${acted} failed`);
+    onClose();
   }
 </script>
 

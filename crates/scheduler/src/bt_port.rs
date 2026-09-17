@@ -65,4 +65,8 @@ impl DownloadPort for BtAutoPort {
         // while sibling tasks hold the torrent (refcount).
         Box::pin(async move { engine.purge(&url, &sink, purge_files).await })
     }
+
+    fn bt_peers(&self, url: &str) -> Option<peregrine_engine_bt::BtPeersSnapshot> {
+        self.engine.peers(url)
+    }
 }

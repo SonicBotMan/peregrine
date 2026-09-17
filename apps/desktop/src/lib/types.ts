@@ -47,6 +47,31 @@ export interface SegmentView {
   pct: number;
 }
 
+/** Wire view of a connected BT peer (GET /tasks/{id}/peers).
+ * One response shape for every task — non-BT tasks return
+ * `{bt:false, peers:[]}`, so the panel renders uniformly. */
+export interface BtPeer {
+  addr: string;
+  client: string | null;
+  state: string;
+  conn_kind: string | null;
+  fetched_bytes: number;
+  uploaded_bytes: number;
+  errors: number;
+}
+
+export interface BtPeersSnapshot {
+  bt: boolean;
+  /** Torrent present in the session (may be paused). */
+  live: boolean;
+  paused: boolean;
+  /** BT task still resolving magnet metadata — no session entry
+   * yet; the panel says "resolving…" instead of "not BT". */
+  resolving: boolean;
+  total_bytes: number;
+  peers: BtPeer[];
+}
+
 /** Daemon-wide knobs (GET/PUT /settings). Shape is additive. */
 export interface Settings {
   global_limit_bps: number;

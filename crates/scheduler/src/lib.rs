@@ -113,6 +113,16 @@ pub trait DownloadPort: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
         Box::pin(async { Ok(()) })
     }
+
+    /// BT deep-link support (GUI peers panel, REST
+    /// `/tasks/{id}/peers`): a live peer snapshot for a tracked
+    /// url. `None` for everything that is not BT — the daemon
+    /// layer turns that into a `bt: false` snapshot so the panel
+    /// has one response shape. Sync: lock/atomic reads inside
+    /// rqbit, nothing to await.
+    fn bt_peers(&self, _url: &str) -> Option<peregrine_engine_bt::BtPeersSnapshot> {
+        None
+    }
 }
 
 /// Production port over `HttpEngine::download_auto` (PROPOSAL §5:
@@ -438,6 +448,13 @@ impl Scheduler {
     /// Access the task manager for CLI/IPC surfaces (list, get).
     pub fn tasks(&self) -> &TaskManager {
         &self.tm
+    }
+
+    /// BT deep-link (peers panel): delegate to the routing port.
+    /// Exposed here because daemon/REST surfaces already hold the
+    /// scheduler, not the port.
+    pub fn bt_peers(&self, url: &str) -> Option<peregrine_engine_bt::BtPeersSnapshot> {
+        self.port.bt_peers(url)
     }
 
     /// Enqueue a new download through the scheduler facade (the ONLY

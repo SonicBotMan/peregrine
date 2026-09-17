@@ -43,6 +43,7 @@ pub fn router(state: AppState) -> Router {
         .route("/tasks/{id}/limit", put(set_task_limit))
         .route("/tasks/{id}/priority", put(set_task_priority))
         .route("/tasks/{id}/segments", get(get_task_segments))
+        .route("/tasks/{id}/peers", get(get_task_peers))
         .route("/settings", get(get_settings).put(put_settings))
         .route("/events", get(crate::ws::handler))
         // Wire contract (R2 P1-3): EVERY non-2xx is an ApiErrorBody.
@@ -226,6 +227,20 @@ async fn get_task_segments(
     let id = TaskId::new(id);
     match state.0.segments_of(&id).await.map_err(map_err)? {
         Some(views) => Ok(Json(views)),
+        None => Err(map_err(TaskError::NotFound(id))),
+    }
+}
+
+/// BT deep-link (peers panel). One response shape for every task:
+/// non-BT tasks get `{"bt":false}`, so the GUI renders a uniform
+/// panel instead of branching on status codes.
+async fn get_task_peers(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<peregrine_engine_bt::BtPeersSnapshot>, (StatusCode, Json<ApiErrorBody>)> {
+    let id = TaskId::new(id);
+    match state.0.bt_peers_of(&id).await.map_err(map_err)? {
+        Some(snap) => Ok(Json(snap)),
         None => Err(map_err(TaskError::NotFound(id))),
     }
 }

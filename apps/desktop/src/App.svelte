@@ -27,6 +27,9 @@
   import { ArrowDownToLine, ClipboardPaste, TriangleAlert } from '@lucide/svelte';
   import ShortcutsDialog from './lib/ShortcutsDialog.svelte';
   import { toast } from './lib/toast.svelte';
+  import { formatBps } from './lib/format';
+  import { listen } from '@tauri-apps/api/event';
+  import { emit as tauriEmit } from '@tauri-apps/api/event';
 
   // Runtime-dependent endpoints: relative under the vite proxy
   // (dev/served), absolute loopback inside the Tauri webview
@@ -240,6 +243,44 @@
   const totalSpeed = $derived(
     store.list.reduce((sum, t) => sum + (t.speed ?? 0), 0),
   );
+
+  // ---- tray bridge (Tauri only; inert under the vite proxy) ----
+  // The tray menu emits task intents here because the webview
+  // owns all task state (shell stays stateless). The reverse
+  // direction mirrors the same aggregate onto the tray tooltip
+  // every ~5s — cheap, and always at most one event behind.
+  const inTauri =
+    typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+  $effect(() => {
+    if (!inTauri) return;
+    const unsubs: Promise<() => void>[] = [
+      listen('tray://add', () => {
+        addUrl = '';
+        showAdd = true;
+      }),
+      listen('tray://pause-all', async () => {
+        const { acted, failed } = await store.bulkPause();
+        if (acted === 0) toast.push('Nothing to pause');
+        else if (failed > 0) toast.push(`Pausing: ${failed}/${acted} failed`);
+      }),
+      listen('tray://resume-all', async () => {
+        const { acted, failed } = await store.bulkResume();
+        if (acted === 0) toast.push('Nothing to resume');
+        else if (failed > 0) toast.push(`Resuming: ${failed}/${acted} failed`);
+      }),
+    ];
+    return () => {
+      for (const p of unsubs) void p.then((u) => u());
+    };
+  });
+  $effect(() => {
+    if (!inTauri) return;
+    const running = store.list.filter((t) => t.status === 'running').length;
+    const text =
+      running > 0 ? `${running} running · ${formatBps(totalSpeed)}` : 'idle';
+    const t = setTimeout(() => void tauriEmit('tray://tooltip', text), 5000);
+    return () => clearTimeout(t);
+  });
 
   // Aggregate-speed history for the statusbar sparkline (~1
   // sample/s, 2-minute window). The buffer itself is a PLAIN

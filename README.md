@@ -48,10 +48,10 @@
 | 断点续传 | 文件级状态持久化，进程被杀也按字节精确恢复；偏移异常自愈（416 → 重置重试） |
 | FTP | 被动模式 + REST 续传 |
 | HLS | VOD 全量 + live 滑窗录制，快速失败 |
-| BitTorrent / Magnet | librqbit 内嵌，同 hash 引用计数 |
+| BitTorrent / Magnet | librqbit 内嵌，同 hash 引用计数；任务详情含实时 peers 面板 |
 | 任务管理 | 队列 / 优先级（High·Normal·Low 全链路调度）/ 单任务与全局限速 / 全局并发预算 |
 | 事件推送 | WS 实时事件，GUI / MCP 共用 |
-| 通知与托盘 | 系统托盘、下载完成原生通知、单实例守护 |
+| 通知与托盘 | 系统托盘（Add / Pause all / Resume all / 动态 tooltip）、下载完成原生通知、单实例守护 |
 
 ## 安装
 
@@ -143,7 +143,7 @@ apps/desktop    # Tauri 2 + Svelte 5 薄客户端（零业务逻辑）
 - TCP 面默认无鉴权且只绑回环（`--auth-token` 可加 Bearer 鉴权，`/health` 探活豁免）；不要把 daemon 暴露到非回环地址
 - 桌面安装包（AppImage/dmg）尚在 CI 打磨中
 
-下一步：安装包分发（cargo-dist / AppImage）、BT 任务深链（peers/seeds 详情）、批量选择操作、系统托盘菜单增强、多语言。
+下一步：安装包分发（cargo-dist / AppImage）、批量选择操作、BT 运行时限速（librqbit limits）、多语言。
 
 ## 参与开发
 

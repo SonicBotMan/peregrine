@@ -1,17 +1,17 @@
 <script lang="ts">
   /**
    * V5 detail drawer (bottom pane, mock spec): three tabs —
-   * Segments / Speed / Info. Info is a key/value sheet (File, URL,
-   * Total size, Downloaded, Speed, ETA, Segments, Status); Speed is
-   * a live sparkline over the task's recent speed history; Segments
-   * reuses SegmentPanel verbatim.
+   * Segments / Speed / Info. Info is a key/value sheet; Speed is a
+   * live sparkline; Segments reuses SegmentPanel. BT tasks swap
+   * the Segments tab for a Peers tab (deep-link: REST
+   * /tasks/{id}/peers polled 2s while the tab is visible).
    */
   import SegmentPanel from './SegmentPanel.svelte';
   import { LIMIT_PRESETS, presetFor, formatBytes, formatBps, formatEta } from './format';
   import type { TaskView } from './store.svelte';
+  import type { BtPeersSnapshot } from './types';
   import type { Daemon } from './daemon';
   import { X } from '@lucide/svelte';
-  
 
   let {
     task,
@@ -25,12 +25,43 @@
     onClose: () => void;
   } = $props();
 
-  type Tab = 'segments' | 'speed' | 'info';
+  type Tab = 'segments' | 'peers' | 'speed' | 'info';
   let tab: Tab = $state('segments');
 
-  function switchTab(id: string) {
-    if (id === 'segments' || id === 'speed' || id === 'info') tab = id;
-  }
+  /** BT deep-link: magnet:/bt:/…torrent tasks have no segments —
+   * they get a live peers tab instead. */
+  const isBt = $derived(
+    /^(magnet|bt):/i.test(task.url) || task.url.toLowerCase().endsWith('.torrent'),
+  );
+  const tabs = $derived(
+    isBt
+      ? ([['peers', 'Peers'], ['speed', 'Speed graph'], ['info', 'Info']] as const)
+      : ([['segments', 'Segments'], ['speed', 'Speed graph'], ['info', 'Info']] as const),
+  );
+  const active = $derived((tabs.some(([id]) => id === tab) ? tab : tabs[0][0]) as Tab);
+
+  // Peers tab: poll while visible. Poll (not WS) because peers
+  // churn too fast for the event bus and the snapshot is cheap.
+  let peers: BtPeersSnapshot | null = $state(null);
+  let peersErr = $state(false);
+  $effect(() => {
+    if (active !== 'peers') return;
+    let stopped = false;
+    const tick = async () => {
+      if (stopped) return;
+      try {
+        peers = await daemon.peers(task.id);
+        peersErr = false;
+      } catch {
+        peersErr = true;
+      }
+      if (!stopped) setTimeout(tick, 2000);
+    };
+    tick();
+    return () => {
+      stopped = true;
+    };
+  });
 
   const name = $derived(task.url.split('/').filter(Boolean).pop() ?? task.url);
   const info = $derived([
@@ -71,13 +102,13 @@
 <aside class="drawer" aria-label={`Details for ${name}`}>
   <header class="dstrip">
     <nav class="dtabs" role="tablist">
-      {#each [['segments', 'Segments'], ['speed', 'Speed graph'], ['info', 'Info']] as [id, label] (id)}
+      {#each tabs as [id, label] (id)}
         <button
           class="dtab"
           role="tab"
-          aria-selected={tab === id}
-          class:on={tab === id}
-          onclick={() => switchTab(id)}
+          aria-selected={active === id}
+          class:on={active === id}
+          onclick={() => (tab = id)}
         >
           {label}
         </button>
@@ -104,9 +135,51 @@
   </header>
 
   <div class="dbody" role="tabpanel">
-    {#if tab === 'segments'}
+    {#if active === 'segments'}
       <SegmentPanel {task} {daemon} />
-    {:else if tab === 'speed'}
+    {:else if active === 'peers'}
+      <div class="peers">
+        {#if !peers}
+          <span class="hint">{peersErr ? 'peers unavailable — retrying…' : 'loading peers…'}</span>
+        {:else if !peers.bt}
+          <span class="hint">not a BitTorrent task</span>
+        {:else if peers.resolving}
+          <span class="hint">resolving torrent metadata via DHT/trackers…</span>
+        {:else if peers.peers.length === 0}
+          <span class="hint">
+            no peers connected — {task.status === 'running' ? 'still announcing…' : task.status}
+          </span>
+        {:else}
+          <table class="ptable">
+            <thead>
+              <tr>
+                <th>Peer</th>
+                <th>Client</th>
+                <th>State</th>
+                <th class="num">Fetched</th>
+                <th class="num">Uploaded</th>
+                <th class="num">Err</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each peers.peers as p (p.addr)}
+                <tr>
+                  <td class="mono">{p.addr}</td>
+                  <td>{p.client ?? '—'}</td>
+                  <td><span class="pstate" class:live={p.state === 'live'}>{p.state}</span></td>
+                  <td class="num">{p.fetched_bytes > 0 ? formatBytes(p.fetched_bytes) : '—'}</td>
+                  <td class="num">{p.uploaded_bytes > 0 ? formatBytes(p.uploaded_bytes) : '—'}</td>
+                  <td class="num">{p.errors > 0 ? p.errors : '—'}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+          {#if peers.paused}
+            <p class="ihash mono">torrent paused</p>
+          {/if}
+        {/if}
+      </div>
+    {:else if active === 'speed'}
       <div class="speedbox">
         {#if points}
           <div class="sparkwrap">
@@ -290,5 +363,48 @@
   .kv dd.mono {
     font-family: var(--font-mono);
     font-size: 11px;
+  }
+  .peers {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .ptable {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11.5px;
+    color: var(--text);
+  }
+  .ptable th {
+    text-align: left;
+    font: 600 10.5px var(--font-sans);
+    color: var(--dim);
+    border-bottom: 1px solid var(--line);
+    padding: 2px 8px 4px 0;
+  }
+  .ptable th.num,
+  .ptable td.num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+  .ptable td {
+    padding: 3px 8px 3px 0;
+    border-bottom: 1px solid var(--line-subtle);
+    white-space: nowrap;
+  }
+  .ptable td.mono {
+    font-family: var(--font-mono);
+    font-size: 11px;
+  }
+  .pstate.live {
+    color: var(--ok, #67c23a);
+  }
+  .ihash {
+    margin: 2px 0 0;
+    color: var(--dim);
+    font-size: 10.5px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 </style>

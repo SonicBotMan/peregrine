@@ -28,7 +28,7 @@ tokio-util = { version = "0.7", features = ["rt"] }
 # url handling (parse/route/join redirects)
 url = "2"
 # https for engines (ring provider: pure-rust build, no system openssl)
-librqbit = { version = "9", default-features = false, features = ["rust-tls"] }
+librqbit = { version = "9", default-features = false, features = ["rust-tls", "http-api-client"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 hyper-rustls = { version = "0.27", default-features = false, features = [
     "ring",

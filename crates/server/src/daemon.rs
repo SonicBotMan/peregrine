@@ -135,6 +135,10 @@ impl DownloadPort for RoutingPort {
         self.hls.set_task_limit(url, sink, bps);
         self.ftp.set_task_limit(url, sink, bps);
     }
+
+    fn bt_peers(&self, url: &str) -> Option<peregrine_engine_bt::BtPeersSnapshot> {
+        self.route(url).bt_peers(url)
+    }
 }
 
 /// The wired daemon: everything the REST/WS surface needs, nothing it
@@ -373,6 +377,35 @@ impl Daemon {
     /// policy methods).
     pub fn tasks(&self) -> &TaskManager {
         self.sched.tasks()
+    }
+
+    /// BT deep-link (GUI peers panel): peer snapshot for a task.
+    /// `Ok(None)` = no such task (404); `Ok(Some(bt: false))` =
+    /// task exists but is not BT / its session entry is gone —
+    /// one response shape, the GUI renders uniformly.
+    pub async fn bt_peers_of(
+        &self,
+        id: &peregrine_api::TaskId,
+    ) -> Result<Option<peregrine_engine_bt::BtPeersSnapshot>, peregrine_task_manager::TaskError>
+    {
+        let Some(task) = self.tasks().get(id).await? else {
+            return Ok(None);
+        };
+        Ok(Some(match self.sched.bt_peers(&task.url) {
+            Some(snap) => snap,
+            // BT task whose session entry isn't up yet (magnet
+            // resolving) or is gone (cross-restart): still `bt:`
+            // true + resolving so the panel explains the wait
+            // instead of claiming "not a BitTorrent task".
+            None if peregrine_engine_bt::is_bt_source(&task.url) => {
+                peregrine_engine_bt::BtPeersSnapshot {
+                    bt: true,
+                    resolving: true,
+                    ..Default::default()
+                }
+            }
+            None => peregrine_engine_bt::BtPeersSnapshot::default(),
+        }))
     }
 
     /// Telemetry read (M3-c1): the task's planned segment rows as

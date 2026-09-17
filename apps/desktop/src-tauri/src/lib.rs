@@ -11,9 +11,9 @@
 //! invoked when a task completes) — the shell never touches task
 //! state, keeping the ownership rule: engine → daemon → any client.
 
-use tauri::menu::{Menu, MenuItem};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{Manager, WindowEvent};
+use tauri::{Emitter, Listener, Manager, WindowEvent};
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 use std::io::Write as _;
@@ -163,13 +163,20 @@ fn open_sidecar_log(app: &tauri::AppHandle) -> Option<std::fs::File> {
     }
 }
 
-/// Tray with Show/Quit. Quit is the ONLY exit path (window close
-/// hides). tauri-plugin-shell kills spawned children on app exit,
-/// so app exit → daemon exit.
+/// Tray: Add/Pause-all/Resume-all (emitted to the webview — the
+/// GUI owns task state), Show, Quit. Quit is the ONLY exit path
+/// (window close hides). tauri-plugin-shell kills spawned children
+/// on app exit, so app exit → daemon exit.
 fn build_tray(app: &tauri::AppHandle) -> ShellResult {
+    let add = MenuItem::with_id(app, "add", "Add download…", true, None::<&str>)?;
+    let pause_all =
+        MenuItem::with_id(app, "pause_all", "Pause all", true, None::<&str>)?;
+    let resume_all =
+        MenuItem::with_id(app, "resume_all", "Resume all", true, None::<&str>)?;
+    let sep = PredefinedMenuItem::separator(app)?;
     let show = MenuItem::with_id(app, "show", "Show Peregrine", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit (stops downloads)", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &quit])?;
+    let menu = Menu::with_items(app, &[&add, &pause_all, &resume_all, &sep, &show, &quit])?;
 
     // NOTE: no `trayIcon` block in tauri.conf.json — config-defined
     // trays auto-register during Builder::build() with the SAME
@@ -186,6 +193,24 @@ fn build_tray(app: &tauri::AppHandle) -> ShellResult {
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
+            // Task actions are delegated to the webview: it owns the
+            // store, the bulk logic and the toasts. The window stays
+            // hidden for pause/resume (IDM behavior) — a hidden
+            // Tauri 2 webview keeps running and still receives
+            // events. `show` on add: you need to see the dialog.
+            "add" => {
+                if let Some(win) = app.get_webview_window("main") {
+                    let _ = win.show();
+                    let _ = win.set_focus();
+                }
+                let _ = app.emit("tray://add", ());
+            }
+            "pause_all" => {
+                let _ = app.emit("tray://pause-all", ());
+            }
+            "resume_all" => {
+                let _ = app.emit("tray://resume-all", ());
+            }
             "show" => {
                 if let Some(win) = app.get_webview_window("main") {
                     let _ = win.show();
@@ -215,6 +240,17 @@ fn build_tray(app: &tauri::AppHandle) -> ShellResult {
                     let _ = win.show();
                     let _ = win.set_focus();
                 }
+            }
+        }
+    });
+
+    // Live tooltip: the GUI periodically emits its aggregate
+    // ("3 running · 2.4 MB/s") and the tray mirrors it. Rust owns
+    // no task state — it just relays the string to the OS.
+    app.listen("tray://tooltip", move |event| {
+        if let Some(text) = event.payload().and_then(|p| serde_json::from_str::<String>(p).ok()) {
+            if let Some(tray) = app.tray_by_id("main") {
+                let _ = tray.set_tooltip(text.trim());
             }
         }
     });
