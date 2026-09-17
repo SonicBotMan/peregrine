@@ -205,3 +205,15 @@
 - Linear Design System 完整逆向（gunpowderlabs / telablog / logrocket 等来源汇编）
 - AB Download Manager 源码布局（deepwiki 索引）· Motrix Next（Tauri 2 + Vue 3）· AriaNg 面板
 - shadcn-svelte 官方文档（2026 SvelteKit 2 + Svelte 5 + Tailwind 4 组合为现行推荐）· Bits UI（bits-ui.com）
+
+---
+
+## 10. 实施记录（滚动追加）
+
+### P0 — 零步添加（提交 dab957e，2026-09-17）
+
+- 空状态即添加表单：粘贴链接 + Enter 直接开下（`quickAdd`，URL_OK 校验 http(s)/ftp/magnet/bt/file，默认 `~/Downloads`，novalidate 走统一校验）
+- 剪贴板侦测（focus 时读剪贴板，仅"提议"不自动下载；已跟踪/已忽略不重复提；无权限环境静默降级）
+- daemon 端 `expand_home`：接受 `~/x` 形式（GUI 默认路径保持人类可读；`~user/` 原样拒绝）
+- 探针 probe-p0 12/12：undo 4 项（U3 已有，本轮验证）、空状态粘贴 4 项、剪贴板 4 项
+- 回归：vitest 20/20 · svelte-check 0e/5w · vite build ✓ · cargo task-manager 17/17
