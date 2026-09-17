@@ -63,26 +63,26 @@
   --panel: oklch(100% 0 0);
   --elevated: oklch(98.8% 0.002 262);
   --text: oklch(21% 0.015 262);
-  --dim: oklch(42% 0.02 262);
+  --dim: oklch(38% 0.02 262);
   --line-strong: oklch(80% 0.01 262);
   --line: oklch(87% 0.005 262);
   --line-subtle: oklch(91% 0.004 262);
-  --accent: oklch(56% 0.14 262);
-  --ok: oklch(56% 0.13 150);
-  --warn: oklch(64% 0.12 75);
-  --err: oklch(55% 0.17 25);
+  --accent: oklch(54% 0.19 262);
+  --ok: oklch(52% 0.15 150);
+  --warn: oklch(60% 0.14 75);
+  --err: oklch(52% 0.2 25);
   --scrim: oklch(20% 0.01 262 / 0.4);
   /* V5 chrome bands, light: paper-toned, one and two steps below
    * panel so the frame reads darker-than-paper like a native app. */
   --chrome-1: oklch(94.5% 0.004 262);
-  --chrome-2: oklch(92% 0.005 262);
+  --chrome-2: oklch(90.5% 0.005 262);
   --info: oklch(50% 0.12 240);
   /* light polarity flips: dark hairlines, dark hover tints,
    * softer shadows, white text on the accent fill. */
   --edge: oklch(20% 0.01 262 / 0.35);
   --row-line: oklch(20% 0.01 262 / 0.14);
-  --hover-tint: oklch(22% 0.01 262 / 0.05);
-  --zebra-tint: oklch(22% 0.01 262 / 0.016);
+  --hover-tint: oklch(22% 0.01 262 / 0.07);
+  --zebra-tint: oklch(22% 0.01 262 / 0.024);
   --shade-1: oklch(20% 0.01 262 / 0.18);
   --shade-2: oklch(20% 0.01 262 / 0.28);
   --inset-shade: oklch(20% 0.01 262 / 0.15);

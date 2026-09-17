@@ -10,16 +10,14 @@
   import type { Daemon } from './daemon';
   import type { SegmentView } from './types';
   import type { TaskView } from './store.svelte';
-  import { LIMIT_PRESETS, presetFor, formatBytes, formatEta } from './format';
+  import { formatBytes, formatEta } from './format';
 
   let {
     task,
     daemon,
-    onLimit,
   }: {
     task: TaskView;
     daemon: Daemon;
-    onLimit: (id: string, bps: number) => void;
   } = $props();
 
   let segments = $state<SegmentView[] | null>(null);
@@ -60,62 +58,12 @@
     if (secs <= 0 || task.received_bytes <= 0) return null;
     return task.received_bytes / secs;
   });
-
-  // ---- per-task throttle (moved from the U1 row, U2) ----------
-  let custom = $state<number | null>(null); // non-preset value being typed
-
-  const limitSel = $derived(
-    custom !== null ? 'custom' : (presetFor(task.speed_limit_bps) ?? 'custom'),
-  );
-
-  function pickLimit(ev: Event) {
-    const v = (ev.currentTarget as HTMLSelectElement).value;
-    if (v === 'custom') {
-      custom = task.speed_limit_bps; // start editing from current
-      return;
-    }
-    custom = null;
-    onLimit(task.id, Number(v));
-  }
-
-  function commitCustom() {
-    if (custom !== null && Number.isFinite(custom) && custom >= 0) {
-      onLimit(task.id, Math.round(custom));
-    }
-    custom = null;
-  }
 </script>
 
 <div class="detail">
   <div class="facts">
     <span class="kv"><b>ETA</b> {eta}</span>
     <span class="kv"><b>avg</b> {avgBps !== null ? `${formatBytes(avgBps)}/s` : '—'}</span>
-    <span class="kv limit">
-      <b>limit</b>
-      {#if custom !== null}
-        <input
-          class="ctl-input"
-          type="number"
-          min="0"
-          bind:value={custom}
-          onblur={commitCustom}
-          onkeydown={(e) => e.key === 'Enter' && commitCustom()}
-          title="bytes/sec"
-        />
-      {:else}
-        <select
-          class="ctl-select"
-          value={limitSel}
-          onchange={pickLimit}
-          aria-label="Speed limit"
-        >
-          {#each LIMIT_PRESETS as p (p.bps)}
-            <option value={String(p.bps)}>{p.label}</option>
-          {/each}
-          <option value="custom">custom…</option>
-        </select>
-      {/if}
-    </span>
     <span class="kv"><b>url</b> <span class="url" title={task.url}>{task.url}</span></span>
     <span class="kv"><b>path</b> <span class="url" title={task.save_path}>{task.save_path}</span></span>
     {#if task.error}

@@ -144,7 +144,7 @@
   }
   .tdiv {
     width: 1px;
-    margin: 7px 8px;
+    margin: 7px 6px;
     background: var(--line-strong);
     flex: none;
   }
@@ -155,9 +155,9 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 3px;
-    min-width: 58px;
-    padding: 0 8px;
+    gap: 2px;
+    min-width: 50px;
+    padding: 0 6px;
     border: 1px solid transparent;
     border-radius: 4px;
     background: none;

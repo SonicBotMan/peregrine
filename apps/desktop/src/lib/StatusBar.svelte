@@ -110,7 +110,7 @@
     padding: 0 12px;
     background: var(--chrome-1);
     border-top: 1px solid var(--edge);
-    font-size: 11.5px;
+    font-size: 11px;
     color: var(--dim);
     flex: none;
   }
@@ -129,11 +129,19 @@
     vertical-align: -2px;
   }
   .stat.danger {
+    /* quiet variant: no pill chrome — a red dot + red text reads
+     * 'failed' at statusbar density without becoming a siren. */
     color: var(--err);
-    background: color-mix(in srgb, var(--err) 16%, transparent);
-    border: 1px solid color-mix(in srgb, var(--err) 35%, transparent);
-    border-radius: 999px;
-    padding: 1px 8px;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .stat.danger::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
   }
   .statusbar.down .stat {
     color: var(--warn);

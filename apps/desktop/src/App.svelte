@@ -755,7 +755,7 @@
     text-transform: uppercase;
     letter-spacing: 0.08em;
     color: color-mix(in oklch, var(--text) 62%, var(--bg));
-    background: color-mix(in oklch, var(--chrome-2) 82%, oklch(100% 0 0 / 4%));
+    background: color-mix(in oklch, var(--chrome-2) 82%, var(--inset-hl));
     border-bottom: 1px solid var(--line-strong);
     position: sticky;
     top: 0;

@@ -99,6 +99,8 @@
             <svg class="okmark" viewBox="0 0 16 16" width="14" height="14">
               <path d="M3 8.5l3.2 3.2L13 5" fill="none" stroke="var(--ok)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
+          {:else if task.status === 'failed' && task.error}
+            <span class="errsum" title={task.error}>{task.error}</span>
           {:else}
             <span class="bar"><span class="fill" data-status={task.status} style="width:{pct ?? 0}%"></span></span>
             <span class="pct">{pct !== null ? `${pct}%` : '—'}</span>
@@ -195,11 +197,28 @@
     background: color-mix(in oklch, var(--accent) 30%, transparent);
     box-shadow: inset 2px 0 0 var(--accent);
   }
+  :root[data-theme='light'] .row.selected {
+    /* 30% of a 54%-light accent over white reads washed-out pink;
+     * light wants a lighter tint + a hairline so selection still
+     * snaps without darkening the row. */
+    background: color-mix(in oklch, var(--accent) 15%, transparent);
+    box-shadow: inset 2px 0 0 var(--accent), inset 0 0 0 1px color-mix(in oklch, var(--accent) 25%, transparent);
+  }
   .row[data-status='failed'] {
     background: color-mix(in srgb, var(--err) 5%, transparent);
   }
   .row[data-status='failed'].selected {
     background: color-mix(in srgb, var(--err) 12%, transparent);
+    box-shadow: inset 2px 0 0 var(--err);
+  }
+  /* light: err-tinted rows read as pastel pink on white; a red
+   * hairline carries 'failed' without painting the row. */
+  :root[data-theme='light'] .row[data-status='failed'] {
+    background: transparent;
+    box-shadow: inset 2px 0 0 color-mix(in oklch, var(--err) 55%, transparent);
+  }
+  :root[data-theme='light'] .row[data-status='failed'].selected {
+    background: color-mix(in oklch, var(--err) 8%, transparent);
     box-shadow: inset 2px 0 0 var(--err);
   }
 
@@ -237,6 +256,13 @@
   .fill[data-status='completed'] { background: var(--ok); }
   .fill[data-status='paused'] { background: var(--warn); }
   .fill[data-status='failed'] { background: var(--err); }
+  .errsum {
+    font-size: 11px;
+    color: var(--err);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .fill[data-status='queued'] { background: var(--info); }
   .pct {
     font-size: 11px;
@@ -306,6 +332,12 @@
     color: var(--err);
     background: color-mix(in srgb, var(--err) 12%, transparent);
     border-color: color-mix(in srgb, var(--err) 32%, transparent);
+  }
+  /* light: saturated err on white turns the pill bubblegum-pink;
+   * halve the chrome, keep the dot+text signal. */
+  :root[data-theme='light'] .row[data-status='failed'] .status {
+    background: color-mix(in srgb, var(--err) 6%, transparent);
+    border-color: color-mix(in srgb, var(--err) 22%, transparent);
   }
   .row[data-status='failed'] .status i { background: var(--err); }
 

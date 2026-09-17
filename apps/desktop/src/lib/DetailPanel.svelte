@@ -7,10 +7,11 @@
    * reuses SegmentPanel verbatim.
    */
   import SegmentPanel from './SegmentPanel.svelte';
-  import { formatBytes, formatBps, formatEta } from './format';
+  import { LIMIT_PRESETS, presetFor, formatBytes, formatBps, formatEta } from './format';
   import type { TaskView } from './store.svelte';
   import type { Daemon } from './daemon';
   import { X } from '@lucide/svelte';
+  
 
   let {
     task,
@@ -83,6 +84,20 @@
       {/each}
     </nav>
     <span class="dname" title={name}>{name}</span>
+    <select
+      class="dlimit"
+      title="Per-task speed limit"
+      aria-label="Per-task speed limit"
+      value={presetFor(task.speed_limit_bps) ?? 'custom'}
+      onchange={(e) => onLimit(task.id, Number(e.currentTarget.value))}
+    >
+      {#each LIMIT_PRESETS as p (p.label)}
+        <option value={p.bps}>{p.bps === 0 ? 'no limit' : p.label}</option>
+      {/each}
+      {#if presetFor(task.speed_limit_bps) === null}
+        <option value={task.speed_limit_bps} selected>{formatBps(task.speed_limit_bps)}/s</option>
+      {/if}
+    </select>
     <button class="dclose" title="Close (Esc)" aria-label="Close details" onclick={onClose}>
       <X size={13} />
     </button>
@@ -90,7 +105,7 @@
 
   <div class="dbody" role="tabpanel">
     {#if tab === 'segments'}
-      <SegmentPanel {task} {daemon} {onLimit} />
+      <SegmentPanel {task} {daemon} />
     {:else if tab === 'speed'}
       <div class="speedbox">
         {#if points}
@@ -166,6 +181,17 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  .dlimit {
+    font-size: 11px;
+    color: var(--dim);
+    background: var(--elevated);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 2px 4px;
+    flex: none;
+    max-width: 110px;
+  }
+  .dlimit:hover { color: var(--text); border-color: var(--line-strong); }
   .dclose {
     display: inline-flex;
     align-items: center;
