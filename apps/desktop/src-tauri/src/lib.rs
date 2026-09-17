@@ -252,7 +252,8 @@ fn build_tray(app: &tauri::AppHandle) -> ShellResult {
         // the emitted payload as JSON, even for plain Strings).
         if let Some(text) = serde_json::from_str::<String>(event.payload()).ok() {
             if let Some(tray) = app.tray_by_id("main") {
-                let _ = tray.set_tooltip(text.trim());
+                // v2 signature: Option (None clears the tooltip).
+                let _ = tray.set_tooltip(Some(text.trim()));
             }
         }
     });
