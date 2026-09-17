@@ -1,19 +1,17 @@
 <script lang="ts">
   /**
-   * One task card — Motrix TaskItem replication: progress ring
-   * (status-colored SVG circle), file name + meta line, hover-
-   * revealed round action chips (#4a4a4a, primary on hover).
-   * Behavior surface is unchanged from the tiled-row era: click /
-   * Enter toggles the inline SegmentPanel expansion, Space belongs
-   * to the global layer, double-click a completed row opens the
-   * artifact, right-click opens the context menu. All list truth
-   * lives in the store — the card stays dumb.
+   * V5 task row: a 38px dense table line, not a media card. The
+   * progress ring is gone — a slim inline bar + tabular columns
+   * carry the same information at tool density. Interaction
+   * surface is unchanged: click/Enter select (and expand the
+   * SegmentPanel), Space belongs to the global layer, double-click
+   * a completed row opens the artifact, right-click opens the
+   * context menu.
    */
   import { ContextMenu } from 'bits-ui';
-  import SegmentPanel from './SegmentPanel.svelte';
   import { formatBytes, formatBps, formatEta } from './format';
   import type { TaskView } from './store.svelte';
-  import { Pause, Play, X, Check } from '@lucide/svelte';
+  import { Pause, Play, X } from '@lucide/svelte';
 
   let {
     task,
@@ -59,13 +57,6 @@
   const running = $derived(task.status === 'running' || task.status === 'queued');
   const resumable = $derived(task.status === 'paused' || task.status === 'failed');
 
-  // ring geometry: 46px SVG, r=19 → C = 2πr ≈ 119.4
-  const R = 19;
-  const C = 2 * Math.PI * R;
-  const dash = $derived(
-    pct !== null ? `${(pct / 100) * C} ${C - (pct / 100) * C}` : `0 ${C}`,
-  );
-
   function stop<T extends () => void>(fn: T) {
     return (e: Event) => {
       e.stopPropagation();
@@ -88,95 +79,55 @@
         tabindex={0}
         aria-pressed={selected}
         aria-label={`${name} — ${task.status}`}
-        title={task.error ? task.error : task.url}
+        title={task.error ? `${task.error}\n${task.url}` : task.url}
         onclick={() => onSelect(task.id)}
         ondblclick={() => task.status === 'completed' && onOpenSaved(task.id)}
         onkeydown={(e) => {
           // Enter only: Space belongs to the global layer (pause/
-          // resume selected) — a row-local Space would double-fire
-          // after bubbling to window (R2 P0). Buttons inside the row
-          // keep native Space activation (exempted in App.onKeydown).
+          // resume selected). Buttons keep native Space activation
+          // (exempted in App.onKeydown).
           if (e.key === 'Enter') {
             e.preventDefault();
             onSelect(task.id);
           }
         }}
       >
-        <!-- Motrix TaskProgress: circular ring, status-colored -->
-        <span class="ring" data-status={task.status} aria-hidden="true">
-          <svg viewBox="0 0 46 46" width="46" height="46">
-            <circle class="track" cx="23" cy="23" r={R} />
-            <circle
-              class="bar"
-              cx="23"
-              cy="23"
-              r={R}
-              stroke-dasharray={dash}
-              transform="rotate(-90 23 23)"
-            />
-          </svg>
-          <span class="ring-num">
-            {#if task.status === 'completed'}
-              <span class="check"><Check size={14} strokeWidth={3} /></span>
-            {:else if task.status === 'failed'}
-              <span class="bang">!</span>
-            {:else if pct !== null}
-              {pct}<small>%</small>
-            {:else}
-              …
-            {/if}
-          </span>
-        </span>
+        <span class="c name" title={name}>{name}</span>
 
-        <span class="info">
-          <span class="name">{name}</span>
-          {#if task.error}
-            <!-- VLM: keep the title neutral white — status color lives
-                 in the meta line only, or a failed list turns into a
-                 wall of red -->
-            <span class="meta">
-              <b class="st">{task.status}</b>
-              <span class="err-line">{task.error}</span>
-            </span>
+        <span class="c progress" aria-hidden="true">
+          {#if task.status === 'completed'}
+            <svg class="okmark" viewBox="0 0 16 16" width="14" height="14">
+              <path d="M3 8.5l3.2 3.2L13 5" fill="none" stroke="var(--ok)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
           {:else}
-            <span class="meta">
-              <b class="st">{task.status}</b>
-              <span class="num">{done}{size !== '—' ? ` / ${size}` : ''}</span>
-              <span class="dot">·</span>
-              <span class="num">{speed}</span>
-              <span class="dot">·</span>
-              <span class="num">{eta}</span>
-            </span>
+            <span class="bar"><span class="fill" data-status={task.status} style="width:{pct ?? 0}%"></span></span>
+            <span class="pct">{pct !== null ? `${pct}%` : '—'}</span>
           {/if}
         </span>
 
-        <span class="cluster" role="group" aria-label="Row actions">
+        <span class="c num size-col">{done}{size !== '—' ? ` / ${size}` : ''}</span>
+        <span class="c num speed-col">{speed}</span>
+        <span class="c num eta-col">{eta}</span>
+
+        <span class="c status"><i></i>{task.status}</span>
+
+        <span class="c acts" role="group" aria-label="Row actions">
           {#if running}
-            <button
-              class="ctl round"
-              title="Pause"
-              aria-label={`Pause ${name}`}
-              onclick={stop(() => onPause(task.id))}
-            >
-              <Pause size={13} />
+            <button class="mini" title="Pause" aria-label={`Pause ${name}`} onclick={stop(() => onPause(task.id))}>
+              <Pause size={12} />
             </button>
           {:else if resumable}
             <button
-              class="ctl round"
+              class="mini"
               title={task.status === 'failed' ? 'Retry' : 'Resume'}
               aria-label={`${task.status === 'failed' ? 'Retry' : 'Resume'} ${name}`}
               onclick={stop(() => onResume(task.id))}
             >
-              <Play size={13} />
+              <Play size={12} />
             </button>
           {/if}
-          <button
-            class="ctl round"
-            title="Remove"
-            aria-label={`Remove ${name}`}
-            onclick={stop(() => onRemove(task.id))}
-          >
-            <X size={13} />
+          <button class="mini" title="Remove" aria-label={`Remove ${name}`} onclick={stop(() => onRemove(task.id))}>
+            <X size={12} />
           </button>
         </span>
       </div>
@@ -208,195 +159,187 @@
   </ContextMenu.Content>
 </ContextMenu.Root>
 
-{#if selected}
-  <SegmentPanel {task} {daemon} {onLimit} />
-{/if}
-
 <style>
-  /* Motrix task-item card: #2d2d2d tile, #555 border, 4px radius,
-   * separated by the #343434 main background. */
+  /* V5: dense table line — one row = one glance, columns are
+   * right-aligned tabular numbers like a real transfer table. */
   .row {
-    position: relative;
     display: grid;
-    grid-template-columns: 46px minmax(0, 1fr) auto;
+    grid-template-columns:
+      minmax(0, 1fr)
+      150px
+      128px
+      86px
+      72px
+      92px
+      64px;
     align-items: center;
+    height: 42px;
+    padding: 0 14px;
     column-gap: 14px;
-    min-height: 64px;
-    padding: 9px 16px;
-    margin: 8px 12px;
-    background: var(--panel);
-    border: 1px solid var(--line-strong);
-    border-radius: 4px;
+    border-bottom: 1px solid var(--row-line);
     cursor: default;
     user-select: none;
+    font-size: 12.5px;
+  }
+  .row:nth-child(even) {
+    background: var(--zebra-tint);
   }
   .row:hover {
-    border-color: var(--accent);
+    background: var(--hover-tint);
   }
   .row:focus-visible {
-    outline: none;
-    border-color: var(--accent);
-    box-shadow: 0 0 0 1px var(--accent);
+    outline: 1px solid var(--accent);
+    outline-offset: -1px;
   }
   .row.selected {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 1px var(--accent);
+    background: color-mix(in oklch, var(--accent) 30%, transparent);
+    box-shadow: inset 2px 0 0 var(--accent);
+  }
+  .row[data-status='failed'] {
+    background: color-mix(in srgb, var(--err) 5%, transparent);
+  }
+  .row[data-status='failed'].selected {
+    background: color-mix(in srgb, var(--err) 12%, transparent);
+    box-shadow: inset 2px 0 0 var(--err);
   }
 
-  /* progress ring */
-  .ring {
-    position: relative;
-    width: 46px;
-    height: 46px;
-    flex: none;
-  }
-  .ring svg {
-    display: block;
-  }
-  .ring .track {
-    fill: none;
-    stroke: var(--line-subtle);
-    stroke-width: 3.5;
-  }
-  .ring .bar {
-    fill: none;
-    stroke: var(--accent);
-    stroke-width: 3.5;
-    stroke-linecap: round;
-    transition: stroke-dasharray 0.4s linear;
-  }
-  .ring[data-status='completed'] .bar {
-    stroke: var(--ok);
-  }
-  .ring[data-status='paused'] .bar {
-    stroke: var(--warn);
-  }
-  .ring[data-status='failed'] .bar {
-    stroke: var(--err);
-  }
-  .ring[data-status='queued'] .bar {
-    stroke: var(--info);
-  }
-  .ring-num {
-    position: absolute;
-    inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--text);
-    font-variant-numeric: tabular-nums;
-  }
-  .ring-num small {
-    font-size: 7px;
-    font-weight: 500;
-    margin-left: 1px;
-  }
-  .ring-num .check {
-    color: var(--ok);
-    display: inline-flex;
-    line-height: 1;
-  }
-  .ring-num .bang {
-    color: var(--err);
-    font-size: 15px;
-    font-weight: 700;
-  }
-
-  /* info column */
-  .info {
-    display: grid;
-    gap: 4px;
+  .c {
     min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .name {
-    font-weight: 600;
-    font-size: 14px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .err-line {
-    /* lift toward text so the reason is readable, not just tinted
-     * (VLM pass 5: raw --err on near-black was ~4.3:1) */
-    color: color-mix(in srgb, var(--err) 62%, var(--text));
-    font-size: 12px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .meta {
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-    font-size: 12px;
-    color: var(--dim);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .meta .st {
-    font-weight: 500;
-    text-transform: capitalize;
-  }
-  /* three-step grey ramp inside the meta line (VLM pass 3):
-   * status = status color, numbers = full text, separators = line */
-  .meta .num {
+    font-weight: 550;
     color: var(--text);
-    font-variant-numeric: tabular-nums;
-  }
-  .row[data-status='running'] .meta .st,
-  .row[data-status='queued'] .meta .st {
-    color: var(--accent);
-  }
-  .row[data-status='completed'] .meta .st {
-    color: var(--ok);
-  }
-  .row[data-status='paused'] .meta .st {
-    color: var(--warn);
-  }
-  .row[data-status='failed'] .meta .st {
-    color: var(--err);
-  }
-  .meta .dot {
-    color: var(--line);
-  }
-  /* failed rows carry a 3px red rail + faint tint so a failure is
-   * locatable by scan alone, no sidebar count needed (VLM final) */
-  .row[data-status='failed'] {
-    box-shadow: inset 3px 0 0 var(--err);
-    background: color-mix(in srgb, var(--err) 4%, var(--panel));
   }
 
-  /* hover action cluster — Motrix round chips */
-  .cluster {
+  /* progress column: slim bar + percent */
+  .progress {
     display: flex;
-    gap: 8px;
+    align-items: center;
+    gap: 7px;
+  }
+  .bar {
+    flex: 1;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--bar-track);
+    overflow: hidden;
+  }
+  .fill {
+    display: block;
+    height: 100%;
+    border-radius: 2px;
+    background: var(--accent);
+    transition: width 0.35s linear;
+  }
+  .fill[data-status='completed'] { background: var(--ok); }
+  .fill[data-status='paused'] { background: var(--warn); }
+  .fill[data-status='failed'] { background: var(--err); }
+  .fill[data-status='queued'] { background: var(--info); }
+  .pct {
+    font-size: 11px;
+    color: var(--dim);
+    font-variant-numeric: tabular-nums;
+    min-width: 34px;
+    text-align: right;
+  }
+  .okmark { flex: none; }
+
+  .num {
+    text-align: right;
+    color: var(--dim);
+    font-variant-numeric: tabular-nums;
+    font-size: 12px;
+  }
+  .row[data-status='running'] .speed-col {
+    color: var(--text);
+  }
+
+  .status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    justify-content: flex-end;
+    font-size: 11px;
+    color: var(--dim);
+    text-transform: capitalize;
+    border-radius: 999px;
+    padding: 2px 9px;
+    border: 1px solid transparent;
+    background: transparent;
+    justify-self: end;
+  }
+  .status i {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: currentColor;
+    flex: none;
+  }
+  .row[data-status='running'] .status {
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    border-color: color-mix(in srgb, var(--accent) 32%, transparent);
+  }
+  .row[data-status='running'] .status i { background: var(--accent); }
+  .row[data-status='queued'] .status {
+    color: var(--info);
+    background: color-mix(in srgb, var(--info) 12%, transparent);
+    border-color: color-mix(in srgb, var(--info) 32%, transparent);
+  }
+  .row[data-status='queued'] .status i { background: var(--info); }
+  .row[data-status='completed'] .status {
+    color: var(--ok);
+    background: color-mix(in srgb, var(--ok) 12%, transparent);
+    border-color: color-mix(in srgb, var(--ok) 32%, transparent);
+  }
+  .row[data-status='completed'] .status i { background: var(--ok); }
+  .row[data-status='paused'] .status {
+    color: var(--warn);
+    background: color-mix(in srgb, var(--warn) 12%, transparent);
+    border-color: color-mix(in srgb, var(--warn) 32%, transparent);
+  }
+  .row[data-status='paused'] .status i { background: var(--warn); }
+  .row[data-status='failed'] .status {
+    color: var(--err);
+    background: color-mix(in srgb, var(--err) 12%, transparent);
+    border-color: color-mix(in srgb, var(--err) 32%, transparent);
+  }
+  .row[data-status='failed'] .status i { background: var(--err); }
+
+  /* hover actions — quiet mini buttons */
+  .acts {
+    display: flex;
+    gap: 4px;
+    justify-content: flex-end;
     opacity: 0;
     pointer-events: none;
     transition: opacity var(--dur) var(--ease);
   }
-  .row:hover .cluster,
-  .row:focus-within .cluster,
-  .row.selected .cluster {
+  .row:hover .acts,
+  .row:focus-within .acts,
+  .row.selected .acts {
     opacity: 1;
     pointer-events: auto;
   }
-  .ctl.round {
-    width: 30px;
-    height: 30px;
+  .mini {
+    width: 22px;
+    height: 22px;
+    display: inline-flex;
+    align-items: center;
     justify-content: center;
     padding: 0;
-    border-radius: 50%;
+    border-radius: 4px;
     background: var(--elevated);
     border: 1px solid var(--line);
-    color: var(--text);
+    color: var(--dim);
     line-height: 0;
   }
-  .ctl.round:hover {
-    background: var(--accent);
+  .mini:hover {
+    color: var(--text);
     border-color: var(--accent);
-    color: #fff;
+    background: var(--panel);
   }
 </style>

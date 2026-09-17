@@ -78,3 +78,5 @@ export interface Health {
 }
 
 export const TERMINAL: ReadonlySet<TaskStatus> = new Set(['completed', 'failed']);
+
+export type StatusFilter = 'all' | 'active' | 'completed' | 'failed';

@@ -11,9 +11,11 @@
   import { createStore, type TaskStore } from './lib/store.svelte';
   import TaskRow from './lib/TaskRow.svelte';
   import AddDialog from './lib/AddDialog.svelte';
-  import Sidebar, { type StatusFilter } from './lib/Sidebar.svelte';
   import Toolbar from './lib/Toolbar.svelte';
   import StatusBar from './lib/StatusBar.svelte';
+  import Titlebar from './lib/Titlebar.svelte';
+  import DetailPanel from './lib/DetailPanel.svelte';
+  import type { StatusFilter } from './lib/types';
   import { categorize, type Category } from './lib/categorize';
   import { initialTheme, applyTheme, saveTheme, type Theme } from './lib/theme';
   import type { Conn } from './lib/store.svelte';
@@ -62,6 +64,24 @@
   // ---- filters (sidebar state lifted here; store stays pure) ---
   let statusFilter = $state<StatusFilter>('all');
   let categoryFilter = $state<Category | null>(null);
+  // V5: live text filter (toolbar search) + global limit (statusbar)
+  let query = $state('');
+  // V5: clickable column sort (mock: NAME/SIZE carry indicators)
+  type SortKey = 'name' | 'size' | 'received' | 'speed';
+  let sortKey: SortKey | null = $state(null);
+  let sortDir: 'asc' | 'desc' = $state('asc');
+  function sortBy(k: 'name' | 'size' | 'received' | 'speed') {
+    if (sortKey === k) {
+      sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+      // third click resets to daemon order
+      if (sortDir === 'asc') sortKey = null;
+    } else {
+      sortKey = k;
+      sortDir = 'desc'; // default: biggest/newest first
+    }
+  }
+  let globalLimit = $state<number | null>(null);
+  let toolbarRef = $state<Toolbar | undefined>(undefined);
   // Row selection = inline SegmentPanel expansion (U2). One open
   // row at a time; deselected on filter change (the row may leave
   // the visible set — a selected row behind a filter is a trap).
@@ -112,9 +132,79 @@
     return c;
   });
 
-  const visible = $derived(
-    store.list.filter((t) => !removalHidden.has(t.id) && passesFilters(t)),
+  const visible = $derived.by(() => {
+    const q = query.trim().toLowerCase();
+    const rows = store.list.filter(
+      (t) =>
+        !removalHidden.has(t.id) &&
+        passesFilters(t) &&
+        (!q || t.url.toLowerCase().includes(q) || fileName(t.url).toLowerCase().includes(q)),
+    );
+    if (sortKey === null) return rows;
+    const dir = sortDir === 'asc' ? 1 : -1;
+    const key = (t: (typeof rows)[number]): number | string =>
+      sortKey === 'name'
+        ? fileName(t.url).toLowerCase()
+        : sortKey === 'size'
+          ? (t.total_bytes ?? Infinity)
+          : sortKey === 'received'
+            ? t.received_bytes
+            : (t.speed ?? -1);
+    return rows.sort((a, b) => {
+      const ka = key(a);
+      const kb = key(b);
+      return ka < kb ? -dir : ka > kb ? dir : 0;
+    });
+  });
+
+  const selectedTask = $derived(
+    selectedId !== null ? (store.list.find((x) => x.id === selectedId) ?? null) : null,
   );
+
+  // ---- V5: bulk actions (toolbar / menubar / shortcuts) -------
+  async function bulkPause() {
+    const ids = store.list.filter((t) => t.status === 'running' || t.status === 'queued').map((t) => t.id);
+    if (ids.length === 0) return;
+    const n = ids.length;
+    toast.push(`Pausing ${n} task${n === 1 ? '' : 's'}…`);
+    await Promise.allSettled(ids.map((id) => store.pause(id)));
+  }
+
+  async function bulkResume() {
+    const ids = store.list.filter((t) => t.status === 'paused').map((t) => t.id);
+    if (ids.length === 0) return;
+    const n = ids.length;
+    toast.push(`Resuming ${n} task${n === 1 ? '' : 's'}…`);
+    await Promise.allSettled(ids.map((id) => store.resume(id)));
+  }
+
+  function clearDone() {
+    const done = store.list.filter((t) => t.status === 'completed');
+    if (done.length === 0) return;
+    const n = done.length;
+    toast.push(`Clearing ${n} finished task${n === 1 ? '' : 's'}…`);
+    void Promise.allSettled(done.map((t) => store.remove(t.id)));
+  }
+
+  async function applyGlobalLimit(bps: number | null) {
+    try {
+      await store.setGlobalLimit(bps ?? 0);
+      globalLimit = bps;
+    } catch (e) {
+      banner(String(e instanceof Error ? e.message : e));
+    }
+  }
+
+  $effect(() => {
+    // initial global limit read (statusbar selector source of truth)
+    void daemon
+      .getSettings()
+      .then((st) => {
+        // daemon convention: 0 = unlimited → normalize to null
+        globalLimit = st.global_limit_bps || null;
+      })
+      .catch(() => {});
+  });
 
   const totalSpeed = $derived(
     store.list.reduce((sum, t) => sum + (t.speed ?? 0), 0),
@@ -343,6 +433,25 @@
       showAdd = true;
       return;
     }
+    if (mod && e.key.toLowerCase() === 'f') {
+      e.preventDefault(); // V5: toolbar search focus
+      toolbarRef?.focusSearch();
+      return;
+    }
+    if (mod && e.shiftKey && e.key.toLowerCase() === 'p') {
+      e.preventDefault(); // V5: ⇧⌘P pause all
+      void bulkPause();
+      return;
+    }
+    if (mod && e.shiftKey && e.key.toLowerCase() === 'r') {
+      e.preventDefault(); // V5: ⇧⌘R resume all
+      void bulkResume();
+      return;
+    }
+    if (e.key === 'Escape' && !paletteOpen && !helpOpen && !showAdd && selectedId) {
+      selectedId = null; // V5: Esc closes the detail drawer
+      return;
+    }
     if (isTyping(e)) return; // never steal keys from any open input (palette search, add URL field)
     // `/` and `?` REPLACE any open overlay (R2 P2: exclusivity) —
     // they sit above the overlay guard for that, but below isTyping
@@ -435,19 +544,31 @@
 />
 
 <div class="shell">
-  <aside>
-    <Sidebar
-      {store}
-      bind:status={statusFilter}
-      bind:category={categoryFilter}
-      {counts}
-      onBanner={banner}
-    />
-  </aside>
+  <Titlebar
+    title="Peregrine"
+    onAdd={() => ((addUrl = ''), (showAdd = true))}
+    onPauseAll={() => void bulkPause()}
+    onResumeAll={() => void bulkResume()}
+    onClearDone={clearDone}
+    onToggleTheme={toggleTheme}
+    themeLabel={theme === 'dark' ? 'Light Theme' : 'Dark Theme'}
+    onPalette={() => (paletteOpen = true)}
+    onShortcuts={() => (helpOpen = true)}
+  />
 
-  <Toolbar {theme} onToggleTheme={toggleTheme} onAdd={() => ((addUrl = ''), (showAdd = true))} onPalette={() => (paletteOpen = true)} />
-
-  <StatusBar totalSpeed={totalSpeed} active={counts.active} failed={counts.failed} {conn} />
+  <Toolbar
+    bind:this={toolbarRef}
+    bind:query
+    bind:statusFilter
+    bind:categoryFilter
+    {counts}
+    hasSelection={selectedId !== null}
+    onAdd={() => ((addUrl = ''), (showAdd = true))}
+    onPauseAll={() => void bulkPause()}
+    onResumeAll={() => void bulkResume()}
+    onClearDone={clearDone}
+    onOpenFolder={() => selectedId && void openFile(selectedId)}
+  />
 
   {#if bannerMsg}
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_click_events_have_key_events -->
@@ -507,6 +628,21 @@
         {/if}
       </div>
     {:else}
+      <div class="thead" role="row">
+        <button class="th" role="columnheader" onclick={() => sortBy('name')}>
+          Name{#if sortKey === 'name'}<i class="caret">{sortDir === 'asc' ? '▴' : '▾'}</i>{/if}
+        </button>
+        <span class="th">Progress</span>
+        <button class="th num" role="columnheader" onclick={() => sortBy('size')}>
+          Size{#if sortKey === 'size'}<i class="caret">{sortDir === 'asc' ? '▴' : '▾'}</i>{/if}
+        </button>
+        <button class="th num" role="columnheader" onclick={() => sortBy('speed')}>
+          Speed{#if sortKey === 'speed'}<i class="caret">{sortDir === 'asc' ? '▴' : '▾'}</i>{/if}
+        </button>
+        <span class="th num">ETA</span>
+        <span class="th">Status</span>
+        <span class="th"></span>
+      </div>
       {#each visible as task (task.id)}
         <TaskRow
           {task}
@@ -524,6 +660,29 @@
       {/each}
     {/if}
   </main>
+
+  {#if selectedTask}
+    <DetailPanel
+      task={selectedTask}
+      {daemon}
+      onLimit={(id, bps) => void act(store.setTaskLimit(id, bps))}
+      onClose={() => (selectedId = null)}
+    />
+  {/if}
+
+  <StatusBar
+    totalSpeed={totalSpeed}
+    active={counts.active}
+    paused={store.list.filter((t) => t.status === 'paused').length}
+    done={counts.completed}
+    failed={counts.failed}
+    {conn}
+    {globalLimit}
+    onGlobalLimit={(bps) => void applyGlobalLimit(bps)}
+    {theme}
+    onToggleTheme={toggleTheme}
+    version="dev"
+  />
 </div>
 
 {#if showAdd}
@@ -559,36 +718,72 @@
 
 <style>
   .shell {
-    display: grid;
+    display: flex;
+    flex-direction: column;
     height: 100vh;
-    /* Motrix geometry: ~184px expanded aside over the main area */
-    grid-template-columns: 184px 1fr;
-    grid-template-rows: 44px 32px auto 1fr;
-    grid-template-areas:
-      'sidebar toolbar'
-      'sidebar statusbar'
-      'sidebar banner'
-      'sidebar main';
     overflow: hidden;
   }
-  aside {
-    grid-area: sidebar;
-    min-height: 0;
-  }
-  .shell > :global(header) {
-    grid-area: toolbar;
-  }
-  .shell > :global(.statusbar) {
-    grid-area: statusbar;
-  }
-  .shell > :global(.error-banner) {
-    grid-area: banner;
-  }
   main {
-    grid-area: main;
+    flex: 1;
     overflow-y: auto;
     min-height: 0;
     position: relative;
+  }
+  .shell > :global(.error-banner) {
+    position: absolute;
+    top: 74px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 40;
+  }
+  /* V5: table header aligned with TaskRow columns */
+  .thead {
+    display: grid;
+    grid-template-columns:
+      minmax(0, 1fr)
+      150px
+      128px
+      86px
+      72px
+      92px
+      64px;
+    column-gap: 14px;
+    padding: 0 14px;
+    height: 28px;
+    align-items: center;
+    font: 650 10px var(--font-sans);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: color-mix(in oklch, var(--text) 62%, var(--bg));
+    background: color-mix(in oklch, var(--chrome-2) 82%, oklch(100% 0 0 / 4%));
+    border-bottom: 1px solid var(--line-strong);
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    user-select: none;
+  }
+  .thead .num {
+    text-align: right;
+  }
+  .th {
+    all: unset;
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: default;
+  }
+  button.th { cursor: pointer; }
+  button.th:hover { color: var(--text); }
+  .caret {
+    font-style: normal;
+    margin-left: 3px;
+    color: var(--accent);
+  }
+  .th.num {
+    display: flex;
+    justify-content: flex-end;
   }
   /* Drop affordance: inset accent ring while a link hovers over
      the window (U2 drag-and-drop) */

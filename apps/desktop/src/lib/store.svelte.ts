@@ -27,6 +27,9 @@ export interface TaskView extends Task {
   speed: number | null;
   /** Derived: 0..1, null when total unknown. */
   fraction: number | null;
+  /** Derived: recent EMA samples (newest last), max 60 — feeds the
+   * detail drawer's speed sparkline. Cleared when speed clears. */
+  speed_history: number[];
 }
 
 export type Conn = 'connecting' | 'live' | 'down';
@@ -56,6 +59,10 @@ function view(t: Task, prev?: TaskView): TaskView {
     ...t,
     received_bytes: received,
     speed,
+    speed_history:
+      speed !== null
+        ? [...(prev?.speed_history ?? []), speed].slice(-60)
+        : [],
     fraction:
       t.total_bytes && t.total_bytes > 0
         ? Math.min(1, received / t.total_bytes)

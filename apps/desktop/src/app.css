@@ -33,23 +33,63 @@
   --err: oklch(58% 0.18 27);
   /* floating overlay scrim */
   --scrim: oklch(10% 0.014 270 / 0.65);
+  /* V5 window chrome: titlebar/menubar/toolbar/statusbar banding.
+   * chrome-1 sits just above bg (statusbar/drawer), chrome-2 one
+   * step higher (toolbar gradient base, thead tint) — the native
+   * "metal frame around the content" separation. */
+  --chrome-1: oklch(16.5% 0.015 270);
+  --chrome-2: oklch(19% 0.016 270);
+  /* queued / informational — blue family, calmer than accent */
+  --info: oklch(64% 0.11 240);
+  /* theme-adaptive micro-values: borders/shadows/tints that flip
+   * polarity between themes so components never hard-code black or
+   * white transparency. */
+  --edge: oklch(0% 0 0 / 0.4); /* region borders (titlebar bottom, etc.) */
+  --row-line: oklch(0% 0 0 / 0.18); /* 38px row separators */
+  --hover-tint: oklch(100% 0 0 / 0.06);
+  --zebra-tint: oklch(100% 0 0 / 0.017);
+  --shade-1: oklch(0% 0 0 / 0.4); /* button resting shadow */
+  --shade-2: oklch(0% 0 0 / 0.55); /* floating menu shadow */
+  --inset-shade: oklch(0% 0 0 / 0.35); /* input inset */
+  --inset-hl: oklch(100% 0 0 / 0.045); /* toolbar top highlight */
+  --bar-track: oklch(0% 0 0 / 0.35); /* progress track */
+  --on-accent: oklch(15% 0.02 262); /* text on accent fill */
+  --on-accent-dim: oklch(15% 0.02 262 / 0.7);
 }
 
 :root[data-theme='light'] {
   color-scheme: light;
-  --bg: oklch(97% 0.003 262);
+  --bg: oklch(96% 0.003 262);
   --panel: oklch(100% 0 0);
   --elevated: oklch(98.8% 0.002 262);
-  --text: oklch(23% 0.015 262);
-  --dim: oklch(50% 0.02 262);
-  --line-strong: oklch(82% 0.01 262);
-  --line: oklch(89% 0.005 262);
-  --line-subtle: oklch(93% 0.004 262);
+  --text: oklch(21% 0.015 262);
+  --dim: oklch(42% 0.02 262);
+  --line-strong: oklch(80% 0.01 262);
+  --line: oklch(87% 0.005 262);
+  --line-subtle: oklch(91% 0.004 262);
   --accent: oklch(56% 0.14 262);
   --ok: oklch(56% 0.13 150);
   --warn: oklch(64% 0.12 75);
   --err: oklch(55% 0.17 25);
   --scrim: oklch(20% 0.01 262 / 0.4);
+  /* V5 chrome bands, light: paper-toned, one and two steps below
+   * panel so the frame reads darker-than-paper like a native app. */
+  --chrome-1: oklch(94.5% 0.004 262);
+  --chrome-2: oklch(92% 0.005 262);
+  --info: oklch(50% 0.12 240);
+  /* light polarity flips: dark hairlines, dark hover tints,
+   * softer shadows, white text on the accent fill. */
+  --edge: oklch(20% 0.01 262 / 0.35);
+  --row-line: oklch(20% 0.01 262 / 0.14);
+  --hover-tint: oklch(22% 0.01 262 / 0.05);
+  --zebra-tint: oklch(22% 0.01 262 / 0.016);
+  --shade-1: oklch(20% 0.01 262 / 0.18);
+  --shade-2: oklch(20% 0.01 262 / 0.28);
+  --inset-shade: oklch(20% 0.01 262 / 0.15);
+  --inset-hl: oklch(100% 0 0 / 0.8);
+  --bar-track: oklch(20% 0.01 262 / 0.16);
+  --on-accent: oklch(100% 0 0);
+  --on-accent-dim: oklch(100% 0 0 / 0.85);
 }
 
 @theme {

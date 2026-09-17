@@ -1,26 +1,46 @@
 <script lang="ts">
   /**
-   * Global throughput strip — the "watch the pipe" anchor
-   * (ui-proposal §2: speed is the heartbeat, always visible).
-   * Mono tabular numerals so live values never jitter width.
+   * V5 statusbar: bottom strip like a native app — speed heartbeat,
+   * counters, daemon conn pill, GLOBAL speed limit selector (moved
+   * here from the old sidebar — a pipe-level control belongs at the
+   * pipe), theme toggle, version tag.
    */
-  import { formatBytes } from './format';
-  import { ArrowDown, Circle, CircleDashed, Unplug } from '@lucide/svelte';
+  import { formatBytes, LIMIT_PRESETS } from './format';
+  import { ArrowDown, Circle, CircleDashed, Unplug, Sun, Moon } from '@lucide/svelte';
 
   let {
     totalSpeed,
     active,
+    paused,
+    done,
     failed,
     conn,
+    globalLimit,
+    onGlobalLimit,
+    theme,
+    onToggleTheme,
+    version,
   }: {
     totalSpeed: number;
     active: number;
+    paused: number;
+    done: number;
     failed: number;
     conn: 'connecting' | 'live' | 'down';
+    globalLimit: number | null;
+    onGlobalLimit: (bps: number | null) => void;
+    theme: 'dark' | 'light';
+    onToggleTheme: () => void;
+    version: string;
   } = $props();
 
   const connLabel = $derived(
     conn === 'live' ? 'connected' : conn === 'connecting' ? 'connecting…' : 'disconnected',
+  );
+  const currentPreset = $derived(
+    globalLimit === null
+      ? '∞'
+      : (LIMIT_PRESETS.find((p) => p.bps === globalLimit)?.label ?? `${formatBytes(globalLimit)}/s`),
   );
 </script>
 
@@ -31,10 +51,42 @@
   </span>
   <span class="sep"></span>
   <span class="stat num">{active} active</span>
+  {#if paused > 0}
+    <span class="sep"></span>
+    <span class="stat num">{paused} paused</span>
+  {/if}
+  {#if done > 0}
+    <span class="sep"></span>
+    <span class="stat num">{done} done</span>
+  {/if}
   {#if failed > 0}
     <span class="sep"></span>
     <span class="stat num danger">{failed} failed</span>
   {/if}
+
+  <span class="grow"></span>
+
+  <label class="glim" title="Global speed limit">
+    Speed Limit
+    <select
+      class="glim-select"
+      value={globalLimit === null ? 'none' : String(globalLimit)}
+      onchange={(e) => {
+        const v = e.currentTarget?.value;
+        onGlobalLimit(!v || v === 'none' ? null : Number(v));
+      }}
+    >
+      {#each LIMIT_PRESETS as p (p.label)}
+        <option value={p.bps}>{p.label}</option>
+      {/each}
+      <option value="none">Unlimited</option>
+    </select>
+  </label>
+
+  <button class="ghost" onclick={onToggleTheme} title="Toggle theme (⌘T)" aria-label="Toggle theme">
+    {#if theme === 'dark'}<Sun size={12} />{:else}<Moon size={12} />{/if}
+  </button>
+
   <span class="conn" data-kind={conn}>
     {#if conn === 'live'}
       <Circle size={8} strokeWidth={0} fill="currentColor" aria-hidden="true" />
@@ -45,31 +97,31 @@
     {/if}
     {connLabel}
   </span>
+
+  <span class="ver">Peregrine {version}</span>
 </div>
 
 <style>
   .statusbar {
     display: flex;
     align-items: center;
-    gap: 14px;
-    height: 32px;
-    padding: 0 16px;
-    background: var(--subnav);
-    border-bottom: 1px solid var(--line-strong);
-    font-size: 12px;
+    gap: 12px;
+    height: 28px;
+    padding: 0 12px;
+    background: var(--chrome-1);
+    border-top: 1px solid var(--edge);
+    font-size: 11.5px;
     color: var(--dim);
+    flex: none;
   }
-  /* disconnected: the whole strip turns amber — impossible to miss,
-     list stays frozen-but-visible below (ui-proposal §5) */
   .statusbar.down {
-    background: color-mix(in srgb, var(--warn) 14%, var(--subnav));
+    background: color-mix(in srgb, var(--warn) 14%, var(--chrome-1));
     color: var(--warn);
   }
   .stat {
     color: var(--text);
+    font-variant-numeric: tabular-nums;
   }
-  /* live downlink arrow reads green — the "pipe is flowing" cue
-   * (VLM pass 3: neutral grey arrow looked dead) */
   .arrow {
     font-style: normal;
     color: var(--ok);
@@ -78,40 +130,76 @@
   }
   .stat.danger {
     color: var(--err);
-    /* weak red chip so a failed count is a first-class alarm,
-     * not just tinted text (VLM pass 3). Same 2px vertical padding
-     * as the .conn pill — keeps one baseline across the strip
-     * (VLM pass 6 flagged the 1px/2px mismatch). */
-    background: color-mix(in srgb, var(--err) 14%, transparent);
-    border-radius: 4px;
-    padding: 2px 7px;
+    background: color-mix(in srgb, var(--err) 16%, transparent);
+    border: 1px solid color-mix(in srgb, var(--err) 35%, transparent);
+    border-radius: 999px;
+    padding: 1px 8px;
   }
   .statusbar.down .stat {
     color: var(--warn);
   }
   .sep {
     width: 1px;
-    height: 14px;
+    height: 13px;
     background: var(--line-subtle);
+    flex: none;
   }
-  .conn {
-    margin-left: auto;
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    /* pill so the live indicator holds its own weight against the
-     * stat cluster instead of floating orphaned (VLM pass 4) */
-    border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
-    border-radius: 999px;
-    padding: 2px 10px;
+  .grow { flex: 1; }
+
+  .glim {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
+    gap: 7px;
+    font-size: 11px;
+    color: var(--dim);
+  }
+  .glim-select {
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-size: 11px;
+    color: var(--text);
+    max-width: 110px;
+  }
+  .ghost {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border-radius: 4px;
+    border: 1px solid transparent;
+    background: none;
+    color: var(--dim);
+    cursor: pointer;
+  }
+  .ghost:hover {
+    background: var(--elevated);
+    border-color: var(--line-strong);
+    color: var(--text);
+  }
+  .conn {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
+    border-radius: 999px;
+    padding: 2px 9px;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
   }
   .conn[data-kind='live'] {
     color: var(--ok);
   }
   .conn[data-kind='down'] {
     color: var(--err);
+  }
+  .ver {
+    font-size: 10.5px;
+    color: var(--dim);
+    opacity: 0.75;
   }
 </style>
