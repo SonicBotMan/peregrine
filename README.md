@@ -32,23 +32,23 @@ GUI 是纯薄客户端（Svelte 5 + Tailwind 4）：零业务逻辑，全部走 
 
 **零步添加**（空列表即下载表单：粘贴链接，回车即下；窗口获焦时侦测剪贴板新链接，一键 Download——只提示、永不自动添加）：
 
-![Empty state is the add form](assets/gui-v2-quickadd.png)
+![Empty state is the add form](assets/gui-v5-quickadd.png)
 
-**暗色主题**（运行中 / 暂停 / 完成 / 失败混态，真实下载截图）：
+**暗色主题**（V5 工具级表格：文件类型图标 / 内联进度条 / 状态胶囊，真实下载截图）：
 
-![GUI dark theme with mixed task states](assets/gui-v2-dark.png)
+![GUI dark theme with mixed task states](assets/gui-v5-dark.png)
 
-**段级视图**（选中行内嵌展开，连接级遥微条）：
+**详情抽屉**（选中行底部展开：Segments / Speed graph 实时曲线 / Info 三标签）：
 
-![Segment panel expanded under selected row](assets/gui-v2-segments.png)
+![Detail drawer with speed graph](assets/gui-v5-speed.png)
 
 **⌘K 命令面板**（动作 + 任务搜索）：
 
-![Command palette](assets/gui-v2-palette.png)
+![Command palette](assets/gui-v5-palette.png)
 
 **亮色主题**（同构 token，一秒切换）：
 
-![GUI light theme](assets/gui-v2-light.png)
+![GUI light theme](assets/gui-v5-light.png)
 
 ## 真机基准（v2.0.0-alpha.1）
 
