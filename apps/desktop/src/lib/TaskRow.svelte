@@ -141,9 +141,21 @@
         onclick={() => onSelect(task.id)}
         ondblclick={() => task.status === 'completed' && onOpenSaved(task.id)}
         onkeydown={(e) => {
-          // Enter only: Space belongs to the global layer (pause/
-          // resume selected). Buttons keep native Space activation
-          // (exempted in App.onKeydown).
+          // Enter selects; Space toggles pause/resume on the FOCUSED
+          // row (GUI-verify R2: the cheat sheet promises Space =
+          // pause/resume on row-selected, but a mouse-selected row
+          // holds focus on this button — Space's native activation
+          // must be redirected, not swallowed).
+          if (e.key === ' ') {
+            if (running) {
+              e.preventDefault();
+              onPause(task.id);
+            } else if (resumable) {
+              e.preventDefault();
+              onResume(task.id);
+            }
+            return;
+          }
           if (e.key === 'Enter') {
             e.preventDefault();
             onSelect(task.id);

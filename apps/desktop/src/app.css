@@ -420,6 +420,35 @@
   opacity: 0.85;
   line-height: 1.5;
 }
+/* GUI-verify R2: Save-to row hosts the input + native-picker button
+ * (desktop only — the button is absent in plain-browser mode). */
+.dialog .path-row {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+}
+.dialog .path-row input {
+  flex: 1;
+  min-width: 0;
+}
+.dialog .browse {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  border-radius: 6px;
+  padding: 0 10px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.dialog .browse:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.dialog .browse:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
 /* remove-semantics dialog: checkbox rows + irreversible warning */
 .dialog .opt {
   display: flex;

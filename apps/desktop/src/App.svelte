@@ -18,7 +18,14 @@
   import DetailPanel from './lib/DetailPanel.svelte';
   import { TERMINAL, type StatusFilter } from './lib/types';
   import { categorize, type Category } from './lib/categorize';
-  import { initialTheme, applyTheme, saveTheme, type Theme } from './lib/theme';
+  import {
+    initialTheme,
+    applyTheme,
+    saveTheme,
+    hasPinnedTheme,
+    onSystemThemeChange,
+    type Theme,
+  } from './lib/theme';
   import type { Conn } from './lib/store.svelte';
   import { notifyCompleted } from './lib/notify';
   import { revealSaved, openSaved } from './lib/open';
@@ -220,6 +227,8 @@
     void Promise.allSettled(done.map((t) => store.remove(t.id)));
   }
 
+  let defaultDir = $state('~/Downloads'); // daemon settings source of truth
+
   async function applyGlobalLimit(bps: number | null) {
     try {
       await store.setGlobalLimit(bps ?? 0);
@@ -236,6 +245,10 @@
       .then((st) => {
         // daemon convention: 0 = unlimited → normalize to null
         globalLimit = st.global_limit_bps || null;
+        // The daemon owns the default save DIRECTORY (GUI-verify R2
+        // P3): quick-add and the AddDialog compose their save paths
+        // against it instead of a hardcoded guess.
+        if (st.default_dir) defaultDir = st.default_dir;
       })
       .catch(() => {});
   });
@@ -303,12 +316,72 @@
     speedHist = [...speedBuf];
   });
 
+  // ---- native shell detection ---------------------------------
+  const isDesktopShell =
+    typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+
+  // ---- launch at login (desktop shell only) --------------------
+  let launchAtLogin = $state(false);
+  const autostartSupported = isDesktopShell;
+  if (autostartSupported) {
+    void import('@tauri-apps/api/core').then(({ invoke }) =>
+      invoke<boolean>('plugin:autostart|is_enabled')
+        .then((v) => (launchAtLogin = v))
+        .catch(() => {}),
+    );
+  }
+  async function toggleAutostart() {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke(
+        launchAtLogin ? 'plugin:autostart|disable' : 'plugin:autostart|enable',
+      );
+      launchAtLogin = !launchAtLogin;
+      toast.push(launchAtLogin ? 'Will launch at login' : 'Will not launch at login');
+    } catch (e) {
+      banner(String(e instanceof Error ? e.message : e));
+    }
+  }
+
   // ---- theme --------------------------------------------------
   let theme = $state<Theme>(initialTheme());
   function toggleTheme() {
     theme = theme === 'dark' ? 'light' : 'dark';
     applyTheme(theme);
     saveTheme(theme);
+  }
+  // GUI-verify batch-2: follow the OS theme while the user has not
+  // pinned one; the first manual toggle pins and detaches.
+  $effect(() => {
+    if (hasPinnedTheme()) return;
+    return onSystemThemeChange((t) => {
+      theme = t;
+      applyTheme(t);
+    });
+  });
+
+  // ---- native shell wiring (desktop webview only) -------------
+  if (isDesktopShell) {
+    // 1) Deep-link forwarding: the shell emits magnet:/file://*.torrent
+    //    URLs that arrived via argv (xdg-open → .desktop MimeType →
+    //    second launch → single-instance forward). Quick-add handles
+    //    the rest, directory semantics included.
+    void import('@tauri-apps/api/event').then(({ listen }) =>
+      listen<string>('peregrine://deep-link', (e) => {
+        void quickAdd(String(e.payload));
+      }),
+    );
+    // 2) Native FILE drag-drop (GUI-verify batch-2): HTML5 drag only
+    //    carries link text — a dragged .torrent FILE arrives here,
+    //    with an absolute path from the shell. The BT engine takes a
+    //    directory sink, which quickAdd handles.
+    void import('@tauri-apps/api/webview').then(({ getCurrentWebview }) =>
+      getCurrentWebview().onDragDropEvent((e) => {
+        if (e.payload.type !== 'drop') return;
+        const torrents = e.payload.paths.filter((p) => /\.torrent$/i.test(p));
+        for (const p of torrents) void quickAdd(`file://${p}`);
+      }),
+    );
   }
 
   // ---- B39 banner ---------------------------------------------
@@ -337,7 +410,6 @@
   // app, download" — it must not walk the 3-field dialog. Same
   // validation set as AddDialog; the daemon stays the authority.
   const URL_OK = /^(https?|ftps?|magnet|bt|file):/i;
-  const DEFAULT_DIR = '~/Downloads';
 
   /** One-shot add: URL → running task, defaults for the rest.
    *  Returns an error STRING on validation failure (so callers
@@ -345,9 +417,23 @@
   async function quickAdd(url: string): Promise<string | null> {
     const u = url.trim();
     if (!URL_OK.test(u)) return 'URL must be http(s), ftp, magnet:, bt: or file:';
+    // Compose the save path here: the daemon takes a FILE path, never
+    // a directory — passing the bare default dir would write every
+    // quick-added task into one file named "Downloads" (GUI-verify
+    // R2 P0-adjacent). Magnet URLs have no filename: refuse with the
+    // dialog hint instead of inventing one.
+    if (u.startsWith('magnet:') || u.startsWith('bt:')) {
+      return 'magnet links need a save path — use Add URL';
+    }
+    const base = fileName(u);
+    const savePath = `${defaultDir.replace(/\/+$/, '')}/${base}`;
+    if (store.list.some((t) => t.url === u && !TERMINAL.has(t.status))) {
+      toast.push('That URL is already downloading — adding nothing');
+      return null;
+    }
     try {
-      await store.add(u, DEFAULT_DIR, 'normal');
-      toast.push(`Downloading ${fileName(u)}`);
+      await store.add(u, savePath, 'normal');
+      toast.push(`Downloading ${base}`);
       return null;
     } catch (e) {
       const msg = String(e instanceof Error ? e.message : e);
@@ -855,9 +941,18 @@
 {#if showAdd}
   <AddDialog
     initialUrl={addUrl}
-    onAdd={(url, path, prio) => store.add(url, path, prio)}
+    onAdd={(url, path, prio) => {
+      // Same-URL hint (GUI-verify R2): the daemon only rejects ACTIVE
+      // (url, path) collisions — same URL to a different path, or a
+      // re-add of a terminal task, is legal but usually a slip. A
+      // toast, not a blocker: the user may want a second copy.
+      if (store.list.some((t) => t.url === url && !TERMINAL.has(t.status))) {
+        toast.push('That URL is already in your list — adding anyway');
+      }
+      return store.add(url, path, prio);
+    }}
     onClose={() => (showAdd = false)}
-    defaultDir="~/Downloads"
+    {defaultDir}
   />
 {/if}
 

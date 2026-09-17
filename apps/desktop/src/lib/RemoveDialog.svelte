@@ -26,9 +26,24 @@
 
   let deleteFile = $state(false);
   let neverAsk = $state(false);
+  // Keyboard parity with the main table (GUI-verify R2 P3): the
+  // primary action answers to Enter, Escape already closes. Guarded
+  // against double-fire because buttons also receive Enter when
+  // focused — the confirm is idempotent-safe but the toast isn't.
+  let done = $state(false);
+  function confirmNow() {
+    if (done) return;
+    done = true;
+    onConfirm(deleteFile, neverAsk);
+  }
 </script>
 
-<svelte:window onkeydown={(e) => e.key === 'Escape' && onClose()} />
+<svelte:window
+  onkeydown={(e) => {
+    if (e.key === 'Escape') onClose();
+    else if (e.key === 'Enter' && !(e.target instanceof HTMLButtonElement)) confirmNow();
+  }}
+/>
 
 <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
 <div class="overlay" onclick={onClose}>
@@ -58,7 +73,7 @@
         class="ctl"
         class:danger={deleteFile}
         class:primary={!deleteFile}
-        onclick={() => onConfirm(deleteFile, neverAsk)}
+        onclick={() => confirmNow()}
       >
         {deleteFile ? 'Remove + delete file' : 'Remove'}
       </button>

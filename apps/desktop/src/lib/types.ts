@@ -75,6 +75,9 @@ export interface BtPeersSnapshot {
 /** Daemon-wide knobs (GET/PUT /settings). Shape is additive. */
 export interface Settings {
   global_limit_bps: number;
+  /** Default save DIRECTORY for path-composing clients (quick-add,
+   * AddDialog prefill). `~` is daemon-resolved at task-add time. */
+  default_dir: string;
 }
 
 /** Mirrors crates/api/src/bus.rs `EngineEvent` (serde tag="type",

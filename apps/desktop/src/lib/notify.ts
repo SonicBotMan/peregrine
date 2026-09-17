@@ -33,7 +33,7 @@ export async function notifyCompleted(
   }
 }
 
-function fileName(url: string): string {
+export function fileName(url: string): string {
   try {
     const u = new URL(url);
     const last = u.pathname.split('/').filter(Boolean).pop();
