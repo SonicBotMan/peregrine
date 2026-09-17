@@ -18,6 +18,7 @@
     {
       title: 'Task (row selected)',
       rows: [
+        ['j / k', 'Move selection down / up'],
         ['Space', 'Pause / resume'],
         ['Del / ⌫', 'Remove (with undo window)'],
         ['Enter', 'Select / expand details'],

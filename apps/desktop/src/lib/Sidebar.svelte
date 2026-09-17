@@ -38,6 +38,7 @@
     counts: {
       all: number;
       active: number;
+      paused: number;
       completed: number;
       failed: number;
       categories: Record<Category, number>;

@@ -13,6 +13,27 @@
   import type { TaskView } from './store.svelte';
   import { Pause, Play, X } from '@lucide/svelte';
 
+  // file-type glyph: one 10px letter tile (A/V/I/D/⬢/?) — cheaper
+  // and calmer than a full icon set, scannable by color + shape.
+  const FILE_KINDS: Record<string, { ch: string; color: string }> = {
+    archive: { ch: 'A', color: 'var(--warn)' }, // zip tar gz 7z
+    video: { ch: 'V', color: 'var(--err)' }, // mp4 mkv avi
+    audio: { ch: 'D', color: 'var(--accent)' }, // mp3 flac
+    image: { ch: 'I', color: 'var(--ok)' }, // png jpg svg
+    doc: { ch: 'T', color: 'var(--info)' }, // pdf epub txt md
+    bin: { ch: 'B', color: 'var(--dim)' }, // exe iso bin dat
+  };
+  const kind = $derived.by(() => {
+    const ext = name.split('.').pop()?.toLowerCase() ?? '';
+    if (['zip', 'tar', 'gz', '7z', 'rar', 'xz', 'bz2'].includes(ext)) return FILE_KINDS.archive;
+    if (['mp4', 'mkv', 'avi', 'mov', 'webm', 'flv'].includes(ext)) return FILE_KINDS.video;
+    if (['mp3', 'flac', 'wav', 'ogg', 'm4a', 'opus'].includes(ext)) return FILE_KINDS.audio;
+    if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp'].includes(ext)) return FILE_KINDS.image;
+    if (['pdf', 'epub', 'txt', 'md', 'doc', 'docx', 'mobi'].includes(ext)) return FILE_KINDS.doc;
+    if (['exe', 'msi', 'iso', 'bin', 'dat', 'dmg', 'AppImage'].includes(ext)) return FILE_KINDS.bin;
+    return null;
+  });
+
   let {
     task,
     daemon,
@@ -92,7 +113,12 @@
           }
         }}
       >
-        <span class="c name" title={name}>{name}</span>
+        <span class="c namecell">
+          {#if kind}
+            <span class="ftype" aria-hidden="true" style="--k: {kind.color}">{kind.ch}</span>
+          {/if}
+          <span class="name" title={name}>{name}</span>
+        </span>
 
         <span class="c progress" aria-hidden="true">
           {#if task.status === 'completed'}
@@ -212,10 +238,11 @@
     box-shadow: inset 2px 0 0 var(--err);
   }
   /* light: err-tinted rows read as pastel pink on white; a red
-   * hairline carries 'failed' without painting the row. */
+   * hairline carries 'failed' without painting the row — keep the
+   * hairline faint (35%) so it reads as a cue, not a siren. */
   :root[data-theme='light'] .row[data-status='failed'] {
     background: transparent;
-    box-shadow: inset 2px 0 0 color-mix(in oklch, var(--err) 55%, transparent);
+    box-shadow: inset 2px 0 0 color-mix(in oklch, var(--err) 35%, transparent);
   }
   :root[data-theme='light'] .row[data-status='failed'].selected {
     background: color-mix(in oklch, var(--err) 8%, transparent);
@@ -227,6 +254,25 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  .namecell {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+  }
+  .ftype {
+    width: 20px;
+    height: 20px;
+    border-radius: 5px;
+    flex: none;
+    display: grid;
+    place-items: center;
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--k);
+    background: color-mix(in srgb, var(--k) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--k) 30%, transparent);
+    margin-right: 8px;
   }
   .name {
     font-weight: 550;

@@ -24,7 +24,7 @@
     query?: string;
     statusFilter?: StatusFilter;
     categoryFilter?: Category | null;
-    counts: { active: number; failed: number; completed: number };
+    counts: { active: number; paused: number; failed: number; completed: number };
     hasSelection: boolean;
     onAdd: () => void;
     onPauseAll: () => void;
@@ -60,14 +60,17 @@
 
   <div class="tdiv"></div>
 
-  <button class="tool" onclick={onPauseAll} disabled={counts.active === 0} title="Pause all">
-    <svg viewBox="0 0 24 24" fill="none"><rect x="6" y="4.5" width="4" height="15" rx="1" fill="oklch(72% 0.13 75)"/><rect x="14" y="4.5" width="4" height="15" rx="1" fill="oklch(72% 0.13 75)"/></svg>
-    <span class="lbl">Pause All</span>
-  </button>
-  <button class="tool" onclick={onResumeAll} title="Resume all">
-    <svg viewBox="0 0 24 24" fill="none"><path d="M7 4.8l11 7.2-11 7.2z" fill="oklch(63% 0.13 150)" stroke="oklch(50% 0.12 150)" stroke-width="1" stroke-linejoin="round"/></svg>
-    <span class="lbl">Resume All</span>
-  </button>
+  {#if counts.active > 0}
+    <button class="tool" onclick={onPauseAll} title="Pause all (⇧⌘P)">
+      <svg viewBox="0 0 24 24" fill="none"><rect x="6" y="4.5" width="4" height="15" rx="1" fill="oklch(72% 0.13 75)"/><rect x="14" y="4.5" width="4" height="15" rx="1" fill="oklch(72% 0.13 75)"/></svg>
+      <span class="lbl">Pause All</span>
+    </button>
+  {:else}
+    <button class="tool" onclick={onResumeAll} disabled={counts.paused === 0} title="Resume all (⇧⌘R)">
+      <svg viewBox="0 0 24 24" fill="none"><path d="M7 4.8l11 7.2-11 7.2z" fill="oklch(63% 0.13 150)" stroke="oklch(50% 0.12 150)" stroke-width="1" stroke-linejoin="round"/></svg>
+      <span class="lbl">Resume All</span>
+    </button>
+  {/if}
 
   <div class="tdiv"></div>
 

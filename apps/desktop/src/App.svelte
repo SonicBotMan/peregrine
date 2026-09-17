@@ -118,6 +118,7 @@
     const c = {
       all: store.list.length,
       active: 0,
+      paused: 0,
       completed: 0,
       failed: 0,
       categories: {} as Record<Category, number>,
@@ -125,6 +126,7 @@
     for (const t of store.list) {
       if (t.status === 'completed') c.completed++;
       else if (t.status === 'failed') c.failed++;
+      else if (t.status === 'paused') c.paused++;
       else c.active++;
       const cat = categorize(t.url);
       c.categories[cat] = (c.categories[cat] ?? 0) + 1;
@@ -471,6 +473,31 @@
       return;
     }
     if (paletteOpen || helpOpen || showAdd) return; // one overlay owns the keyboard
+    // V5: j/k (and arrows) walk the visible list; Enter/→ open the
+    // drawer. Plain-list navigation, Gmail/GitHub class.
+    if (e.key === 'j' || e.key === 'k' || e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      const el = e.target as HTMLElement | null;
+      if (el?.closest('button, [role="button"], a, select, option, input, [role="menuitem"]')) {
+        return; // arrows live in those widgets (menus, selects)
+      }
+      e.preventDefault();
+      if (visible.length === 0) return;
+      const idx = visible.findIndex((t) => t.id === selectedId);
+      const dir = e.key === 'j' || e.key === 'ArrowDown' ? 1 : -1;
+      const next =
+        idx < 0
+          ? (dir === 1 ? 0 : visible.length - 1)
+          : Math.min(visible.length - 1, Math.max(0, idx + dir));
+      selectedId = visible[next].id;
+      document
+        .querySelector(`.row[data-id="${CSS.escape(selectedId)}"]`)
+        ?.scrollIntoView({ block: 'nearest' });
+      return;
+    }
+    if ((e.key === 'Enter' || e.key === 'ArrowRight') && selectedId) {
+      e.preventDefault();
+      return; // drawer is bound to selection; Enter is a no-op convenience
+    }
     if (e.key === ' ') {
       // Native Space activation on focused interactive elements must
       // survive (R2 P0): buttons/links/menu items own their Space —
