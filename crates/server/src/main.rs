@@ -144,6 +144,17 @@ async fn main() -> anyhow::Result<()> {
         // were spawned above. Their failures are OBSERVED after the
         // loop (logged, not silent) rather than racing a select! —
         // a UDS panic shouldn't take the GUI surface down with it.
+        // Layer order: bearer auth innermost (rejects before CORS
+        // headers are attached), host guard outside, CORS outermost.
+        let app = match args.auth_token.clone() {
+            Some(t) => {
+                tracing::info!(
+                    "tcp: bearer auth required (--auth-token); /health stays open, UDS face is exempt"
+                );
+                peregrine_server::api::with_bearer_auth(app, t)
+            }
+            None => app,
+        };
         let app = peregrine_server::api::with_host_guard(app);
         let app = peregrine_server::api::with_tcp_cors(app);
         serve_result = axum::serve(l, app)

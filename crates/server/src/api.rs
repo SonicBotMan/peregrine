@@ -413,3 +413,161 @@ pub fn with_host_guard(app: axum::Router) -> axum::Router {
         },
     ))
 }
+
+/// Timing-safe `Bearer` token check for the TCP face.
+///
+/// Loopback binding is the base perimeter, but loopback is still a
+/// shared bus: any local process (notably browsers, via DNS
+/// rebinding or a rogue page hitting `127.0.0.1`) can dial it.
+/// `with_host_guard` kills rebinding; this layer is the second
+/// factor — a secret the legitimate client holds. When the daemon
+/// runs with `--auth-token`, every request except `/health` must
+/// carry `Authorization: Bearer <token>`.
+///
+/// `/health` stays open on purpose: systemd probes and the
+/// sidecar readiness check hit it before any client could know a
+/// token, and its body is pid/uptime only — nothing sensitive.
+///
+/// The comparison folds XOR across the full bearer value so a
+/// mismatch leaks nothing about how many leading bytes matched —
+/// the usual defense against comparing secrets byte-by-byte.
+pub fn with_bearer_auth(app: axum::Router, token: String) -> axum::Router {
+    use axum::response::IntoResponse;
+    let token = std::sync::Arc::new(token);
+    app.layer(axum::middleware::from_fn_with_state(
+        token.clone(),
+        |axum::extract::State(token): axum::extract::State<std::sync::Arc<String>>,
+         req: axum::extract::Request,
+         next: axum::middleware::Next| async move {
+            if req.uri().path() == "/health" {
+                return next.run(req).await;
+            }
+            let presented = req
+                .headers()
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|h| h.to_str().ok())
+                .and_then(|h| h.strip_prefix("Bearer "));
+            let ok = presented.is_some_and(|p| {
+                let expect = token.as_bytes();
+                let got = p.as_bytes();
+                // Length is not secret (bearer syntax is public);
+                // compare the overlapping prefix and fold the length
+                // mismatch into the same accumulator.
+                let mut diff = (expect.len() ^ got.len()) as u8;
+                for (a, b) in expect.iter().zip(got) {
+                    diff |= a ^ b;
+                }
+                diff == 0
+            });
+            if ok {
+                next.run(req).await
+            } else {
+                tracing::warn!(
+                    path = %req.uri().path(),
+                    "tcp: bearer auth rejected"
+                );
+                (
+                    axum::http::StatusCode::UNAUTHORIZED,
+                    [("www-authenticate", "Bearer")],
+                    "unauthorized: bearer token required",
+                )
+                    .into_response()
+            }
+        },
+    ))
+}
+
+#[cfg(test)]
+mod bearer_auth_tests {
+    use super::with_bearer_auth;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use axum::routing::get;
+    use tower::ServiceExt; // oneshot
+
+    fn app() -> axum::Router {
+        // Two routes: the exempt probe and a representative API hit.
+        axum::Router::new()
+            .route("/health", get(|| async { "ok" }))
+            .route("/tasks", get(|| async { "tasks" }))
+    }
+
+    #[tokio::test]
+    async fn no_token_401_on_api() {
+        let res = with_bearer_auth(app(), "s3cret".into())
+            .oneshot(Request::get("/tasks").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(res.headers().get("www-authenticate").unwrap(), "Bearer");
+    }
+
+    #[tokio::test]
+    async fn wrong_token_401() {
+        let res = with_bearer_auth(app(), "s3cret".into())
+            .oneshot(
+                Request::get("/tasks")
+                    .header("authorization", "Bearer wrong")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn right_token_200() {
+        let res = with_bearer_auth(app(), "s3cret".into())
+            .oneshot(
+                Request::get("/tasks")
+                    .header("authorization", "Bearer s3cret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn health_exempt() {
+        // The probe surface must stay open: systemd and the sidecar
+        // readiness check hit /health before any token is known.
+        let res = with_bearer_auth(app(), "s3cret".into())
+            .oneshot(Request::get("/health").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn prefix_collision_rejected() {
+        // "s3cret-extra" shares the prefix — the folded length
+        // mismatch must still reject it.
+        let res = with_bearer_auth(app(), "s3cret".into())
+            .oneshot(
+                Request::get("/tasks")
+                    .header("authorization", "Bearer s3cret-extra")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn non_bearer_scheme_rejected() {
+        let res = with_bearer_auth(app(), "s3cret".into())
+            .oneshot(
+                Request::get("/tasks")
+                    .header("authorization", "Basic c2VjcmV0")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+}

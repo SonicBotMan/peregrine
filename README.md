@@ -82,6 +82,8 @@ cd apps/desktop && pnpm install && pnpm tauri build
 
 ```bash
 peregrined --tcp                # 1. 启动 daemon（UDS 默认；--tcp 额外开 127.0.0.1:8800）
+                                #    多用户机器上加 --auth-token <TOKEN>（或 PGRG_TOKEN 环境变量）
+                                #    给 TCP 面加一层 Bearer 鉴权，UDS 不受影响
 
 pg add https://example.com/big.iso -o ~/big.iso   # 下载
 pg list                                           # 任务列表
@@ -93,8 +95,9 @@ pg remove <id>                                    # 移除任务（默认保留�
 **MCP**（让 Claude 等 Agent 管理下载）：
 
 ```bash
-peregrined --tcp     # daemon
-peregrine-mcp        # MCP 服务器（stdio），在 Claude Desktop / 任意 MCP 客户端中配置即可
+peregrined --tcp                  # daemon
+peregrine-mcp                     # MCP 服务器（stdio），在 Claude Desktop / 任意 MCP 客户端中配置即可
+                                  # daemon 带 --auth-token 时：peregrine-mcp --token <TOKEN>（或 PGRG_TOKEN）
 ```
 
 **GUI**：桌面壳自动拉起 daemon（sidecar），开箱即用。
@@ -137,7 +140,7 @@ apps/desktop    # Tauri 2 + Svelte 5 薄客户端（零业务逻辑）
 
 - BT 任务暂不支持单任务限速（全局限速有效）
 - MCP 订阅用 legacy `resources/subscribe`（Claude Desktop 当前方言）
-- `--http` 模式无鉴权，默认绑回环，不要暴露到非回环地址
+- TCP 面默认无鉴权且只绑回环（`--auth-token` 可加 Bearer 鉴权，`/health` 探活豁免）；不要把 daemon 暴露到非回环地址
 - 桌面安装包（AppImage/dmg）尚在 CI 打磨中
 
 下一步：安装包分发（cargo-dist / AppImage）、BT 任务深链（peers/seeds 详情）、批量选择操作、系统托盘菜单增强、多语言。

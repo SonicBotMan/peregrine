@@ -15,6 +15,11 @@ struct Args {
     #[arg(long, global = true)]
     socket: Option<String>,
 
+    /// Bearer token for daemons started with `--auth-token`.
+    /// Env fallback: PGRG_TOKEN. Ignored by UDS daemons.
+    #[arg(long, global = true, env = "PGRG_TOKEN")]
+    token: Option<String>,
+
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -135,10 +140,11 @@ async fn main() -> anyhow::Result<()> {
     let client = match raw_spec.as_deref() {
         Some(s) if s.starts_with("tcp:") => {
             DaemonClient::new(peregrine_api::uds_client::Endpoint::parse_checked(s)?)
+                .with_token(args.token.clone())
         }
         _ => {
             let socket = peregrine_api::transport::socket_path(args.socket.as_deref())?;
-            DaemonClient::new(socket)
+            DaemonClient::new(socket).with_token(args.token.clone())
         }
     };
     match args.cmd {

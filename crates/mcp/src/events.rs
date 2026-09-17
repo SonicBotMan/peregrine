@@ -44,10 +44,42 @@ pub fn ensure_bridge(inner: Arc<Inner>, events_url: &str) {
 }
 
 async fn bridge_loop(inner: Arc<Inner>, events_url: String) {
+    // Handshake request built ONCE, before the loop: `--auth-token`
+    // daemons demand the bearer header on the WS upgrade itself,
+    // and `connect_async(&str)` would synthesize a bare GET without
+    // it. `Request<()>` is `Clone`, so every reconnect reuses the
+    // same stamped request. A malformed URL (operator typo in
+    // `--events`) disables the bridge with one ERROR line instead
+    // of retrying garbage forever.
+    use tungstenite::client::IntoClientRequest;
+    let handshake = events_url.as_str().into_client_request().and_then(|mut r| {
+        if let Some(t) = &inner.token {
+            r.headers_mut().insert(
+                "authorization",
+                format!("Bearer {t}").parse().map_err(|_| {
+                    tungstenite::Error::Url(tungstenite::error::UrlError::UnableToConnect(
+                        "token is not a valid header value".into(),
+                    ))
+                })?,
+            );
+        }
+        Ok(r)
+    });
+    let handshake = match handshake {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::error!(
+                url = %events_url,
+                error = %e,
+                "event bridge: unusable events url — bridge disabled"
+            );
+            return;
+        }
+    };
     let mut backoff = RECONNECT_MIN;
     let mut consecutive_failures = 0u32;
     loop {
-        match tokio_tungstenite::connect_async(&events_url).await {
+        match tokio_tungstenite::connect_async(handshake.clone()).await {
             Ok((ws, _resp)) => {
                 backoff = RECONNECT_MIN;
                 consecutive_failures = 0;

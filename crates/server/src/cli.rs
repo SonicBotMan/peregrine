@@ -34,6 +34,15 @@ pub struct Args {
     /// exit — IPC discovery for the GUI/CLI.
     #[arg(long)]
     pub print_socket: bool,
+
+    /// Require `Authorization: Bearer <TOKEN>` on every TCP request
+    /// except `/health` (systemd probe surface). TCP stays
+    /// loopback-only either way; this adds the second factor a
+    /// shared loopback bus demands (browsers can dial 127.0.0.1
+    /// too). UDS is exempt — filesystem permissions are its
+    /// boundary. Env fallback: `PGRG_TOKEN`.
+    #[arg(long = "auth-token", env = "PGRG_TOKEN")]
+    pub auth_token: Option<String>,
 }
 
 /// Resolve the raw flags into ONE listen spec (shorthands win over

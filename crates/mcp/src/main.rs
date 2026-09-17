@@ -56,6 +56,11 @@ struct Args {
     #[arg(long)]
     http: Option<String>,
 
+    /// Bearer token for daemons started with `--auth-token`.
+    /// Env fallback: PGRG_TOKEN. Ignored by UDS daemons.
+    #[arg(long, env = "PGRG_TOKEN")]
+    token: Option<String>,
+
     /// Tracing verbosity for stderr logs (stdio mode: logs go to
     /// stderr, never stdout — stdout IS the protocol channel)
     #[arg(long, default_value_t = tracing::Level::INFO)]
@@ -80,14 +85,15 @@ fn main() -> anyhow::Result<()> {
         Some(s) => peregrine_api::uds_client::Endpoint::Unix(std::path::PathBuf::from(s)),
         None => peregrine_api::uds_client::Endpoint::Unix(default_socket()?),
     };
+    let token = args.token.clone();
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
     rt.block_on(async move {
         if let Some(addr) = args.http {
-            serve_http(endpoint, &args.events, &addr).await
+            serve_http(endpoint, &args.events, &addr, token).await
         } else {
-            serve_stdio(endpoint, &args.events).await
+            serve_stdio(endpoint, &args.events, token).await
         }
     })
 }
@@ -95,12 +101,14 @@ fn main() -> anyhow::Result<()> {
 async fn serve_stdio(
     socket: peregrine_api::uds_client::Endpoint,
     events_url: &str,
+    token: Option<String>,
 ) -> anyhow::Result<()> {
     tracing::info!(
         "peregrine-mcp (stdio) starting, daemon endpoint {}",
         socket.display()
     );
-    let service = serve_server(PeregrineMcp::new(socket, events_url), stdio()).await?;
+    let service =
+        serve_server(PeregrineMcp::with_token(socket, events_url, token), stdio()).await?;
     service.waiting().await?;
     Ok(())
 }
@@ -109,12 +117,19 @@ async fn serve_http(
     socket: peregrine_api::uds_client::Endpoint,
     events_url: &str,
     addr: &str,
+    token: Option<String>,
 ) -> anyhow::Result<()> {
     use std::sync::Arc;
 
     tracing::info!("peregrine-mcp (http) listening on {addr}");
     let events_url = events_url.to_string();
-    let factory = move || Ok(PeregrineMcp::new(socket.clone(), events_url.clone()));
+    let factory = move || {
+        Ok(PeregrineMcp::with_token(
+            socket.clone(),
+            events_url.clone(),
+            token.clone(),
+        ))
+    };
     let service = StreamableHttpService::new(
         factory,
         Arc::new(LocalSessionManager::default()),

@@ -219,6 +219,11 @@ pub struct DaemonClient {
     /// rebinding guard rejects non-loopback Host headers, and the
     /// endpoint's own host is loopback by construction.
     authority: String,
+    /// `Authorization: Bearer …` value for TCP deployments that ran
+    /// `peregrined --auth-token`. UDS daemons never require it (the
+    /// socket file's permissions are the boundary), so `None` is
+    /// the normal desktop case.
+    bearer: Option<String>,
 }
 
 impl DaemonClient {
@@ -230,7 +235,28 @@ impl DaemonClient {
         };
         let http: Client<DaemonConnector, Full<Bytes>> =
             Client::builder(TokioExecutor::new()).build(DaemonConnector { endpoint });
-        Self { http, authority }
+        Self {
+            http,
+            authority,
+            bearer: None,
+        }
+    }
+
+    /// Attach a bearer token for TCP daemons started with
+    /// `--auth-token`. Harmless on UDS (the daemon ignores it);
+    /// builder-style so the no-auth desktop default stays a bare
+    /// `DaemonClient::new`.
+    #[must_use]
+    pub fn with_token(mut self, token: Option<String>) -> Self {
+        self.bearer = token;
+        self
+    }
+
+    fn auth(&self, builder: hyper::http::request::Builder) -> hyper::http::request::Builder {
+        match &self.bearer {
+            Some(t) => builder.header("authorization", format!("Bearer {t}")),
+            None => builder,
+        }
     }
 
     /// GET /health, typed via the shared `HealthInfo`.
@@ -247,6 +273,7 @@ impl DaemonClient {
     ) -> anyhow::Result<Res> {
         let uri = format!("http://{}{path}", self.authority);
         let mut builder = hyper::Request::builder().method(method).uri(uri);
+        builder = self.auth(builder);
         let full = match body {
             Some(v) => {
                 builder = builder.header("content-type", "application/json");
@@ -265,7 +292,8 @@ impl DaemonClient {
     }
 
     async fn get_json<T: DeserializeOwned>(&self, path: &str) -> anyhow::Result<T> {
-        let req = Request::get(format!("http://{}{path}", self.authority))
+        let builder = self.auth(Request::get(format!("http://{}{path}", self.authority)));
+        let req = builder
             .body(Full::new(Bytes::new()))
             .context("build request")?;
         let (status, bytes) = self.roundtrip(req).await?;

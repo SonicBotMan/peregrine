@@ -61,6 +61,9 @@ pub struct PeregrineMcp {
 }
 
 struct Inner {
+    /// Bearer token mirrored from construction for the WS bridge
+    /// handshake (the REST client carries its own copy).
+    token: Option<String>,
     peer: OnceLock<Peer<RoleServer>>,
     subs: Mutex<HashSet<String>>,
     /// The events bridge task is started lazily on the first
@@ -86,10 +89,22 @@ impl PeregrineMcp {
         endpoint: impl Into<peregrine_api::uds_client::Endpoint>,
         events_url: impl Into<String>,
     ) -> Self {
+        Self::with_token(endpoint, events_url, None)
+    }
+
+    /// `PeregrineMcp::new` plus a bearer token for TCP daemons run
+    /// with `--auth-token`: stamped on every REST call and on the
+    /// WS `/events` handshake.
+    pub fn with_token(
+        endpoint: impl Into<peregrine_api::uds_client::Endpoint>,
+        events_url: impl Into<String>,
+        token: Option<String>,
+    ) -> Self {
         Self {
-            http: DaemonClient::new(endpoint),
+            http: DaemonClient::new(endpoint).with_token(token.clone()),
             events_url: events_url.into(),
             inner: Arc::new(Inner {
+                token,
                 peer: OnceLock::new(),
                 subs: Mutex::new(HashSet::new()),
                 bridge: OnceLock::new(),
