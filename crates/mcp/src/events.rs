@@ -147,7 +147,9 @@ fn event_uris(e: &EngineEvent) -> Vec<String> {
         | EngineEvent::TaskCompleted { id }
         | EngineEvent::TaskFailed { id, .. }
         | EngineEvent::TaskRemoved { id, .. }
-        | EngineEvent::TaskLimitChanged { id, .. } => id,
+        | EngineEvent::TaskLimitChanged { id, .. }
+        // queue re-rank: same task uri fan-out, no extra shape
+        | EngineEvent::TaskPriorityChanged { id, .. } => id,
     };
     vec![format!("task://{id}"), RES_TASKS_URI.to_string()]
 }
