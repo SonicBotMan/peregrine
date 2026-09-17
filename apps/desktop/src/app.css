@@ -140,6 +140,13 @@
     padding: 0;
     cursor: pointer;
   }
+  /* lucide svgs render inline by default; inside flex rows the
+   * text-baseline alignment reads as a 1-2px vertical offset vs
+   * sibling text (VLM alignment audit). Every icon in this app
+   * lives in a flex/grid cell, where block == geometric center. */
+  svg {
+    display: block;
+  }
   input,
   select {
     font: inherit;

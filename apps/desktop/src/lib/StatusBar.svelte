@@ -121,6 +121,12 @@
   .stat {
     color: var(--text);
     font-variant-numeric: tabular-nums;
+    /* flex so the inline ↓ arrow and the ::before danger dot share
+     * one optical centerline with the digits — text-flow baseline
+     * alignment left them 1-2px off (VLM audit). */
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
   }
   .arrow {
     font-style: normal;

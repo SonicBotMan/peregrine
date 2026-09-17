@@ -187,9 +187,13 @@
   }
   .tool svg { width: 19px; height: 19px; }
   .lbl {
-    font: 600 10px var(--font-sans);
+    font: 600 10px/1.2 var(--font-sans);
     letter-spacing: 0.035em;
   }
+  /* optical center: the column (19px icon + 2 gap + 12px label)
+   * centers geometrically, but the label's leading makes the icon
+   * mass sit ~2px high to the eye — nudge the pair down. */
+  .tool { padding-top: 2px; }
 
   .filter-btn {
     align-self: center;
