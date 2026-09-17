@@ -248,7 +248,9 @@ fn build_tray(app: &tauri::AppHandle) -> ShellResult {
     // ("3 running · 2.4 MB/s") and the tray mirrors it. Rust owns
     // no task state — it just relays the string to the OS.
     app.listen("tray://tooltip", move |event| {
-        if let Some(text) = event.payload().and_then(|p| serde_json::from_str::<String>(p).ok()) {
+        // event.payload() is the raw JSON string (tauri serializes
+        // the emitted payload as JSON, even for plain Strings).
+        if let Some(text) = serde_json::from_str::<String>(event.payload()).ok() {
             if let Some(tray) = app.tray_by_id("main") {
                 let _ = tray.set_tooltip(text.trim());
             }
