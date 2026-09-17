@@ -2,136 +2,157 @@
 
 > **游隼** — 俯冲时速 389 km/h 的地球最快动物，同时捕猎多个目标。
 
-**Linux 首个「IDM 级加速 + Agent 原生」开源下载器。**
+**Linux 上的开源下载器：IDM 级多段加速内核 + AI Agent 原生调度，CLI / GUI / MCP 三端同构。**
 
-- ⚡ 自研 Rust 下载内核：IDM 式动态文件分段 + 自适应并发 + kill -9 断点续传，连接级遥测
-- 🤖 MCP 一等公民：Claude / 任意 AI Agent 直接调度下载任务（10 工具 / 3 资源 / 事件推送）
-- 🧩 headless daemon 架构：GUI / CLI / MCP 全是客户端，协议即插件
+[![ci](https://github.com/SonicBotMan/peregrine/actions/workflows/ci.yml/badge.svg)](https://github.com/SonicBotMan/peregrine/actions/workflows/ci.yml)
+[![desktop](https://github.com/SonicBotMan/peregrine/actions/workflows/desktop.yml/badge.svg)](https://github.com/SonicBotMan/peregrine/actions/workflows/desktop.yml)
+[![release](https://img.shields.io/github/v/release/SonicBotMan/peregrine?include_prereleases)](https://github.com/SonicBotMan/peregrine/releases)
+[![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
-## v2.0.0-alpha.1 交付清单
+## 为什么是 Peregrine
 
-| 能力 | 状态 |
-| --- | --- |
-| HTTP/HTTPS 多段下载 + 续传 + 限速 | ✅ M1 |
-| 任务系统（队列/优先级/全局预算/WS 事件） | ✅ M2 |
-| Web GUI + Tauri 2 桌面壳（托盘/单实例） | ✅ M3 |
-| HLS VOD + live 录制 · FTP · BT/Magnet | ✅ M4 |
-| MCP 服务器（stdio + streamable-HTTP） | ✅ M5 |
-| 打包（tarball/deb/release CI） | ✅ M6 |
-
-268 项测试 · clippy 零告警 · 每里程碑三轮审查（自查→独立复审→反思），
-全部记录在 [docs/reviews/](docs/reviews/)。
+- ⚡ **自研 Rust 内核**：IDM 式动态文件分段 + 自适应并发，慢公网链路实测 **3.1× 加速**；`kill -9` 级断点续传、416 偏移自愈、连接级遥测
+- 🤖 **MCP 一等公民**：Claude / 任意 AI Agent 直接管理你的下载任务——10 个工具、3 类资源、实时事件推送，`peregrine-mcp` 零参数即配对
+- 🧩 **headless daemon 架构**：GUI / CLI / MCP 全是薄客户端走同一套 REST + WS，三端能力永远一致，协议即插件
+- 🖥️ **桌面级 GUI**（Tauri 2 + Svelte 5）：工具式表格、段级视图、⌘K 命令面板、零步添加、亮暗双主题
 
 ## 界面
 
-UI V2 —— 对标 Linear 的平铺网格（sharp edges，无圆角卡片）：左侧 192px 过滤侧栏（状态 × 分类 × 计数）+ 40px 全局状态条（↓↑ 实时速率、活动/失败计数，断连时整条变琥珀并冻结列表保留数据）+ 主区任务列表。每行 40px：文件名 / 大小 / 速度 / ETA / 状态 pill，tabular-nums 等宽数字，悬停浮出动作，选中行内嵌展开段级视图（每 Range 一条微条，IDM 招牌视角）。亮暗双主题同构（同一套 OKLCH token，主文字对比度双双 AAA 级）。
-
-键盘优先：⌘K 命令面板（动作 + 任务模糊搜索，`/` 直达）、⌘N 新任务、Space 暂停/恢复、Del 移除（5s undo toast）、`?` 速查表。所有操作乐观更新（实测反馈 ≤120ms）+ REST 回执替换，失败自动回滚。主流路径零步可达：复制链接 → 切回应用 → 回车。
-
-GUI 是纯薄客户端（Svelte 5 + Tailwind 4）：零业务逻辑，全部走 daemon 的 REST + WS，所以 CLI / MCP / GUI 三端能力永远一致。桌面形态为 Tauri 2 壳：系统托盘、下载完成原生通知、sidecar 自动拉起 daemon、单实例守护。
-
-**零步添加**（空列表即下载表单：粘贴链接，回车即下；窗口获焦时侦测剪贴板新链接，一键 Download——只提示、永不自动添加）：
-
-![Empty state is the add form](assets/gui-v5-quickadd.png)
-
-**暗色主题**（V5 工具级表格：文件类型图标 / 内联进度条 / 状态胶囊，真实下载截图）：
+**暗色主界面**（文件类型图标 / 内联进度 / 优先级徽标 / ETA 排序，真实下载截图）：
 
 ![GUI dark theme with mixed task states](assets/gui-v5-dark.png)
 
-**详情抽屉**（选中行底部展开：Segments / Speed graph 实时曲线 / Info 三标签）：
+**详情抽屉**（选中行展开：Segments 段级微条 / Speed graph 实时曲线 / Info）：
 
-![Detail drawer with speed graph](assets/gui-v5-speed.png)
+![Detail drawer with segments and speed graph](assets/gui-v5-speed.png)
 
-**⌘K 命令面板**（动作 + 任务搜索）：
+**零步添加**（空列表即下载表单：粘贴链接回车即下；窗口获焦时侦测剪贴板新链接，一键 Download——只提示、永不自动添加）：
+
+![Empty state is the add form](assets/gui-v5-quickadd.png)
+
+**⌘K 命令面板**（动作 + 任务模糊搜索，`/` 直达）：
 
 ![Command palette](assets/gui-v5-palette.png)
 
-**亮色主题**（同构 token，一秒切换）：
+**亮色主题**（同一套 OKLCH token，一秒切换）：
 
 ![GUI light theme](assets/gui-v5-light.png)
 
-## 真机基准（v2.0.0-alpha.1）
+键盘优先：⌘N 新任务、Space 暂停/恢复、Del 移除（可撤销 toast，涉及删文件时二次确认且默认不删）、`?` 速查表。所有操作乐观更新 + REST 回执替换，失败自动回滚。
 
-[![benchmark](assets/benchmark-v2-alpha1.svg)](assets/benchmark-v2-alpha1.svg)
+## 特性
 
-慢公网链路（欧洲 tele2 源）实测 **3.1× 加速**：curl 单流 59.8s vs peregrine 19.3s（20MB，8 段并行）；内网镜像双双跑满 30MB/s；不支持 Range 的源自动降级单流，不浪费连接。所有下载文件 md5 与 curl 基线逐字节一致。复现方式见图内脚注。
+| 能力 | 说明 |
+| --- | --- |
+| HTTP/HTTPS 多段下载 | 动态分段 + 自适应并发；不支持 Range 的源自动降级单流 |
+| 断点续传 | 文件级状态持久化，进程被杀也按字节精确恢复；偏移异常自愈（416 → 重置重试） |
+| FTP | 被动模式 + REST 续传 |
+| HLS | VOD 全量 + live 滑窗录制，快速失败 |
+| BitTorrent / Magnet | librqbit 内嵌，同 hash 引用计数 |
+| 任务管理 | 队列 / 优先级（High·Normal·Low 全链路调度）/ 单任务与全局限速 / 全局并发预算 |
+| 事件推送 | WS 实时事件，GUI / MCP 共用 |
+| 通知与托盘 | 系统托盘、下载完成原生通知、单实例守护 |
 
-## 快速开始
+## 安装
 
-### CLI / GUI
+**预编译包**（Linux x86_64）：
 
 ```bash
-# 启动 daemon（UDS 默认；--tcp 额外开 127.0.0.1:8800 供事件推送）
-peregrined --tcp
-
-# 下载
-pg add https://example.com/big.iso -o ~/big.iso
-pg list
-pg limit <id> 2M        # 单任务限速（HTTP/HLS/FTP）
-pg remove <id> --purge  # 删除任务并清数据（默认保留数据）
-pg speed 10M            # 全局限速
-
-# GUI（桌面壳另行构建）
+# 从 Releases 下载最新 tarball（含 peregrined / pg / peregrine-mcp + sha256）
+https://github.com/SonicBotMan/peregrine/releases
+tar xf peregrine-*-x86_64-unknown-linux-gnu.tar.gz
 ```
 
-### MCP
+**从源码构建**（Rust 1.75+）：
 
 ```bash
-peregrined --tcp     # 1. daemon
-peregrine-mcp        # 2. MCP 服务器（stdio；零参数即配对）
-```
-
-`peregrined --tcp` 监听 127.0.0.1:8800，`peregrine-mcp` 的事件桥默认连
-`ws://127.0.0.1:8800/events`。socket 解析（PGRG_SOCKET → XDG_RUNTIME_DIR →
-/tmp 回退）三端共用同一函数。
-
-### 从源码构建
-
-```bash
+git clone https://github.com/SonicBotMan/peregrine.git
+cd peregrine
 cargo build --release --locked        # 全部二进制
 bash scripts/package.sh               # tarball + sha256（dist/）
 bash scripts/package.sh deb           # 另加 .deb（需 cargo-deb）
+
+# 桌面 GUI（Tauri 2）
+cd apps/desktop && pnpm install && pnpm tauri build
 ```
 
-### Shell 补全 / 手册页 / systemd（M6-c）
+## 快速开始
+
+**CLI**：
 
 ```bash
-pg completions bash > ~/.local/share/bash-completion/completions/pg   # 或 zsh/fish
-sudo mkdir -p /usr/local/share/man/man1 && pg gen-man /usr/local/share/man/man1
+peregrined --tcp                # 1. 启动 daemon（UDS 默认；--tcp 额外开 127.0.0.1:8800）
 
-# 用户级（UDS，无需 root）：
-install -Dm644 assets/peregrined.service ~/.config/systemd/user/peregrined.service
-systemctl --user enable --now peregrined
-
-# 系统级（TCP 实例，@后是端口）：
-# 先建服务用户与下载目录（单元以 peregrine 运行，永不 root）：
-sudo useradd --system --home /var/lib/peregrine --shell /usr/sbin/nologin peregrine
-# ExecStart 需按环境修改（下载目录/二进制路径），先读单元内注释
-sudo cp assets/peregrined@.service /etc/systemd/system/
-sudo systemctl daemon-reload && sudo systemctl enable --now peregrined@8800
-pg --socket tcp:8800 ping            # 裸端口等价于 pg --socket tcp:127.0.0.1:8800
+pg add https://example.com/big.iso -o ~/big.iso   # 下载
+pg list                                           # 任务列表
+pg limit <id> 2M                                  # 单任务限速
+pg speed 10M                                      # 全局限速
+pg remove <id>                                    # 移除任务（默认保留数据，--purge 连文件删）
 ```
 
-## 协议支持
+**MCP**（让 Claude 等 Agent 管理下载）：
 
-HTTP/HTTPS（多段+镜像降级）· FTP（被动模式+REST 续传）· HLS（VOD 全量 +
-live 滑窗录制）· BitTorrent/Magnet（librqbit embed，同 hash 引用计数，
-DHT 默认关、持久化关）
+```bash
+peregrined --tcp     # daemon
+peregrine-mcp        # MCP 服务器（stdio），在 Claude Desktop / 任意 MCP 客户端中配置即可
+```
 
-## 已知限制（v2.0.0-alpha.1）
+**GUI**：桌面壳自动拉起 daemon（sidecar），开箱即用。
 
-- BT 任务暂不支持单任务限速（全局限速有效；librqbit ratelimits 在 BACKLOG）。
-- MCP 订阅用 legacy `resources/subscribe`（Claude Desktop 当前方言）；
-  `subscriptions/listen` 在 BACKLOG。
-- `--http` 模式无鉴权，默认绑回环；不要暴露到非回环地址。
-- 桌面包（AppImage/dmg）由 CI 构建，本地脚本只出 headless 产物。
+Shell 补全 / 手册页 / systemd 单元（用户级免 root + 系统级专用服务用户）：
 
-里程碑计划见 [docs/design/PROPOSAL.md](docs/design/PROPOSAL.md)。
+```bash
+pg completions bash > ~/.local/share/bash-completion/completions/pg
+pg gen-man /usr/local/share/man/man1
+install -Dm644 assets/peregrined.service ~/.config/systemd/user/peregrined.service
+systemctl --user enable --now peregrined
+```
 
-## 技术栈
+## 基准（v2.0.0-alpha.1 实测）
 
-Rust (tokio) 内核 + Tauri 2 + Svelte 5 桌面端 + rmcp (官方 MCP Rust SDK) + librqbit (BT)
+[![benchmark](assets/benchmark-v2-alpha1.svg)](assets/benchmark-v2-alpha1.svg)
 
----
+慢公网链路（欧洲 tele2 源）**3.1×**：curl 单流 59.8s vs Peregrine 19.3s（20MB / 8 段并行）；内网镜像双双跑满 30MB/s；所有产物 md5 与 curl 基线逐字节一致。复现方式见图内脚注。
 
-*本项目与任何前作无关，是全新 clean-room 项目。License: MIT*
+## 架构
+
+```
+crates/
+  engine-http / engine-hls / engine-ftp / engine-bt   # 协议引擎（同一 EngineEvent 模型）
+  scheduler     # 优先级队列 + 全局预算
+  task-manager  # 状态机 + 文件级持久化
+  daemon        # REST + WS 事件（headless 核心）
+  cli           # pg
+  mcp           # peregrine-mcp（rmcp，官方 MCP Rust SDK）
+apps/desktop    # Tauri 2 + Svelte 5 薄客户端（零业务逻辑）
+```
+
+设计文档与逐里程碑审查记录见 [docs/design/](docs/design/) 与 [docs/reviews/](docs/reviews/)。
+
+## 状态与路线图
+
+当前 **v2.0.0-alpha.3**：292+ 项测试、clippy 零告警、CI 全绿。alpha 阶段，接口可能调整。
+
+已知限制：
+
+- BT 任务暂不支持单任务限速（全局限速有效）
+- MCP 订阅用 legacy `resources/subscribe`（Claude Desktop 当前方言）
+- `--http` 模式无鉴权，默认绑回环，不要暴露到非回环地址
+- 桌面安装包（AppImage/dmg）尚在 CI 打磨中
+
+下一步：安装包分发（cargo-dist / AppImage）、BT 任务深链（peers/seeds 详情）、批量选择操作、系统托盘菜单增强、多语言。
+
+## 参与开发
+
+```bash
+cargo test --workspace                 # 292+
+cd apps/desktop
+pnpm exec vitest run                   # 前端 20 项
+pnpm exec svelte-check --tsconfig ./tsconfig.app.json   # 与 CI 逐字对齐
+```
+
+开发环境、E2E 探针、截图与 VLM 盲评流程、CI 对齐验证门：[docs/dev-tools.md](docs/dev-tools.md)。验收流程：每个变更走 自查 → 独立复审 → 反思 三轮，记录在 docs/reviews/。
+
+## License
+
+[Apache-2.0](LICENSE)。本项目为全新 clean-room 实现，与任何前作无关。
