@@ -148,6 +148,82 @@
     }
   }
 
+  // ---- P0-2: zero-step add (quick add + clipboard watch) --------
+  // The mainstream path into a downloader is "copy link, open
+  // app, download" — it must not walk the 3-field dialog. Same
+  // validation set as AddDialog; the daemon stays the authority.
+  const URL_OK = /^(https?|ftps?|magnet|bt|file):/i;
+  const DEFAULT_DIR = '~/Downloads';
+
+  /** One-shot add: URL → running task, defaults for the rest.
+   *  Returns an error STRING on validation failure (so callers
+   *  can inline it) instead of throwing. */
+  async function quickAdd(url: string): Promise<string | null> {
+    const u = url.trim();
+    if (!URL_OK.test(u)) return 'URL must be http(s), ftp, magnet:, bt: or file:';
+    try {
+      await store.add(u, DEFAULT_DIR, 'normal');
+      toast.push(`Downloading ${fileName(u)}`);
+      return null;
+    } catch (e) {
+      const msg = String(e instanceof Error ? e.message : e);
+      banner(msg);
+      return msg;
+    }
+  }
+
+  // Clipboard watch (P0-2b): on window focus, if the clipboard
+  // holds a link that is not already tracked/offered, offer a
+  // one-click download. Never auto-adds — an offer, not an action
+  // (privacy: reading on focus only, dismiss is remembered).
+  let clipHint = $state<{ url: string; label: string } | null>(null);
+  let clipSeen = ''; // last offered/added URL — don't re-offer it
+  let clipBusy = false; // readText in flight
+  let clipDead = false; // permission denied / unsupported → stop trying
+
+  async function checkClipboard() {
+    if (clipDead || clipBusy || clipHint) return;
+    if (paletteOpen || helpOpen || showAdd) return; // overlays own the screen
+    let text: string;
+    try {
+      clipBusy = true;
+      text = await navigator.clipboard.readText();
+    } catch {
+      clipDead = true; // No permission / headless: silent, permanent
+      return;
+    } finally {
+      clipBusy = false;
+    }
+    const url = text.trim().split(/\s+/)[0] ?? '';
+    if (!URL_OK.test(url) || url === clipSeen) return;
+    if (store.list.some((t) => t.url === url)) return; // already tracked
+    clipHint = { url, label: fileName(url) };
+  }
+
+  async function acceptClip() {
+    const h = clipHint;
+    if (!h) return;
+    clipSeen = h.url;
+    clipHint = null;
+    const err = await quickAdd(h.url);
+    if (err) clipSeen = ''; // failed → allow re-offer on next focus
+  }
+
+  function dismissClip() {
+    if (clipHint) clipSeen = clipHint.url;
+    clipHint = null;
+  }
+
+  // quick-form state (P0-2a): separate from AddDialog's on purpose —
+  // this one lives in the empty state and never blocks the list.
+  let quickUrl = $state('');
+  let quickErr = $state<string | null>(null);
+
+  async function submitQuick() {
+    quickErr = await quickAdd(quickUrl);
+    if (!quickErr) quickUrl = '';
+  }
+
   // ---- U2: artifact reveal + URL copy (context menu / dblclick) -
   async function openFile(id: string) {
     const t = store.list.find((x) => x.id === id);
@@ -354,6 +430,7 @@
   ondragleave={onDragLeave}
   ondrop={onDrop}
   onkeydown={onKeydown}
+  onfocus={() => void checkClipboard()}
 />
 
 <div class="shell">
@@ -380,12 +457,45 @@
   {/if}
 
   <main class:dropping>
+    {#if clipHint && visible.length > 0}
+      <!-- P0-2b: clipboard offer — an offer, never an auto-action.
+           Sticky inside <main>; suppressed when the empty state is
+           visible because the empty state already IS an add form. -->
+      <div class="clip-banner" role="status">
+        <span class="clip-url" title={clipHint.url}>📋 {clipHint.label || clipHint.url}</span>
+        <button class="ctl primary" onclick={() => void acceptClip()}>Download</button>
+        <button class="ctl" onclick={dismissClip}>Dismiss</button>
+      </div>
+    {/if}
     {#if visible.length === 0}
       <div class="empty">
         <div class="empty-icon">↓</div>
         {#if store.list.length === 0}
-          <p>No downloads yet</p>
-          <p class="hint">Drop a link anywhere — or hit ＋ Add</p>
+          <!-- P0-2a: the empty state IS the add form — paste a link,
+               press Enter, done. No dialog for the first download. -->
+          <form
+            class="quick"
+            novalidate
+            onsubmit={(e) => {
+              e.preventDefault();
+              void submitQuick();
+            }}
+          >
+            <input
+              class="quick-input"
+              type="url"
+              bind:value={quickUrl}
+              placeholder="Paste a download link and press Enter"
+              aria-label="Download URL"
+              spellcheck="false"
+              autocomplete="off"
+            />
+            <button class="ctl primary" type="submit" disabled={!quickUrl.trim()}>Download</button>
+          </form>
+          {#if quickErr}
+            <p class="quick-err">{quickErr}</p>
+          {/if}
+          <p class="hint">or drop a link anywhere — ＋ Add for save path &amp; priority</p>
         {:else}
           <p>Nothing matches this filter</p>
           <p class="hint">{counts.all} task{counts.all === 1 ? '' : 's'} in other views</p>
@@ -495,6 +605,58 @@
     gap: 4px;
     height: 100%;
     color: var(--dim);
+  }
+  /* P0-2a: paste-and-go — the empty state is the add form */
+  .quick {
+    display: flex;
+    gap: 8px;
+    width: min(560px, 80%);
+    margin: 14px 0 4px;
+  }
+  .quick-input {
+    flex: 1;
+    min-width: 0;
+    height: 36px;
+    padding: 0 12px;
+    background: var(--panel);
+    border: 1px solid var(--line-strong);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 13px;
+  }
+  .quick-input:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+  }
+  .quick-input::placeholder {
+    color: var(--dim);
+  }
+  .quick-err {
+    margin: 0;
+    color: var(--err);
+    font-size: 12px;
+  }
+  /* P0-2b: clipboard offer strip, sticky at the head of the list */
+  .clip-banner {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 16px;
+    background: color-mix(in srgb, var(--accent) 12%, var(--panel));
+    border-bottom: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+    font-size: 13px;
+  }
+  .clip-url {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text);
   }
   .empty p {
     margin: 0;

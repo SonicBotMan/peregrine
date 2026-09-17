@@ -54,6 +54,20 @@ pub enum TaskError {
     Storage(#[from] anyhow::Error),
 }
 
+/// `~/x` → `<home>/x`; `~` alone → home. Anything else (including
+/// `~user/...`, which needs a user database) is returned untouched.
+fn expand_home(p: &str) -> String {
+    if p == "~" {
+        return std::env::var("HOME").unwrap_or_else(|_| p.to_string());
+    }
+    if let Some(rest) = p.strip_prefix("~/") {
+        if let Ok(home) = std::env::var("HOME") {
+            return format!("{home}/{rest}");
+        }
+    }
+    p.to_string()
+}
+
 /// Fresh task ids: nanosecond timestamp × process-unique counter.
 /// Locally unique with overwhelming margin (single writer, ~µs floor
 /// between ids), sortable by creation time, and no dependency on a
@@ -125,6 +139,10 @@ impl TaskManager {
             return Err(TaskError::EmptyUrl);
         }
         let save_path = save_path.into();
+        // Expand a leading `~` to the user's home dir (P0-2: the GUI
+        // quick-add offers "~/Downloads" as the human-readable
+        // default; the daemon is the authority that resolves it).
+        let save_path = expand_home(&save_path);
         if !std::path::Path::new(&save_path).is_absolute() {
             return Err(TaskError::InvalidSavePath(save_path));
         }
