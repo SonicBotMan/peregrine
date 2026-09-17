@@ -388,7 +388,7 @@ pub fn with_tcp_cors(app: axum::Router) -> axum::Router {
         .allow_origin(AllowOrigin::list([
             "http://tauri.localhost".parse().unwrap(),
             "tauri://localhost".parse().unwrap(),
-            "http://localhost:5173".parse().unwrap(),
+            "http://localhost:5199".parse().unwrap(),
         ]))
         .allow_methods(AllowMethods::list([
             axum::http::Method::GET,
