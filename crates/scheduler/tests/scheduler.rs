@@ -813,6 +813,69 @@ async fn resumed_session_rebases_onto_row_reading() {
 }
 
 #[tokio::test]
+async fn resumed_completion_reading_is_clamped_to_total() {
+    // GUI-verify R2 P1: the paused-tail rebase (`seed + (v - base)`)
+    // puts a completed resumed session's readings ABOVE total by the
+    // tail quantum (row 1000, cursors 600 → final reading 100_400 on
+    // a 100_000-byte file). A drainer tick lands that overshoot under
+    // the store's `MAX(received, ?)` clamp before finish()'s own
+    // clamp can run, and the completed row shows `18.3 MB / 15.5 MB`
+    // (118%). Flushes must clamp to the known total.
+    let dir = tempfile::tempdir().unwrap();
+    let rig = rig(
+        vec![
+            Script::AwaitCancel {
+                partial: 1000,
+                total: Some(100_000),
+            },
+            Script::OkFromBase {
+                base: 600,
+                bytes: 99_400,
+                total: Some(100_000),
+                frames: 3,
+                frame_pause: Some(Duration::from_millis(400)),
+            },
+        ],
+        1,
+    );
+    tokio::spawn(rig.sched.clone().run());
+
+    let t = add(&rig.sched, dir.path(), "f.bin", Priority::Normal).await;
+    wait_for("running", || {
+        Box::pin(status_is(&rig.sched, &t.id, TaskStatus::Running))
+    })
+    .await;
+    rig.sched.pause(&t.id).await.unwrap();
+    wait_for("paused", || {
+        Box::pin(status_is(&rig.sched, &t.id, TaskStatus::Paused))
+    })
+    .await;
+    wait_for("paused partial lands", || {
+        Box::pin(async {
+            matches!(
+                rig.sched.tasks().get(&t.id).await,
+                Ok(Some(t)) if t.received_bytes == 1000
+            )
+        })
+    })
+    .await;
+    std::fs::write(dir.path().join("f.bin"), vec![0u8; 600]).unwrap();
+
+    rig.sched.resume(&t.id).await.unwrap();
+    wait_for("completed after resume", || {
+        Box::pin(status_is(&rig.sched, &t.id, TaskStatus::Completed))
+    })
+    .await;
+    let row = rig.sched.tasks().get(&t.id).await.unwrap().unwrap();
+    assert_eq!(
+        row.received_bytes, 100_000,
+        "completed reading clamps to total — no paused-tail overshoot (was 100_400)"
+    );
+
+    rig.sched.shutdown().await;
+}
+
+#[tokio::test]
 async fn readd_completed_target_reports_full_progress() {
     // GUI-verify R1 P1 (H1): re-adding a target whose old (url,
     // sink) plan is already complete resurrects that plan onto a

@@ -59,6 +59,19 @@
       .map((v, i) => `${(i / (n - 1)) * 72},${14 - (v / max) * 13}`)
       .join(' ');
   });
+
+  // GUI-verify R2 P2: the declarative `value={…}` select binding can
+  // lose a re-assignment when it races a sibling option patch (seen
+  // live: after picking a preset during an event storm the select
+  // landed selectedIndex = -1 — blank — while the daemon kept the
+  // setting). An explicit effect re-asserts the DOM value on every
+  // globalLimit change AFTER the options exist, so the displayed
+  // selection always tracks the prop.
+  let glimEl: HTMLSelectElement | undefined = $state();
+  $effect(() => {
+    const v = globalLimit === null ? 'none' : String(globalLimit);
+    if (glimEl && glimEl.value !== v) glimEl.value = v;
+  });
 </script>
 
 <div class="statusbar" class:down={conn === 'down'}>
@@ -99,6 +112,7 @@
   <label class="glim" title="Global speed limit">
     Speed Limit
     <select
+      bind:this={glimEl}
       class="glim-select"
       value={globalLimit === null ? 'none' : String(globalLimit)}
       onchange={(e) => {

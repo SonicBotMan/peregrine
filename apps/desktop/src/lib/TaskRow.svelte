@@ -93,6 +93,19 @@
   const running = $derived(task.status === 'running' || task.status === 'queued');
   const resumable = $derived(task.status === 'paused' || task.status === 'failed');
 
+  // Controlled menu open (GUI-verify R2 P0): closed by the status-
+  // transition effect below, opened by bits-ui's right-click flow.
+  let menuOpen = $state(false);
+  // A menu that outlives a status transition of its anchor task
+  // renders stale actions AND wedges bits-ui's dismissible layer —
+  // every later mouse click lands on that full-screen layer and the
+  // app looks frozen until Escape. Close on ANY status change; the
+  // user can re-open on the new state in one right-click.
+  $effect(() => {
+    void task.status;
+    menuOpen = false;
+  });
+
   function stop<T extends () => void>(fn: T) {
     return (e: Event) => {
       e.stopPropagation();
@@ -101,7 +114,16 @@
   }
 </script>
 
-<ContextMenu.Root>
+<!--
+  Controlled open: the menu must NOT outlive a status transition of
+  its anchor task. A menu open while the row flips (running →
+  completed) renders stale actions AND leaves bits-ui's dismissible
+  layer wedged — every subsequent mouse click lands on that
+  full-screen layer and the app looks frozen until Escape
+  (GUI-verify R2 P0). Closing on status change cuts the chain at
+  the first link.
+-->
+<ContextMenu.Root bind:open={menuOpen}>
   <ContextMenu.Trigger>
     {#snippet child({ props })}
       <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_no_static_element_interactions, a11y_click_events_have_key_events -->

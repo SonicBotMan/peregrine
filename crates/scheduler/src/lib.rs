@@ -1088,7 +1088,17 @@ impl CoalescingSink {
     /// write stays unconditional (its SQL is `MAX`-clamped); only
     /// the bus skip is monotone.
     async fn flush(&self) {
-        let (received, total) = *self.state.lock().unwrap();
+        let (mut received, total) = *self.state.lock().unwrap();
+        // GUI-verify R2 P1: the paused-tail rebase (`seed + (v - base)`)
+        // can push a resumed session's readings ABOVE total by the tail
+        // quantum. The store's `MAX(received, ?)` would freeze that
+        // overshoot forever (finish's later clamp loses the race), so
+        // this is the last choke point: both the durable write and the
+        // bus event see the reading clamped to the authoritative total.
+        // A reading leading the engine is a UI truth, never a disk one.
+        if let Some(t) = total {
+            received = received.min(t);
+        }
         if let Err(e) = self.tm.update_progress(&self.id, received, total).await {
             tracing::warn!(task = %self.id, error = %e, "progress flush failed");
         }
