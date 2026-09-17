@@ -214,6 +214,12 @@ export function createStore(
         fold(e.id, { speed_limit_bps: e.speed_limit_bps });
         break;
       }
+      case 'task_priority_changed': {
+        // Same story for queue priority: another window re-ranked
+        // the queue; fold or this tab's badge goes stale.
+        fold(e.id, { priority: e.priority });
+        break;
+      }
       case 'resync_required': {
         void resync();
         break;
@@ -270,8 +276,8 @@ export function createStore(
         throw e;
       }
     },
-    async remove(id: string) {
-      await daemon.remove(id);
+    async remove(id: string, purge = false) {
+      await daemon.remove(id, purge);
       tasks.delete(id);
     },
     /** Optimistic limit (R2): apply locally, replace with the
@@ -281,6 +287,17 @@ export function createStore(
       if (prev) tasks.set(id, { ...prev, speed_limit_bps: bps });
       try {
         const t = await daemon.setTaskLimit(id, bps);
+        tasks.set(id, view(t, tasks.get(id)));
+      } catch (e) {
+        if (prev) tasks.set(id, prev);
+        throw e;
+      }
+    },
+    async setPriority(id: string, priority: 'low' | 'normal' | 'high') {
+      const prev = tasks.get(id);
+      if (prev) tasks.set(id, { ...prev, priority });
+      try {
+        const t = await daemon.setPriority(id, priority);
         tasks.set(id, view(t, tasks.get(id)));
       } catch (e) {
         if (prev) tasks.set(id, prev);

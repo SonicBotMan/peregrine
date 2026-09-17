@@ -4,7 +4,7 @@
  * can only speak http(s) — hence TCP. `base` comes from
  * `VITE_DAEMON_URL` (dev: the Vite proxy; tauri: direct).
  */
-import type { EngineEvent, Health, SegmentView, Settings, Task, TaskStatus } from './types';
+import type { EngineEvent, Health, Priority, SegmentView, Settings, Task, TaskStatus } from './types';
 
 export class ApiError extends Error {
   constructor(
@@ -92,8 +92,10 @@ export class Daemon {
     return this.call('POST', `/tasks/${id}/resume`);
   }
 
-  remove(id: string): Promise<{ removed: boolean }> {
-    return this.call('DELETE', `/tasks/${id}`);
+  remove(id: string, purge = false): Promise<{ removed: boolean }> {
+    // `purge=true` also deletes the downloaded/partial file on
+    // disk (scheduler::remove cleans engine residue either way).
+    return this.call('DELETE', `/tasks/${id}${purge ? '?purge=true' : ''}`);
   }
 
   segments(id: string): Promise<SegmentView[]> {
@@ -103,6 +105,12 @@ export class Daemon {
   /** Per-task throttle; 0 = unlimited. Persists + applies live. */
   setTaskLimit(id: string, bps: number): Promise<Task> {
     return this.call('PUT', `/tasks/${id}/limit`, { bps });
+  }
+
+  /** Re-rank the queue; the scheduler claims by the new order on
+   * its next fill_slots pass. Running tasks keep their slot. */
+  setPriority(id: string, priority: Priority): Promise<Task> {
+    return this.call('PUT', `/tasks/${id}/priority`, { priority });
   }
 
   getSettings(): Promise<Settings> {

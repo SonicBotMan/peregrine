@@ -66,6 +66,7 @@ export type EngineEvent =
   | { type: 'task_failed'; id: string; reason: string }
   | { type: 'task_removed'; id: string; url: string; save_path: string }
   | { type: 'task_limit_changed'; id: string; speed_limit_bps: number }
+  | { type: 'task_priority_changed'; id: string; priority: Priority }
   /** Synthetic (server/src/ws.rs): subscriber lagged — refetch. */
   | { type: 'resync_required'; skipped: number };
 

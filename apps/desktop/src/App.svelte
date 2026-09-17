@@ -11,11 +11,12 @@
   import { createStore, type TaskStore } from './lib/store.svelte';
   import TaskRow from './lib/TaskRow.svelte';
   import AddDialog from './lib/AddDialog.svelte';
+  import RemoveDialog from './lib/RemoveDialog.svelte';
   import Toolbar from './lib/Toolbar.svelte';
   import StatusBar from './lib/StatusBar.svelte';
   import Titlebar from './lib/Titlebar.svelte';
   import DetailPanel from './lib/DetailPanel.svelte';
-  import type { StatusFilter } from './lib/types';
+  import { TERMINAL, type StatusFilter } from './lib/types';
   import { categorize, type Category } from './lib/categorize';
   import { initialTheme, applyTheme, saveTheme, type Theme } from './lib/theme';
   import type { Conn } from './lib/store.svelte';
@@ -47,6 +48,11 @@
   );
 
   let showAdd = $state(false);
+  // R2-gap: pending removal awaiting the semantics dialog
+  // (record-only vs record+file). `terminal` picks the checkbox
+  // wording: finished file vs partial file.
+  let pendingRemove = $state<{ id: string; name: string; terminal: boolean } | null>(null);
+  const REMOVE_ASK_KEY = 'peregrine-remove-ask';
   let addUrl = $state(''); // drop payload → AddDialog prefill
   let conn: Conn = $state('connecting');
   // U3 overlays: command palette (⌘K / /) + shortcuts cheat sheet (?)
@@ -67,17 +73,30 @@
   // V5: live text filter (toolbar search) + global limit (statusbar)
   let query = $state('');
   // V5: clickable column sort (mock: NAME/SIZE carry indicators)
-  type SortKey = 'name' | 'size' | 'received' | 'speed';
+  type SortKey = 'name' | 'size' | 'received' | 'speed' | 'eta';
   let sortKey: SortKey | null = $state(null);
   let sortDir: 'asc' | 'desc' = $state('asc');
-  function sortBy(k: 'name' | 'size' | 'received' | 'speed') {
+  // First click lands on the column's natural reading direction:
+  // A→Z names, soonest-first ETA, biggest-first sizes/speeds.
+  const NATURAL: Record<SortKey, 'asc' | 'desc'> = {
+    name: 'asc',
+    size: 'desc',
+    received: 'desc',
+    speed: 'desc',
+    eta: 'asc',
+  };
+  function sortBy(k: SortKey) {
     if (sortKey === k) {
-      sortDir = sortDir === 'asc' ? 'desc' : 'asc';
-      // third click resets to daemon order
-      if (sortDir === 'asc') sortKey = null;
+      // toggle once; the second click returns to daemon order
+      if (sortDir === NATURAL[k]) {
+        sortDir = NATURAL[k] === 'asc' ? 'desc' : 'asc';
+      } else {
+        sortKey = null;
+        sortDir = 'asc';
+      }
     } else {
       sortKey = k;
-      sortDir = 'desc'; // default: biggest/newest first
+      sortDir = NATURAL[k];
     }
   }
   let globalLimit = $state<number | null>(null);
@@ -151,7 +170,13 @@
           ? (t.total_bytes ?? Infinity)
           : sortKey === 'received'
             ? t.received_bytes
-            : (t.speed ?? -1);
+            : sortKey === 'eta'
+              ? // seconds-to-finish; unknown → bottom. asc = soonest first,
+                // which is the natural question ("what lands next?").
+                t.status === 'running' && t.total_bytes !== null && t.speed && t.speed > 0
+                ? (t.total_bytes - t.received_bytes) / t.speed
+                : Infinity
+              : (t.speed ?? -1);
     return rows.sort((a, b) => {
       const ka = key(a);
       const kb = key(b);
@@ -184,6 +209,10 @@
     const done = store.list.filter((t) => t.status === 'completed');
     if (done.length === 0) return;
     const n = done.length;
+    // Deliberately record-only (no dialog): "Clear finished" is a
+    // list-hygiene verb; file deletion is per-task, explicit, and
+    // only ever via the remove dialog. Conflating them is how
+    // batch-cleaners get a reputation for eating homework.
     toast.push(`Clearing ${n} finished task${n === 1 ? '' : 's'}…`);
     void Promise.allSettled(done.map((t) => store.remove(t.id)));
   }
@@ -211,6 +240,27 @@
   const totalSpeed = $derived(
     store.list.reduce((sum, t) => sum + (t.speed ?? 0), 0),
   );
+
+  // Aggregate-speed history for the statusbar sparkline (~1
+  // sample/s, 2-minute window). The buffer itself is a PLAIN
+  // array: an effect that reads the same $state it writes is a
+  // rerender loop (Svelte throws effect_update_depth_exceeded and
+  // the tree unmounts — pages rendered chrome-only with zero
+  // rows). Reading `speedBuf` registers no dependency; the only
+  // dep here is totalSpeed, and the $state write at the end is
+  // the legal, loop-free way to publish.
+  const speedBuf: number[] = [];
+  let speedHist = $state<number[]>([]);
+  let lastSample = 0;
+  $effect(() => {
+    const v = totalSpeed;
+    const now = Date.now();
+    if (now - lastSample < 900) return;
+    lastSample = now;
+    speedBuf.push(v);
+    if (speedBuf.length > 120) speedBuf.shift();
+    speedHist = [...speedBuf];
+  });
 
   // ---- theme --------------------------------------------------
   let theme = $state<Theme>(initialTheme());
@@ -357,6 +407,28 @@
   function removeTask(id: string) {
     const t = store.list.find((x) => x.id === id);
     if (!t || hidden.includes(id)) return;
+    // R2-gap: remove vs remove+delete-file are different acts.
+    // The pinned preference (or a fresh session that never set it)
+    // skips straight to the undo-toast path; otherwise ask once.
+    if (localStorage.getItem(REMOVE_ASK_KEY) !== 'never-ask') {
+      pendingRemove = { id, name: fileName(t.url), terminal: TERMINAL.has(t.status) };
+      return;
+    }
+    removeTaskNow(id, false);
+  }
+
+  function removeTaskNow(id: string, purge: boolean) {
+    const t = store.list.find((x) => x.id === id);
+    if (!t || hidden.includes(id)) return;
+    if (purge) {
+      // Irreversible: delete row + file in one shot. No undo toast
+      // — offering undo over a shredded file is a false promise.
+      if (selectedId === id) selectedId = null;
+      const name = fileName(t.url);
+      void act(store.remove(id, true));
+      toast.push(`Removed ${name} and deleted the file`);
+      return;
+    }
     hidden.push(id);
     if (selectedId === id) selectedId = null;
     const name = fileName(t.url);
@@ -670,7 +742,9 @@
         <button class="th num" role="columnheader" onclick={() => sortBy('speed')}>
           Speed{#if sortKey === 'speed'}<i class="caret">{sortDir === 'asc' ? '▴' : '▾'}</i>{/if}
         </button>
-        <span class="th num">ETA</span>
+        <button class="th num" role="columnheader" onclick={() => sortBy('eta')}>
+          ETA{#if sortKey === 'eta'}<i class="caret">{sortDir === 'asc' ? '▴' : '▾'}</i>{/if}
+        </button>
         <span class="th">Status</span>
         <span class="th"></span>
       </div>
@@ -683,6 +757,7 @@
           onResume={(id) => void act(store.resume(id))}
           onRemove={(id) => removeTask(id)}
           onLimit={(id, bps) => void act(store.setTaskLimit(id, bps))}
+          onSetPriority={(id, p) => void act(store.setPriority(id, p))}
           onSelect={select}
           onOpenFile={(id) => void openFile(id)}
           onOpenSaved={(id) => void openSavedFile(id)}
@@ -691,6 +766,20 @@
       {/each}
     {/if}
   </main>
+
+  {#if pendingRemove}
+    <RemoveDialog
+      name={pendingRemove.name}
+      terminal={pendingRemove.terminal}
+      onConfirm={(deleteFile, neverAsk) => {
+        const { id } = pendingRemove;
+        pendingRemove = null;
+        if (neverAsk && !deleteFile) localStorage.setItem(REMOVE_ASK_KEY, 'never-ask');
+        removeTaskNow(id, deleteFile);
+      }}
+      onClose={() => (pendingRemove = null)}
+    />
+  {/if}
 
   {#if selectedTask}
     <DetailPanel
@@ -703,6 +792,7 @@
 
   <StatusBar
     totalSpeed={totalSpeed}
+    speedHist={speedHist}
     active={counts.active}
     paused={store.list.filter((t) => t.status === 'paused').length}
     done={counts.completed}

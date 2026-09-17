@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast::{self, Receiver, Sender};
 
-use crate::task::{TaskId, TaskStatus};
+use crate::task::{Priority, TaskId, TaskStatus};
 
 /// Everything a client needs to know, pushed, never polled.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -41,6 +41,15 @@ pub enum EngineEvent {
         id: TaskId,
         url: String,
         save_path: String,
+    },
+    /// Per-task priority changed. Priority feeds the scheduler's
+    /// queue order (highest first, FIFO within a tier); a bump on a
+    /// queued task takes effect on the next `fill_slots`, and the
+    /// event lets every GUI window re-render badges without a
+    /// refetch.
+    TaskPriorityChanged {
+        id: TaskId,
+        priority: Priority,
     },
     /// Per-task rate limit changed (M3-b). `speed_limit_bps` is the
     /// NEW value (0 = unlimited). Pushed so a GUI updates its limit

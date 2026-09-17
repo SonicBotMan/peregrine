@@ -410,6 +410,47 @@
   font-size: 12px;
   color: var(--dim);
 }
+/* scheme hint under the URL field: tells users what the engine can
+ * actually route (http/bt/ftp) — the placeholder alone is a riddle
+ * if you don't know the engine covers more than https. */
+.dialog .scheme-hint {
+  margin: 0;
+  font-size: 11px;
+  color: var(--dim);
+  opacity: 0.85;
+  line-height: 1.5;
+}
+/* remove-semantics dialog: checkbox rows + irreversible warning */
+.dialog .opt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+.dialog .opt input[type='checkbox'] {
+  accent-color: var(--accent);
+  width: 14px;
+  height: 14px;
+}
+.dialog .opt:has(input:disabled) {
+  opacity: 0.55;
+  cursor: default;
+}
+.dialog .warn {
+  margin: 2px 0 0 22px;
+  font-size: 12px;
+  color: var(--err);
+}
+.ctl.danger {
+  background: var(--err);
+  border-color: color-mix(in oklch, var(--err) 70%, black);
+  color: white;
+}
+.ctl.danger:hover {
+  background: color-mix(in oklch, var(--err) 85%, black);
+}
 .dialog input,
 .dialog select {
   background: var(--bg);

@@ -25,7 +25,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use peregrine_api::task::{SegmentView, Task, TaskId, TaskStatus};
+use peregrine_api::task::{Priority, SegmentView, Task, TaskId, TaskStatus};
 use peregrine_api::{AddTaskRequest, ApiErrorBody};
 use peregrine_task_manager::TaskError;
 
@@ -41,6 +41,7 @@ pub fn router(state: AppState) -> Router {
         .route("/tasks/{id}/pause", post(pause_task))
         .route("/tasks/{id}/resume", post(resume_task))
         .route("/tasks/{id}/limit", put(set_task_limit))
+        .route("/tasks/{id}/priority", put(set_task_priority))
         .route("/tasks/{id}/segments", get(get_task_segments))
         .route("/settings", get(get_settings).put(put_settings))
         .route("/events", get(crate::ws::handler))
@@ -277,6 +278,29 @@ async fn set_task_limit(
         .0
         .sched
         .set_task_limit(&TaskId::new(id), b.bps)
+        .await
+        .map_err(map_err)?;
+    Ok((StatusCode::OK, Json(task)))
+}
+
+#[derive(Debug, Deserialize)]
+struct SetPriorityBody {
+    priority: Priority,
+}
+
+/// `PUT /tasks/{id}/priority {"priority": "high"}` — re-ranks the
+/// queue; the scheduler claims by the new order on its next pass.
+/// Running tasks keep their slot (priority orders, it does not
+/// preempt).
+async fn set_task_priority(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    JsonBody(b): JsonBody<SetPriorityBody>,
+) -> ApiResult<Task> {
+    let task = state
+        .0
+        .sched
+        .set_priority(&TaskId::new(id), b.priority)
         .await
         .map_err(map_err)?;
     Ok((StatusCode::OK, Json(task)))

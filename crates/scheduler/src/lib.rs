@@ -511,6 +511,17 @@ impl Scheduler {
         Ok(bps)
     }
 
+    /// Set a task's queue priority (the R2-gap "priority honesty"
+    /// fix): persist via the manager, then wake the loop so the
+    /// next `fill_slots` claims by the NEW ranking. Running tasks
+    /// keep their slot (priority orders the queue, it does not
+    /// preempt) — same contract as `resume`.
+    pub async fn set_priority(&self, id: &TaskId, priority: Priority) -> Result<Task, TaskError> {
+        let task = self.tm.set_priority(id, priority).await?;
+        self.wake.notify_one();
+        Ok(task)
+    }
+
     /// Set a task's rate limit (0 = unlimited): persist via the
     /// manager (queued tasks pick it up at spawn) and poke a
     /// RUNNING engine's bucket in-place — the next byte pays the new

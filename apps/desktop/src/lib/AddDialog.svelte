@@ -73,7 +73,8 @@ component mounts/unmounts with the dialog, so no leak). -->
     <h2>Add download</h2>
     <label>
       URL
-      <input bind:value={url} placeholder="https://…" autofocus />
+      <input bind:value={url} placeholder="https://… · magnet:?xt=… · ftp://…" autofocus />
+      <p class="scheme-hint">HTTP/HTTPS, BitTorrent (magnet: or .torrent URL), FTP — the daemon routes by scheme.</p>
     </label>
     <label>
       Save to

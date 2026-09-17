@@ -316,6 +316,42 @@ impl Store {
         .context("join update_download_progress")?
     }
 
+    /// Persist a task's queue priority. Same shape as the limit
+    /// update: touch `updated_at`, re-read the row for the caller.
+    /// Priority order matters only for queued tasks (running ones
+    /// keep their slot); the scheduler re-ranks on the next
+    /// `fill_slots`.
+    pub async fn update_download_priority(
+        &self,
+        id: &TaskId,
+        priority: Priority,
+    ) -> Result<Option<Task>> {
+        let id = id.as_str().to_string();
+        let this = self.0.clone();
+        let task = tokio::task::spawn_blocking(move || {
+            let conn = this.lock().unwrap();
+            let n = conn
+                .execute(
+                    "UPDATE downloads SET priority = ?2, updated_at = ?3 WHERE id = ?1",
+                    params![id, priority_str(priority), peregrine_api::task::unix_now()],
+                )
+                .context("updating download priority")?;
+            if n == 0 {
+                return Ok(None);
+            }
+            conn.query_row(
+                "SELECT id, url, save_path, status, total, received, priority, error, created_at, updated_at, speed_limit_bps FROM downloads WHERE id = ?1",
+                params![id],
+                row_to_task,
+            )
+            .map(Some)
+            .context("re-reading task after priority update")
+        })
+        .await
+        .context("join update_download_priority")??;
+        Ok(task)
+    }
+
     /// Persist a task's rate limit (0 = unlimited). Touches
     /// `updated_at` so GUI ordering stays sane on limit changes.
     pub async fn update_download_limit(&self, id: &TaskId, bps: u64) -> Result<Option<Task>> {

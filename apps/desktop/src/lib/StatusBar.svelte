@@ -10,6 +10,7 @@
 
   let {
     totalSpeed,
+    speedHist = [],
     active,
     paused,
     done,
@@ -22,6 +23,10 @@
     version,
   }: {
     totalSpeed: number;
+    /** ~2 min of aggregate-speed samples (App samples on the
+     * derived totalSpeed, ~1/s). Empty on first paint — the
+     * sparkline is hidden until it has a story to tell. */
+    speedHist?: number[];
     active: number;
     paused: number;
     done: number;
@@ -42,6 +47,18 @@
       ? '∞'
       : (LIMIT_PRESETS.find((p) => p.bps === globalLimit)?.label ?? `${formatBytes(globalLimit)}/s`),
   );
+
+  // 72x14 sparkline path from the samples (right-aligned: oldest
+  // clips out the left edge — the NOW edge never moves).
+  const spark = $derived.by(() => {
+    if (speedHist.length < 4) return null;
+    const pts = speedHist.slice(-120);
+    const max = Math.max(...pts, 1);
+    const n = pts.length;
+    return pts
+      .map((v, i) => `${(i / (n - 1)) * 72},${14 - (v / max) * 13}`)
+      .join(' ');
+  });
 </script>
 
 <div class="statusbar" class:down={conn === 'down'}>
@@ -49,6 +66,19 @@
     <i class="arrow" aria-hidden="true"><ArrowDown size={12} strokeWidth={2.5} /></i>
     {formatBytes(totalSpeed)}/s
   </span>
+  {#if spark}
+    <svg
+      class="spark"
+      viewBox="0 0 72 14"
+      width="72"
+      height="14"
+      preserveAspectRatio="none"
+      aria-hidden="true"
+      title="Aggregate speed, last ~2 minutes"
+    >
+      <polyline points={spark} fill="none" stroke="var(--accent)" stroke-width="1.25" />
+    </svg>
+  {/if}
   <span class="sep"></span>
   <span class="stat num">{active} active</span>
   {#if paused > 0}
@@ -128,6 +158,13 @@
     align-items: center;
     gap: 4px;
   }
+  /* aggregate-speed sparkline: sits right of the live number so
+   * the digit is the now-value and the line is the trend. */
+  .spark {
+    flex: none;
+    opacity: 0.9;
+  }
+
   .arrow {
     font-style: normal;
     color: var(--ok);

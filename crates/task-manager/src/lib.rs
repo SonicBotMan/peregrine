@@ -300,6 +300,24 @@ impl TaskManager {
         Ok(())
     }
 
+    /// Set a task's queue priority. Persists + pushes
+    /// TaskPriorityChanged. Re-ranking the live queue (wake the
+    /// scheduler loop) is `Scheduler::set_priority`'s job — same
+    /// layering as set_limit: the manager owns the row, the
+    /// scheduler owns the loop.
+    pub async fn set_priority(&self, id: &TaskId, priority: Priority) -> Result<Task, TaskError> {
+        let task = self
+            .store
+            .update_download_priority(id, priority)
+            .await?
+            .ok_or_else(|| TaskError::NotFound(id.clone()))?;
+        self.bus.publish(EngineEvent::TaskPriorityChanged {
+            id: task.id.clone(),
+            priority,
+        });
+        Ok(task)
+    }
+
     /// Set a task's per-task rate limit (0 = unlimited). Persists
     /// (queued tasks read it at spawn) and pushes TaskLimitChanged.
     /// Poking a RUNNING engine's bucket live is the scheduler's job
@@ -383,6 +401,29 @@ mod tests {
 
     fn mgr() -> TaskManager {
         TaskManager::new(Store::open_memory().unwrap(), EventBus::new(64))
+    }
+
+    /// R2-gap (priority honesty): set_priority persists + publishes;
+    /// the REST badge and the scheduler's next fill_slots both read
+    /// the persisted row, so this is the contract they rely on.
+    #[tokio::test]
+    async fn set_priority_persists_and_publishes() {
+        let m = mgr();
+        let mut rx = m.bus.subscribe();
+        let t = m.add("http://x/f", "/tmp/f", Priority::Normal).await.unwrap();
+        let bumped = m.set_priority(&t.id, Priority::High).await.unwrap();
+        assert_eq!(bumped.priority, Priority::High);
+        let reread = m.get(&t.id).await.unwrap().unwrap();
+        assert_eq!(reread.priority, Priority::High);
+        assert!(drain(&mut rx).iter().any(|e| matches!(
+            e,
+            EngineEvent::TaskPriorityChanged { priority: Priority::High, .. }
+        )));
+        // unknown id → NotFound, not a silent ok
+        assert!(matches!(
+            m.set_priority(&TaskId::new("nope"), Priority::Low).await,
+            Err(TaskError::NotFound(_))
+        ));
     }
 
     /// Drain a subscriber created BEFORE the calls under test

@@ -55,6 +55,7 @@
     onResume,
     onRemove,
     onLimit,
+    onSetPriority,
     onSelect,
     onOpenFile,
     onOpenSaved,
@@ -67,6 +68,7 @@
     onResume: (id: string) => void;
     onRemove: (id: string) => void;
     onLimit: (id: string, bps: number) => void;
+    onSetPriority: (id: string, p: 'high' | 'normal' | 'low') => void;
     onSelect: (id: string) => void;
     onOpenFile: (id: string) => void;
     onOpenSaved: (id: string) => void;
@@ -134,6 +136,15 @@
             </span>
           {/if}
           <span class="name" title={name}>{name}</span>
+          {#if task.priority !== 'normal'}
+            <span
+              class="prio"
+              class:high={task.priority === 'high'}
+              title={`${task.priority} priority — right-click to change`}
+            >
+              {task.priority === 'high' ? 'H' : 'L'}
+            </span>
+          {/if}
         </span>
 
         <span class="c progress" aria-hidden="true">
@@ -188,6 +199,20 @@
       </ContextMenu.Item>
     {/if}
     <ContextMenu.Item class="ctx-item" onSelect={() => onCopyUrl(task.id)}>Copy URL</ContextMenu.Item>
+    <ContextMenu.Sub>
+      <ContextMenu.SubTrigger class="ctx-item">Priority</ContextMenu.SubTrigger>
+      <ContextMenu.SubContent class="ctx">
+        {#each ['high', 'normal', 'low'] as p}
+          <ContextMenu.Item
+            class="ctx-item"
+            onSelect={() => onSetPriority(task.id, p as 'high' | 'normal' | 'low')}
+          >
+            <span class="pridot" aria-hidden="true" data-on={task.priority === p}></span>
+            {p}
+          </ContextMenu.Item>
+        {/each}
+      </ContextMenu.SubContent>
+    </ContextMenu.Sub>
     {#if task.status === 'completed'}
       <ContextMenu.Item class="ctx-item" onSelect={() => onOpenSaved(task.id)}>
         Open file
@@ -277,6 +302,41 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
+  /* queue-priority badge: only non-normal shows (a badge on every
+   * row is noise). One letter — H/L — like a transfer table's
+   * priority column, not a full pill. */
+  .prio {
+    flex: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 4px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1;
+    color: var(--dim);
+    background: color-mix(in oklch, var(--dim) 18%, transparent);
+  }
+  .prio.high {
+    color: var(--warn);
+    background: color-mix(in oklch, var(--warn) 18%, transparent);
+  }
+  /* context-menu radio dots for the Priority submenu */
+  .pridot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    margin-right: 6px;
+    background: transparent;
+    border: 1px solid var(--dim);
+  }
+  .pridot[data-on='true'] {
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+
   .namecell {
     display: flex;
     align-items: center;
