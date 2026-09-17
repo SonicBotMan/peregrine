@@ -4,10 +4,8 @@
    * small caps labels (IDM-style), filter dropdown (absorbs the old
    * sidebar's status/category filters), live task search.
    */
-  import { DropdownMenu } from 'bits-ui';
-  import { Search, ChevronDown } from '@lucide/svelte';
-  import { CATEGORIES, type Category } from './categorize';
-  import type { StatusFilter } from './types';
+    import { Search } from '@lucide/svelte';
+    import type { StatusFilter } from './types';
 
   let {
     query = $bindable(''),
@@ -45,9 +43,6 @@
     searchEl?.focus();
   }
 
-  const catLabel = $derived(
-    categoryFilter ? (CATEGORIES.find((c) => c.id === categoryFilter)?.label ?? 'Type') : 'Type',
-  );
 </script>
 
 <div class="toolbar">
@@ -99,29 +94,6 @@
       </button>
     {/each}
   </div>
-
-  <div class="tdiv segdiv"></div>
-
-  <DropdownMenu.Root>
-    <DropdownMenu.Trigger class="filter-btn" title="Filter by file type">
-      {catLabel}
-      <ChevronDown size={12} />
-    </DropdownMenu.Trigger>
-    <DropdownMenu.Content class="fmenu" align="end" sideOffset={6}>
-      {#each CATEGORIES as c (c.id)}
-        <DropdownMenu.Item
-          class="fitem"
-          onclick={() => {
-            categoryFilter = categoryFilter === c.id ? null : c.id;
-            statusFilter = 'all';
-          }}
-        >
-          {c.label}
-          {#if categoryFilter === c.id}<span class="on">✓</span>{/if}
-        </DropdownMenu.Item>
-      {/each}
-    </DropdownMenu.Content>
-  </DropdownMenu.Root>
 
   <div class="search" role="search">
     <Search size={12} aria-hidden="true" />
@@ -199,10 +171,6 @@
    * mass sit ~2px high to the eye — nudge the pair down. */
   .tool { padding-top: 2px; }
 
-  .segdiv {
-    align-self: center;
-    margin-left: 6px;
-  }
   .seg {
     align-self: center;
     margin-left: 8px;
@@ -233,22 +201,6 @@
     box-shadow: 0 1px 2px var(--shade-1), inset 0 1px 0 var(--inset-hl);
     font-weight: 600;
   }
-  .filter-btn {
-    align-self: center;
-    margin-left: 8px;
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    height: 26px;
-    padding: 0 10px;
-    border: 1px solid var(--line-strong);
-    border-radius: 4px;
-    background: var(--bg);
-    color: var(--text);
-    font: 500 12px var(--font-sans);
-    cursor: pointer;
-  }
-  .filter-btn:hover { border-color: var(--accent); }
 
   .search {
     align-self: center;
@@ -281,34 +233,4 @@
     background: var(--panel);
   }
 
-  .fmenu {
-    min-width: 160px;
-    background: var(--elevated);
-    border: 1px solid var(--line-strong);
-    border-radius: 6px;
-    padding: 4px;
-    box-shadow: 0 12px 32px var(--shade-2), 0 2px 8px var(--shade-1);
-    z-index: 60;
-  }
-  .fitem {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 5px 10px;
-    border-radius: 4px;
-    font: 400 12px var(--font-sans);
-    color: var(--text);
-    cursor: pointer;
-    outline: none;
-  }
-  .fitem[data-highlighted] {
-    background: var(--accent);
-    color: var(--on-accent);
-  }
-  .fitem .on { font-weight: 700; }
-  .fsep {
-    height: 1px;
-    background: var(--line-strong);
-    margin: 4px 6px;
-  }
 </style>

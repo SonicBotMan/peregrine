@@ -5,6 +5,7 @@
    * have a classic desktop path alongside the toolbar + shortcuts.
    */
   import { Menubar as MB } from 'bits-ui';
+import { CATEGORIES, type Category } from './categorize';
 
   let {
     onAdd,
@@ -15,6 +16,8 @@
     themeLabel,
     onPalette,
     onShortcuts,
+    categoryFilter = null,
+    onCategoryFilter = () => {},
   }: {
     onAdd: () => void;
     onPauseAll: () => void;
@@ -24,6 +27,8 @@
     themeLabel: string;
     onPalette: () => void;
     onShortcuts: () => void;
+    categoryFilter?: Category | null;
+    onCategoryFilter?: (c: Category | null) => void;
   } = $props();
 </script>
 
@@ -64,6 +69,25 @@
     <MB.Menu>
       <MB.Trigger class="mtrigger">View</MB.Trigger>
       <MB.Content class="mcontent" align="start" sideOffset={4}>
+        <MB.Item
+          class="mitem"
+          onclick={() => onCategoryFilter(null)}
+          data-on={categoryFilter === null}
+        >
+          All Types
+          {#if categoryFilter === null}<span class="mk">✓</span>{/if}
+        </MB.Item>
+        {#each CATEGORIES as c (c.id)}
+          <MB.Item
+            class="mitem"
+            onclick={() => onCategoryFilter(categoryFilter === c.id ? null : c.id)}
+            data-on={categoryFilter === c.id}
+          >
+            {c.label}
+            {#if categoryFilter === c.id}<span class="mk">✓</span>{/if}
+          </MB.Item>
+        {/each}
+        <MB.Separator class="msep" />
         <MB.Item class="mitem" onclick={onToggleTheme}>
           {themeLabel}
           <span class="mk">⌘T</span>

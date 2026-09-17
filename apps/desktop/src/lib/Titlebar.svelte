@@ -8,6 +8,7 @@
 
   let {
     title,
+    categoryFilter = null,
     onAdd,
     onPauseAll,
     onResumeAll,
@@ -16,8 +17,10 @@
     themeLabel,
     onPalette,
     onShortcuts,
+    onCategoryFilter,
   }: {
     title: string;
+    categoryFilter?: import('./categorize').Category | null;
     onAdd: () => void;
     onPauseAll: () => void;
     onResumeAll: () => void;
@@ -26,6 +29,7 @@
     themeLabel: string;
     onPalette: () => void;
     onShortcuts: () => void;
+    onCategoryFilter: (c: import('./categorize').Category | null) => void;
   } = $props();
 </script>
 
@@ -42,6 +46,8 @@
     {themeLabel}
     {onPalette}
     {onShortcuts}
+    {categoryFilter}
+    onCategoryFilter={onCategoryFilter}
   />
   <span class="appname" data-tauri-drag-region>{title}</span>
 </div>

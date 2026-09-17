@@ -580,6 +580,11 @@
     onToggleTheme={toggleTheme}
     themeLabel={theme === 'dark' ? 'Light Theme' : 'Dark Theme'}
     onPalette={() => (paletteOpen = true)}
+    categoryFilter={categoryFilter}
+    onCategoryFilter={(c) => {
+      categoryFilter = c;
+      if (c) statusFilter = 'all';
+    }}
     onShortcuts={() => (helpOpen = true)}
   />
 
@@ -587,7 +592,6 @@
     bind:this={toolbarRef}
     bind:query
     bind:statusFilter
-    bind:categoryFilter
     {counts}
     hasSelection={selectedId !== null}
     onAdd={() => ((addUrl = ''), (showAdd = true))}
