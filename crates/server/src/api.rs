@@ -272,14 +272,25 @@ struct SetLimitBody {
     bps: u64,
 }
 
+/// GUI-verify R2 P3: clients that compose a save path from a
+/// directory (quick-add, the AddDialog placeholder) need ONE shared
+/// default — the daemon's, not each client's guess. Stored in the
+/// settings table; `~` is daemon-resolved at task-add time.
+pub const DEFAULT_SAVE_DIR: &str = "~/Downloads";
+
 #[derive(Debug, Serialize)]
 pub struct SettingsBody {
     pub global_limit_bps: u64,
+    /// Default save DIRECTORY for path-composing clients. A
+    /// directory, not a file path — engines receive dir + filename.
+    pub default_dir: String,
 }
 
+/// Partial update: apply what's present, leave the rest alone.
 #[derive(Debug, Deserialize)]
 struct PutSettingsBody {
-    global_limit_bps: u64,
+    global_limit_bps: Option<u64>,
+    default_dir: Option<String>,
 }
 
 /// `PUT /tasks/{id}/limit {"bps": 131072}` — persists and pokes a
@@ -324,25 +335,54 @@ async fn set_task_priority(
 /// `GET /settings` — daemon-wide knobs. Only the global rate limit
 /// exists today; the shape is extensible (new keys are additive).
 async fn get_settings(State(state): State<AppState>) -> Json<SettingsBody> {
+    let default_dir = state
+        .0
+        .store
+        .get_setting("default_dir")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| DEFAULT_SAVE_DIR.to_string());
     Json(SettingsBody {
         global_limit_bps: state.0.global_budget.bps(),
+        default_dir,
     })
 }
 
-/// `PUT /settings {"global_limit_bps": n}` — persist + apply live.
+/// `PUT /settings` — partial persist + apply live. Provided keys are
+/// written; absent keys are untouched (a limit-only write must not
+/// clobber the default dir and vice versa).
 async fn put_settings(
     State(state): State<AppState>,
     JsonBody(b): JsonBody<PutSettingsBody>,
 ) -> Result<Json<SettingsBody>, (StatusCode, Json<ApiErrorBody>)> {
-    state
-        .0
-        .sched
-        .set_global_limit(b.global_limit_bps)
-        .await
-        .map_err(map_err)?;
-    Ok(Json(SettingsBody {
-        global_limit_bps: b.global_limit_bps,
-    }))
+    if let Some(bps) = b.global_limit_bps {
+        state
+            .0
+            .sched
+            .set_global_limit(bps)
+            .await
+            .map_err(map_err)?;
+    }
+    if let Some(dir) = b.default_dir {
+        let dir = dir.trim().to_string();
+        if dir.is_empty() {
+            return Err((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(ApiErrorBody {
+                    error: "invalid_default_dir".into(),
+                    message: "default_dir must not be empty".into(),
+                }),
+            ));
+        }
+        state
+            .0
+            .store
+            .set_setting("default_dir", &dir)
+            .await
+            .map_err(|e| map_err(TaskError::Storage(e)))?;
+    }
+    Ok(get_settings(State(state)).await)
 }
 
 /// `?purge=true` opt-in: also delete downloaded data (M5.1 P0-2).
