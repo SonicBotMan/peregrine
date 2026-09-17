@@ -84,7 +84,8 @@
       <Command.List class="plist">
         <Command.Empty class="pempty">No matches</Command.Empty>
 
-        <Command.Group heading="Actions">
+        <Command.Group>
+          <div class="phead" aria-hidden="true">Actions</div>
           <Command.Item class="pitem" value="new download add url" keywords={['create', 'download', 'add']} onSelect={() => { onAdd(); onClose(); }}>
             <Plus size={14} /> New download…
             <span class="kbd-hint">⌘N</span>
@@ -100,7 +101,8 @@
           </Command.Item>
         </Command.Group>
 
-        <Command.Group heading="Tasks">
+        <Command.Group>
+          <div class="phead" aria-hidden="true">Tasks</div>
           {#each store.list as t (t.id)}
             <Command.Item
               class="pitem"
@@ -225,7 +227,8 @@
     border-radius: 4px;
     padding: 0 5px;
   }
-  :global(.plist [cmdk-group-heading]) {
+  :global(.plist [cmdk-group-heading]),
+  :global(.plist .phead) {
     font-size: 11px;
     text-transform: uppercase;
     letter-spacing: 0.08em;

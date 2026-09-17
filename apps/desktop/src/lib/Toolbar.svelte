@@ -1,4 +1,8 @@
 <script lang="ts">
+// (Category survives here even though the Type dropdown moved to
+// the View menu: Toolbar still owns the prop contract that App
+// threads through — the type of categoryFilter.)
+import type { Category } from './categorize';
   /**
    * V5 toolbar: tool-grade affordance — colored filled icons with
    * small caps labels (IDM-style), filter dropdown (absorbs the old

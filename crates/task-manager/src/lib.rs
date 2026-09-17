@@ -410,14 +410,20 @@ mod tests {
     async fn set_priority_persists_and_publishes() {
         let m = mgr();
         let mut rx = m.bus.subscribe();
-        let t = m.add("http://x/f", "/tmp/f", Priority::Normal).await.unwrap();
+        let t = m
+            .add("http://x/f", "/tmp/f", Priority::Normal)
+            .await
+            .unwrap();
         let bumped = m.set_priority(&t.id, Priority::High).await.unwrap();
         assert_eq!(bumped.priority, Priority::High);
         let reread = m.get(&t.id).await.unwrap().unwrap();
         assert_eq!(reread.priority, Priority::High);
         assert!(drain(&mut rx).iter().any(|e| matches!(
             e,
-            EngineEvent::TaskPriorityChanged { priority: Priority::High, .. }
+            EngineEvent::TaskPriorityChanged {
+                priority: Priority::High,
+                ..
+            }
         )));
         // unknown id → NotFound, not a silent ok
         assert!(matches!(

@@ -772,7 +772,12 @@
       name={pendingRemove.name}
       terminal={pendingRemove.terminal}
       onConfirm={(deleteFile, neverAsk) => {
-        const { id } = pendingRemove;
+        // Capture the pending entry first: inside this closure TS
+        // can't keep the {#if} narrowing — pendingRemove is typed
+        // `| null` again after the await-free sync body runs.
+        const pending = pendingRemove;
+        if (!pending) return;
+        const { id } = pending;
         pendingRemove = null;
         if (neverAsk && !deleteFile) localStorage.setItem(REMOVE_ASK_KEY, 'never-ask');
         removeTaskNow(id, deleteFile);

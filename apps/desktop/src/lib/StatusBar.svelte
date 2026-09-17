@@ -74,8 +74,8 @@
       height="14"
       preserveAspectRatio="none"
       aria-hidden="true"
-      title="Aggregate speed, last ~2 minutes"
     >
+      <title>Aggregate speed, last ~2 minutes</title>
       <polyline points={spark} fill="none" stroke="var(--accent)" stroke-width="1.25" />
     </svg>
   {/if}
