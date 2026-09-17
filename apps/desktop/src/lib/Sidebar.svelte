@@ -1,9 +1,11 @@
 <script lang="ts">
   /**
-   * Left rail (U1): status filter + category filter + global limit.
-   * Flat data surface — sharp edges, border separation, no cards
-   * (ui-proposal §4.2). All list truth stays in the store; this
-   * component only owns filter + throttle UI state.
+   * Left aside (Motrix replication): dark rail with app wordmark,
+   * nav sections (status / category), and the settings domain
+   * (global speed limit) pinned to the bottom. Active nav =
+   * #444 block with white text (Motrix subnav-active), no accent
+   * borders. All list truth stays in the store; this component
+   * only owns filter + throttle UI state.
    */
   import { CATEGORIES, type Category } from './categorize';
   import { LIMIT_PRESETS, presetFor } from './format';
@@ -89,10 +91,13 @@
   }
 </script>
 
-<nav class="flex h-full flex-col overflow-y-auto border-r border-line-strong bg-panel">
-  <div class="px-3 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-[0.08em] text-dim">
-    Status
+<nav class="aside">
+  <div class="brand">
+    <span class="logo">Peregrine</span>
+    <span class="ver">v0.1</span>
   </div>
+
+  <div class="sec">Status</div>
   {#each STATUS_ITEMS as it (it.id)}
     <button
       class="nav-item"
@@ -101,16 +106,14 @@
     >
       <span class="truncate">{it.label}</span>
       {#if it.id === 'failed' && counts.failed > 0}
-        <span class="nav-count text-err">{counts.failed}</span>
+        <span class="nav-count danger">{counts.failed}</span>
       {:else}
         <span class="nav-count">{counts[it.id]}</span>
       {/if}
     </button>
   {/each}
 
-  <div class="mt-4 px-3 pb-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-dim">
-    Category
-  </div>
+  <div class="sec">Category</div>
   {#each CATEGORIES as it (it.id)}
     {@const n = counts.categories[it.id]}
     {#if n > 0 || category === it.id}
@@ -125,10 +128,8 @@
     {/if}
   {/each}
 
-  <div class="mt-auto border-t border-line px-3 py-3">
-    <div class="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-dim">
-      Speed limit
-    </div>
+  <div class="foot">
+    <div class="sec">Speed limit</div>
     <div class="global-limit" title="Global speed limit">
       {#if customGlobal !== null}
         <input
@@ -153,27 +154,66 @@
 </nav>
 
 <style>
+  /* Motrix aside: rgba(0,0,0,.9) over the #343434 main. */
+  .aside {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    background: var(--aside);
+    color: var(--text);
+  }
+  .brand {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    padding: 18px 16px 14px;
+  }
+  .logo {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--text);
+    letter-spacing: 0.01em;
+  }
+  .ver {
+    font-size: 11px;
+    color: var(--dim);
+  }
+  .sec {
+    padding: 10px 16px 4px;
+    font-size: 11px;
+    color: var(--dim);
+    /* systematic section headers: small caps + tracking, same rhythm
+     * for Status / Category / Speed limit (VLM pass 4) */
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
   .nav-item {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 8px;
-    padding: 5px 12px;
+    margin: 2px 8px;
+    padding: 6px 10px;
     font-size: 13px;
     color: var(--dim);
-    border-left: 2px solid transparent;
-    transition: color 0.12s ease, background 0.12s ease;
+    border-radius: 4px;
+    border: none;
+    transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
     text-align: left;
   }
   .nav-item:hover {
     color: var(--text);
     background: var(--elevated);
   }
+  /* Motrix subnav-active: #444 block + white text */
   .nav-item.active {
-    color: var(--text);
-    background: color-mix(in oklch, var(--accent) 10%, transparent);
-    border-left-color: var(--accent); /* Linear: accent left-border marks selection */
+    color: #fff;
+    background: var(--elevated);
     font-weight: 500;
+  }
+  :global([data-theme='light']) .nav-item.active {
+    color: var(--accent);
   }
   .nav-count {
     font-size: 11px;
@@ -181,13 +221,35 @@
     font-variant-numeric: tabular-nums;
     color: var(--dim);
   }
+  .nav-count.danger {
+    color: var(--err);
+  }
   .nav-item.active .nav-count {
-    color: var(--text);
+    color: inherit;
+  }
+  .foot {
+    margin-top: auto;
+    padding-bottom: 12px;
+    border-top: 1px solid var(--line-subtle);
+  }
+  .foot .sec {
+    padding-top: 10px;
   }
   .global-limit {
     display: flex;
     align-items: center;
     gap: 4px;
+    padding: 0 12px 0 16px;
+  }
+  /* inside the 184px aside the select must actually fit: kill the
+   * shared 120px max-width and let it shrink (VLM: truncated) */
+  .global-limit :global(.ctl-select) {
+    flex: 1;
+    min-width: 0;
+    max-width: none;
+  }
+  .global-limit :global(.ctl-input) {
+    width: 100%;
   }
   .global-limit .unit {
     color: var(--dim);

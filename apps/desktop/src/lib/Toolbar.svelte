@@ -1,9 +1,9 @@
 <script lang="ts">
   /**
-   * Top toolbar (U1): 46px strip. Kept minimal — actions live next
-   * to their objects (row cluster / context menu); the toolbar
-   * hosts only app-level chrome: title, theme, Add. U2: lucide
-   * icons replace text glyphs. The ⌘K search box lands here in U3.
+   * Subnav strip (Motrix replication): #2d2d2d bar with the section
+   * title on the left and flat white action icons + one Element-
+   * primary "Add" button on the right. Kept minimal — actions live
+   * next to their objects (row cluster / context menu).
    */
   import type { Theme } from './theme';
   import { Sun, Moon, Plus } from '@lucide/svelte';
@@ -22,27 +22,25 @@
 </script>
 
 <header class="toolbar">
-  <span class="brand">Peregrine</span>
+  <span class="title">Tasks</span>
   <div class="right">
-    <!-- U3: palette entry — visible affordance for ⌘K//; the
-         dialog itself lives in App (single instance, {#if}-mounted) -->
-    <button class="ctl search" onclick={onPalette} title="Command palette (⌘K or /)">
+    <button class="flat" onclick={onPalette} title="Command palette (⌘K or /)">
       <span class="mag">⌕</span>
       <span class="sk">⌘K</span>
     </button>
     <button
-      class="ctl icon"
+      class="flat icon"
       onclick={onToggleTheme}
       title={theme === 'dark' ? 'Switch to light' : 'Switch to dark'}
       aria-label="Toggle theme"
     >
       {#if theme === 'dark'}
-        <Sun size={14} />
+        <Sun size={15} />
       {:else}
-        <Moon size={14} />
+        <Moon size={15} />
       {/if}
     </button>
-    <button class="ctl primary" onclick={onAdd}>
+    <button class="ctl primary add" onclick={onAdd}>
       <Plus size={14} />
       Add
     </button>
@@ -53,16 +51,16 @@
   .toolbar {
     display: flex;
     align-items: center;
-    height: 46px;
-    padding: 0 14px;
+    height: 44px;
+    padding: 0 16px;
     gap: 10px;
-    background: var(--panel);
+    background: var(--subnav);
     border-bottom: 1px solid var(--line-strong);
   }
-  .brand {
-    font-size: 13px;
-    font-weight: 700;
-    letter-spacing: 0.02em;
+  .title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text);
   }
   .right {
     margin-left: auto;
@@ -70,33 +68,46 @@
     align-items: center;
     gap: 8px;
   }
-  .search {
-    display: flex;
+  /* Motrix subnav actions: white text, transparent bg, #444 hover */
+  .flat {
+    display: inline-flex;
     align-items: center;
     gap: 8px;
+    padding: 5px 10px;
     color: var(--dim);
+    background: transparent;
+    border-radius: 4px;
     font-size: 12px;
-    padding: 3px 10px;
-    min-width: 120px;
+    transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
   }
-  .search:hover {
+  .flat:hover {
     color: var(--text);
+    background: var(--elevated);
+  }
+  .flat.icon {
+    padding: 5px 8px;
+    line-height: 0;
+    /* static grouping cue: subtle border so the icon trio reads as
+     * a control cluster even without hover (VLM pass 5) */
+    border: 1px solid var(--line-subtle);
+    color: var(--dim);
+  }
+  .flat.icon:hover {
+    border-color: var(--line);
   }
   .mag {
     font-size: 13px;
+    line-height: 1;
   }
   .sk {
-    margin-left: auto;
     border: 1px solid var(--line);
     border-radius: 4px;
     padding: 0 5px;
     font-size: 11px;
   }
-  .ctl.icon {
-    padding: 5px 8px;
-    line-height: 0;
-  }
-  .ctl.primary {
+  .add {
+    padding: 6px 14px;
     line-height: 1;
+    margin-left: 4px;
   }
 </style>

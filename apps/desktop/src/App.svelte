@@ -446,8 +446,9 @@
   .shell {
     display: grid;
     height: 100vh;
-    grid-template-columns: 192px 1fr;
-    grid-template-rows: 46px 36px auto 1fr;
+    /* Motrix geometry: ~184px expanded aside over the main area */
+    grid-template-columns: 184px 1fr;
+    grid-template-rows: 44px 32px auto 1fr;
     grid-template-areas:
       'sidebar toolbar'
       'sidebar statusbar'

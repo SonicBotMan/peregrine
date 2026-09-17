@@ -446,3 +446,6 @@
     transform: translateY(-4px);
   }
 }
+.detail {
+  animation: detail-in var(--dur) var(--ease);
+}

@@ -1,15 +1,13 @@
 <script lang="ts">
   /**
-   * One task row (U2 rebuild): flat tiled column grid —
-   *   chevron | name | pct | done/total | speed | eta | status chip
-   * with a 2px status-tinted progress underline (indeterminate
-   * shimmer when size is unknown) and a hover-revealed action
-   * cluster fading over the tail columns. Click / Enter / Space
-   * toggles selection (inline SegmentPanel expansion below the
-   * row); double-click a completed row reveals the artifact;
-   * right-click opens the context menu. The row element is ours
-   * (bits-ui `child` snippet pattern) so scoped styles apply.
-   * All list truth lives in the store — the row stays dumb.
+   * One task card — Motrix TaskItem replication: progress ring
+   * (status-colored SVG circle), file name + meta line, hover-
+   * revealed round action chips (#4a4a4a, primary on hover).
+   * Behavior surface is unchanged from the tiled-row era: click /
+   * Enter toggles the inline SegmentPanel expansion, Space belongs
+   * to the global layer, double-click a completed row opens the
+   * artifact, right-click opens the context menu. All list truth
+   * lives in the store — the card stays dumb.
    */
   import { ContextMenu } from 'bits-ui';
   import SegmentPanel from './SegmentPanel.svelte';
@@ -61,6 +59,13 @@
   const running = $derived(task.status === 'running' || task.status === 'queued');
   const resumable = $derived(task.status === 'paused' || task.status === 'failed');
 
+  // ring geometry: 46px SVG, r=19 → C = 2πr ≈ 119.4
+  const R = 19;
+  const C = 2 * Math.PI * R;
+  const dash = $derived(
+    pct !== null ? `${(pct / 100) * C} ${C - (pct / 100) * C}` : `0 ${C}`,
+  );
+
   function stop<T extends () => void>(fn: T) {
     return (e: Event) => {
       e.stopPropagation();
@@ -75,7 +80,8 @@
       <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
       <div
         {...props}
-        class="row {selected ? 'selected' : ''}"
+        class="row"
+        class:selected
         data-id={task.id}
         data-status={task.status}
         role="button"
@@ -96,18 +102,58 @@
           }
         }}
       >
-        <span class="chev" class:open={selected} aria-hidden="true">▸</span>
-        <span class="name" class:errored={!!task.error}>{name}</span>
-        <span class="col pct">{pct !== null ? `${pct}%` : '—'}</span>
-        <span class="col size">{done}{size !== '—' ? ` / ${size}` : ''}</span>
-        <span class="col speed">{speed}</span>
-        <span class="col eta">{eta}</span>
-        <span class="chip" data-kind={task.status}>{task.status}</span>
+        <!-- Motrix TaskProgress: circular ring, status-colored -->
+        <span class="ring" data-status={task.status} aria-hidden="true">
+          <svg viewBox="0 0 46 46" width="46" height="46">
+            <circle class="track" cx="23" cy="23" r={R} />
+            <circle
+              class="bar"
+              cx="23"
+              cy="23"
+              r={R}
+              stroke-dasharray={dash}
+              transform="rotate(-90 23 23)"
+            />
+          </svg>
+          <span class="ring-num">
+            {#if task.status === 'completed'}
+              <span class="check">✓</span>
+            {:else if task.status === 'failed'}
+              <span class="bang">!</span>
+            {:else if pct !== null}
+              {pct}<small>%</small>
+            {:else}
+              …
+            {/if}
+          </span>
+        </span>
+
+        <span class="info">
+          <span class="name">{name}</span>
+          {#if task.error}
+            <!-- VLM: keep the title neutral white — status color lives
+                 in the meta line only, or a failed list turns into a
+                 wall of red -->
+            <span class="meta">
+              <b class="st">{task.status}</b>
+              <span class="err-line">{task.error}</span>
+            </span>
+          {:else}
+            <span class="meta">
+              <b class="st">{task.status}</b>
+              <span class="num">{done}{size !== '—' ? ` / ${size}` : ''}</span>
+              <span class="dot">·</span>
+              <span class="num">{speed}</span>
+              <span class="dot">·</span>
+              <span class="num">{eta}</span>
+            </span>
+          {/if}
+        </span>
 
         <span class="cluster" role="group" aria-label="Row actions">
           {#if running}
             <button
-              class="ctl icon"
+              class="ctl round"
               title="Pause"
               aria-label={`Pause ${name}`}
               onclick={stop(() => onPause(task.id))}
@@ -116,7 +162,7 @@
             </button>
           {:else if resumable}
             <button
-              class="ctl icon"
+              class="ctl round"
               title={task.status === 'failed' ? 'Retry' : 'Resume'}
               aria-label={`${task.status === 'failed' ? 'Retry' : 'Resume'} ${name}`}
               onclick={stop(() => onResume(task.id))}
@@ -125,21 +171,13 @@
             </button>
           {/if}
           <button
-            class="ctl icon danger"
+            class="ctl round"
             title="Remove"
             aria-label={`Remove ${name}`}
             onclick={stop(() => onRemove(task.id))}
           >
             <X size={13} />
           </button>
-        </span>
-
-        <span class="line" aria-hidden="true">
-          {#if pct !== null}
-            <i style:width="{pct}%"></i>
-          {:else}
-            <i class="anim"></i>
-          {/if}
         </span>
       </div>
     {/snippet}
@@ -175,144 +213,189 @@
 {/if}
 
 <style>
+  /* Motrix task-item card: #2d2d2d tile, #555 border, 4px radius,
+   * separated by the #343434 main background. */
   .row {
     position: relative;
     display: grid;
-    grid-template-columns: 22px minmax(0, 1fr) 48px 118px 72px 56px 84px;
+    grid-template-columns: 46px minmax(0, 1fr) auto;
     align-items: center;
-    column-gap: 10px;
-    height: 40px;
-    padding: 0 14px 0 10px;
+    column-gap: 14px;
+    min-height: 64px;
+    padding: 9px 16px;
+    margin: 8px 12px;
     background: var(--panel);
-    border-bottom: 1px solid var(--line-subtle);
+    border: 1px solid var(--line-strong);
+    border-radius: 4px;
     cursor: default;
     user-select: none;
-    transition: background 0.12s ease;
   }
   .row:hover {
-    background: var(--elevated);
+    border-color: var(--accent);
   }
   .row:focus-visible {
     outline: none;
-    box-shadow: inset 0 0 0 2px var(--accent);
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent);
   }
   .row.selected {
-    box-shadow: inset 0 0 0 2px var(--accent);
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent);
   }
-  .chev {
-    color: var(--dim);
+
+  /* progress ring */
+  .ring {
+    position: relative;
+    width: 46px;
+    height: 46px;
+    flex: none;
+  }
+  .ring svg {
+    display: block;
+  }
+  .ring .track {
+    fill: none;
+    stroke: var(--line-subtle);
+    stroke-width: 3.5;
+  }
+  .ring .bar {
+    fill: none;
+    stroke: var(--accent);
+    stroke-width: 3.5;
+    stroke-linecap: round;
+    transition: stroke-dasharray 0.4s linear;
+  }
+  .ring[data-status='completed'] .bar {
+    stroke: var(--ok);
+  }
+  .ring[data-status='paused'] .bar {
+    stroke: var(--warn);
+  }
+  .ring[data-status='failed'] .bar {
+    stroke: var(--err);
+  }
+  .ring[data-status='queued'] .bar {
+    stroke: var(--info);
+  }
+  .ring-num {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     font-size: 11px;
-    line-height: 1;
-    text-align: center;
-    transition: transform 0.15s ease;
-  }
-  .chev.open {
-    transform: rotate(90deg);
+    font-weight: 600;
     color: var(--text);
+    font-variant-numeric: tabular-nums;
+  }
+  .ring-num small {
+    font-size: 7px;
+    font-weight: 500;
+    margin-left: 1px;
+  }
+  .ring-num .check {
+    color: var(--ok);
+    font-size: 15px;
+  }
+  .ring-num .bang {
+    color: var(--err);
+    font-size: 15px;
+    font-weight: 700;
+  }
+
+  /* info column */
+  .info {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
   }
   .name {
     font-weight: 600;
-    font-size: 13px;
+    font-size: 14px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .name.errored {
-    color: var(--err);
+  .err-line {
+    /* lift toward text so the reason is readable, not just tinted
+     * (VLM pass 5: raw --err on near-black was ~4.3:1) */
+    color: color-mix(in srgb, var(--err) 62%, var(--text));
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
-  .col {
-    font-family: var(--font-mono);
-    font-variant-numeric: tabular-nums;
+  .meta {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
     font-size: 12px;
     color: var(--dim);
-    text-align: right;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .row:hover .col,
-  .row.selected .col {
-    color: var(--text);
-  }
-  /* pct carries the row's status tint — the number itself becomes
-   * the scan anchor (VLM V3 note), dimmer than the chip so the chip
-   * still wins on priority */
-  .col.pct {
-    color: color-mix(in oklch, var(--accent) 70%, var(--dim));
+  .meta .st {
     font-weight: 500;
+    text-transform: capitalize;
   }
-  .row[data-status='completed'] .col.pct {
-    color: color-mix(in oklch, var(--ok) 70%, var(--dim));
+  /* three-step grey ramp inside the meta line (VLM pass 3):
+   * status = status color, numbers = full text, separators = line */
+  .meta .num {
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
   }
-  .row[data-status='paused'] .col.pct {
-    color: color-mix(in oklch, var(--warn) 70%, var(--dim));
+  .row[data-status='running'] .meta .st,
+  .row[data-status='queued'] .meta .st {
+    color: var(--accent);
   }
-  .row[data-status='failed'] .col.pct {
-    color: color-mix(in oklch, var(--err) 70%, var(--dim));
+  .row[data-status='completed'] .meta .st {
+    color: var(--ok);
   }
-  /* hover action cluster — fades over the tail columns */
+  .row[data-status='paused'] .meta .st {
+    color: var(--warn);
+  }
+  .row[data-status='failed'] .meta .st {
+    color: var(--err);
+  }
+  .meta .dot {
+    color: var(--line);
+  }
+  /* failed rows carry a 3px red rail + faint tint so a failure is
+   * locatable by scan alone, no sidebar count needed (VLM final) */
+  .row[data-status='failed'] {
+    box-shadow: inset 3px 0 0 var(--err);
+    background: color-mix(in srgb, var(--err) 4%, var(--panel));
+  }
+
+  /* hover action cluster — Motrix round chips */
   .cluster {
-    position: absolute;
-    right: 10px;
-    top: 50%;
-    transform: translateY(-50%);
     display: flex;
-    gap: 6px;
-    padding-left: 28px;
-    background: linear-gradient(
-      90deg,
-      transparent,
-      color-mix(in oklch, var(--elevated) 88%, transparent) 35%
-    );
+    gap: 8px;
     opacity: 0;
     pointer-events: none;
-    transition: opacity 0.12s ease;
+    transition: opacity var(--dur) var(--ease);
   }
   .row:hover .cluster,
-  .row:focus-within .cluster {
+  .row:focus-within .cluster,
+  .row.selected .cluster {
     opacity: 1;
     pointer-events: auto;
   }
-  .cluster button {
-    padding: 4px 7px;
+  .ctl.round {
+    width: 30px;
+    height: 30px;
+    justify-content: center;
+    padding: 0;
+    border-radius: 50%;
+    background: var(--elevated);
+    border: 1px solid var(--line);
+    color: var(--text);
     line-height: 0;
   }
-  /* 3px progress underline (VLM: 2px was too light to scan —
-   * the eye needs an anchor that says "downloading here") */
-  .line {
-    position: absolute;
-    left: 0;
-    right: 0;
-    bottom: -1px; /* overlap the row border — the line IS the border while active */
-    height: 3px;
-    background: transparent;
-    pointer-events: none;
-  }
-  .line i {
-    display: block;
-    height: 100%;
+  .ctl.round:hover {
     background: var(--accent);
-    transition: width 0.3s ease;
-  }
-  .row[data-status='completed'] .line i {
-    background: var(--ok);
-  }
-  .row[data-status='paused'] .line i {
-    background: var(--warn);
-  }
-  .row[data-status='failed'] .line i {
-    background: var(--err);
-  }
-  .line i.anim {
-    width: 30%;
-    animation: row-slide 1.1s ease-in-out infinite;
-  }
-  @keyframes row-slide {
-    0% {
-      margin-left: -30%;
-    }
-    100% {
-      margin-left: 100%;
-    }
+    border-color: var(--accent);
+    color: #fff;
   }
 </style>
