@@ -29,9 +29,11 @@ jobs:
       - name: Install Tauri system deps
         run: |
           sudo apt-get update
+          # libfuse2: the appimage bundler runs linuxdeploy (an AppImage)
+          # — the 22.04 runner image dropped it, breaking the bundle.
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev libappindicator3-dev \
-            librsvg2-dev patchelf
+            librsvg2-dev patchelf libfuse2
 
       - uses: pnpm/action-setup@v4
         with:
@@ -68,6 +70,11 @@ jobs:
       - name: Build desktop bundle (deb + appimage)
         run: pnpm exec tauri build --bundles deb,appimage
         working-directory: apps/desktop
+        env:
+          # Belt and braces with libfuse2 above: extract-run needs no
+          # FUSE at all, so the bundler cannot die on a missing mount
+          # helper either way.
+          APPIMAGE_EXTRACT_AND_RUN: "1"
 
       - name: Frontend type-check + unit tests (R2 P2-d1)
         # svelte-check was never wired into any gate: two real type
