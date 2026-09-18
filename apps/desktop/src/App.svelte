@@ -785,6 +785,8 @@
       if (c) statusFilter = 'all';
     }}
     onShortcuts={() => (helpOpen = true)}
+    launchAtLogin={autostartSupported ? launchAtLogin : undefined}
+    onToggleAutostart={autostartSupported ? () => void toggleAutostart() : undefined}
   />
 
   <Toolbar
