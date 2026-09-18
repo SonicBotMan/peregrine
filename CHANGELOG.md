@@ -47,6 +47,11 @@
 - **`pnpm tauri dev` was unstartable as configured** (devUrl port
   drift) and the webview was CORS-blocked (stale allowlist) — both
   ports track vite.config now.
+- **Open file / Show in folder were permission-denied**: the opener
+  plugin's default capability only covers URL schemes — opening a
+  saved path and revealing it in the file manager require explicit
+  `opener:allow-open-path` / `opener:allow-reveal-item-in-dir`
+  grants, now present in the capability list.
 
 ## Unreleased (post-alpha.3 hardening rounds)
 
