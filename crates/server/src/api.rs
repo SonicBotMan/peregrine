@@ -284,6 +284,10 @@ pub struct SettingsBody {
     /// Default save DIRECTORY for path-composing clients. A
     /// directory, not a file path — engines receive dir + filename.
     pub default_dir: String,
+    /// Live scheduler concurrency budget (GUI-verify batch-2).
+    pub max_concurrent: u32,
+    /// Per-download segment connection ceiling for NEW downloads.
+    pub seg_conns: u32,
 }
 
 /// Partial update: apply what's present, leave the rest alone.
@@ -291,6 +295,8 @@ pub struct SettingsBody {
 struct PutSettingsBody {
     global_limit_bps: Option<u64>,
     default_dir: Option<String>,
+    max_concurrent: Option<u32>,
+    seg_conns: Option<u32>,
 }
 
 /// `PUT /tasks/{id}/limit {"bps": 131072}` — persists and pokes a
@@ -343,9 +349,21 @@ async fn get_settings(State(state): State<AppState>) -> Json<SettingsBody> {
         .ok()
         .flatten()
         .unwrap_or_else(|| DEFAULT_SAVE_DIR.to_string());
+    let max_concurrent = state.0.sched.max_concurrent() as u32;
+    let seg_conns = state
+        .0
+        .store
+        .get_setting("seg_conns")
+        .await
+        .ok()
+        .flatten()
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(32);
     Json(SettingsBody {
         global_limit_bps: state.0.global_budget.bps(),
         default_dir,
+        max_concurrent,
+        seg_conns,
     })
 }
 
@@ -358,6 +376,12 @@ async fn put_settings(
 ) -> Result<Json<SettingsBody>, (StatusCode, Json<ApiErrorBody>)> {
     if let Some(bps) = b.global_limit_bps {
         state.0.sched.set_global_limit(bps).await.map_err(map_err)?;
+    }
+    if let Some(n) = b.max_concurrent {
+        state.0.sched.set_max_concurrent(n.max(1) as usize).await;
+    }
+    if let Some(n) = b.seg_conns {
+        state.0.sched.set_seg_conns(n).await;
     }
     if let Some(dir) = b.default_dir {
         let dir = dir.trim().to_string();

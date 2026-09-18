@@ -46,7 +46,7 @@ use peregrine_task_manager::{TaskError, TaskManager};
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::Notify;
@@ -71,6 +71,11 @@ pub trait DownloadPort: Send + Sync {
         progress: SharedProgressSink,
         cancel: CancellationToken,
     ) -> Pin<Box<dyn Future<Output = Result<DownloadOutcome, ApiError>> + Send + '_>>;
+
+    /// Per-download segment connection ceiling (GUI-verify batch-2).
+    /// Default no-op: ports without segmentation (BT/HLS/FTP fakes)
+    /// ignore it; HttpAutoPort applies it to NEW downloads.
+    fn set_seg_conns(&self, _n: u32) {}
 
     /// Drop any engine-side resume state for (url, sink) — the
     /// segment rows / cursors a previous run left behind (B31).
@@ -133,6 +138,11 @@ pub trait DownloadPort: Send + Sync {
 pub struct HttpAutoPort {
     engine: Arc<peregrine_engine_http::HttpEngine>,
     cfg: peregrine_engine_http::SegmentConfig,
+    /// Live segment-connection ceiling (GUI-verify batch-2): the
+    /// settings center lowers/raises it; each NEW download builds
+    /// its per-call segment config from this instead of the stale
+    /// boot copy.
+    max_conns: AtomicU32,
     store: Store,
     /// Daemon-wide byte budget (M3-b): every task's engine consults
     /// it in addition to its own per-task budget. Live-updatable via
@@ -160,11 +170,20 @@ impl HttpAutoPort {
     ) -> Self {
         Self {
             engine,
+            max_conns: AtomicU32::new(cfg.max_concurrency as u32),
             cfg,
             store,
             global,
             locals: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         }
+    }
+
+    /// GUI-verify batch-2: raise/lower the segment-connection ceiling.
+    /// Applies to the NEXT download — a running session's plan was
+    /// already committed from the old ceiling.
+    pub fn set_seg_conns(&self, n: u32) {
+        self.max_conns
+            .store(n.clamp(1, 32), std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Resolve the task's budget chain. `initial_bps` comes from the
@@ -192,6 +211,11 @@ impl HttpAutoPort {
 }
 
 impl DownloadPort for HttpAutoPort {
+    fn set_seg_conns(&self, n: u32) {
+        self.max_conns
+            .store(n.clamp(1, 32), std::sync::atomic::Ordering::Relaxed);
+    }
+
     fn auto_download(
         &self,
         job: DownloadJob,
@@ -218,7 +242,23 @@ impl DownloadPort for HttpAutoPort {
             let budget = self.budget_for(&job.url, job.sink.as_path(), initial_bps);
             let result = self
                 .engine
-                .download_auto(job, &self.cfg, &self.store, progress, cancel, &budget)
+                .download_auto(
+                    job,
+                    // Per-call copy with the LIVE ceiling: settings can
+                    // change between downloads; the boot copy would
+                    // silently serve a stale number forever.
+                    &peregrine_engine_http::SegmentConfig {
+                        max_concurrency: self
+                            .max_conns
+                            .load(std::sync::atomic::Ordering::Relaxed)
+                            .max(1) as usize,
+                        ..self.cfg
+                    },
+                    &self.store,
+                    progress,
+                    cancel,
+                    &budget,
+                )
                 .await;
             // The download (any route) is over — drop the registry
             // entry so a future re-add of the same target starts
@@ -408,6 +448,10 @@ pub struct Scheduler {
     bus: EventBus,
     port: Arc<dyn DownloadPort>,
     cfg: SchedulerConfig,
+    /// Live concurrency budget (GUI-verify batch-2): fill_slots reads
+    /// this instead of cfg so the settings center can raise/lower it
+    /// while tasks sit queued. cfg.max_concurrent is the boot seed.
+    max_concurrent: AtomicUsize,
     running: Mutex<HashMap<TaskId, Arc<Running>>>,
     /// Set by shutdown(); the run loop exits and every worker's
     /// token is cancelled.
@@ -428,8 +472,9 @@ impl Scheduler {
         // Normalize degenerate intervals: a zero poll/progress
         // interval would busy-loop the drainer or the run loop
         // (R2 review nit). One millisecond is the honest floor.
+        let seed = cfg.max_concurrent;
         let cfg = SchedulerConfig {
-            max_concurrent: cfg.max_concurrent,
+            max_concurrent: seed,
             progress_interval: cfg.progress_interval.max(Duration::from_millis(1)),
             poll_interval: cfg.poll_interval.max(Duration::from_millis(1)),
         };
@@ -439,6 +484,7 @@ impl Scheduler {
             port,
             global,
             cfg,
+            max_concurrent: AtomicUsize::new(seed),
             running: Mutex::new(HashMap::new()),
             shutdown: CancellationToken::new(),
             wake: Arc::new(Notify::new()),
@@ -517,6 +563,85 @@ impl Scheduler {
             .await?;
         self.global.set_bps(bps);
         Ok(())
+    }
+
+    /// Live concurrency budget (GUI-verify batch-2): persist to the
+    /// settings KV AND apply immediately — wake lets fill_slots
+    /// backfill freed budget. Raising starts queued tasks NOW;
+    /// lowering only stops NEW fills until under budget (running
+    /// tasks are never cancelled).
+    pub async fn set_max_concurrent(&self, n: usize) {
+        let n = n.max(1);
+        self.max_concurrent.store(n, Ordering::Relaxed);
+        if let Err(e) = self
+            .tm
+            .store()
+            .set_setting("max_concurrent", &n.to_string())
+            .await
+        {
+            tracing::warn!(error = %e, "persisting max_concurrent failed");
+        }
+        self.wake.notify_one();
+    }
+
+    pub fn max_concurrent(&self) -> usize {
+        self.max_concurrent.load(Ordering::Relaxed)
+    }
+
+    /// Boot restore (settings KV → live budget). Missing key = the
+    /// config seed; the effective value is persisted once so GET
+    /// /settings always hits.
+    pub async fn restore_max_concurrent(&self) -> usize {
+        let raw = self
+            .tm
+            .store()
+            .get_setting("max_concurrent")
+            .await
+            .ok()
+            .flatten();
+        let n = raw
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(self.cfg.max_concurrent)
+            .max(1);
+        self.max_concurrent.store(n, Ordering::Relaxed);
+        let _ = self
+            .tm
+            .store()
+            .set_setting("max_concurrent", &n.to_string())
+            .await;
+        n
+    }
+
+    /// Per-download segment connection ceiling (GUI-verify batch-2):
+    /// persist + forward to the port. Running tasks keep their plan;
+    /// the next download picks the new ceiling up.
+    pub async fn set_seg_conns(&self, n: u32) {
+        let n = n.clamp(1, 32);
+        self.port.set_seg_conns(n);
+        if let Err(e) = self
+            .tm
+            .store()
+            .set_setting("seg_conns", &n.to_string())
+            .await
+        {
+            tracing::warn!(error = %e, "persisting seg_conns failed");
+        }
+    }
+
+    pub async fn restore_seg_conns(&self) -> u32 {
+        let raw = self
+            .tm
+            .store()
+            .get_setting("seg_conns")
+            .await
+            .ok()
+            .flatten();
+        let n = raw
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(32)
+            .clamp(1, 32);
+        self.port.set_seg_conns(n);
+        n
     }
 
     /// Restore the persisted global limit at boot (settings KV →
@@ -638,8 +763,8 @@ impl Scheduler {
                 return;
             }
             let free = self
-                .cfg
                 .max_concurrent
+                .load(Ordering::Relaxed)
                 .saturating_sub(self.running.lock().unwrap().len());
             if free == 0 {
                 return;

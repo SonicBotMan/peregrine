@@ -876,6 +876,58 @@ async fn resumed_completion_reading_is_clamped_to_total() {
 }
 
 #[tokio::test]
+async fn set_max_concurrent_hot_applies_to_queued_tasks() {
+    // GUI batch-2: the settings center raises the live concurrency
+    // budget — a task queued behind a full budget must START without
+    // waiting for the running task to finish (the old hardcoded
+    // budget could only change with a daemon restart).
+    let dir = tempfile::tempdir().unwrap();
+    let rig = rig(
+        vec![
+            Script::AwaitCancel {
+                partial: 1000,
+                total: Some(100_000),
+            },
+            Script::AwaitCancel {
+                partial: 0,
+                total: Some(100_000),
+            },
+        ],
+        1,
+    );
+    tokio::spawn(rig.sched.clone().run());
+
+    let t1 = add(&rig.sched, dir.path(), "a.bin", Priority::Normal).await;
+    wait_for("first running", || {
+        Box::pin(status_is(&rig.sched, &t1.id, TaskStatus::Running))
+    })
+    .await;
+    let t2 = add(&rig.sched, dir.path(), "b.bin", Priority::Normal).await;
+    wait_for("second queued behind full budget", || {
+        Box::pin(async {
+            matches!(
+                rig.sched.tasks().get(&t2.id).await,
+                Ok(Some(t)) if t.status == TaskStatus::Queued
+            )
+        })
+    })
+    .await;
+
+    rig.sched.set_max_concurrent(2).await;
+    wait_for("second running after hot apply", || {
+        Box::pin(async {
+            matches!(
+                rig.sched.tasks().get(&t2.id).await,
+                Ok(Some(t)) if t.status == TaskStatus::Running
+            )
+        })
+    })
+    .await;
+
+    rig.sched.shutdown().await;
+}
+
+#[tokio::test]
 async fn readd_completed_target_reports_full_progress() {
     // GUI-verify R1 P1 (H1): re-adding a target whose old (url,
     // sink) plan is already complete resurrects that plan onto a

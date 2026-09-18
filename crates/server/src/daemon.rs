@@ -340,6 +340,15 @@ impl Daemon {
         if restored > 0 {
             tracing::info!(bps = restored, "restored global rate limit");
         }
+        // GUI-verify batch-2: the settings center's budgets restore
+        // from the settings KV alongside the global limit.
+        let mc = self.sched.restore_max_concurrent().await;
+        let sc = self.sched.restore_seg_conns().await;
+        tracing::info!(
+            max_concurrent = mc,
+            seg_conns = sc,
+            "restored scheduler budgets"
+        );
         let daemon = Arc::clone(self);
         tokio::spawn(async move {
             let sched = Arc::clone(&daemon.sched);
