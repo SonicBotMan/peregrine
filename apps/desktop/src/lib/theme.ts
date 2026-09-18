@@ -40,3 +40,34 @@ export function applyTheme(t: Theme) {
 export function saveTheme(t: Theme) {
   localStorage.setItem(KEY, t);
 }
+
+// ---- theme MODE (GUI-verify batch-2) ------------------------------
+// 'auto' = follow the OS; 'dark'/'light' = user-pinned. The mode and
+// the pinned color are separate keys so an OS change never clobbers
+// an explicit choice.
+const MODE_KEY = 'peregrine-theme-mode';
+
+export type ThemeMode = 'auto' | 'dark' | 'light';
+
+export function getThemeMode(): ThemeMode {
+  const m = localStorage.getItem(MODE_KEY);
+  if (m === 'auto' || m === 'dark' || m === 'light') return m;
+  // Legacy: a pinned color without a mode means the user toggled
+  // manually — treat it as pinned.
+  return hasPinnedTheme() ? (localStorage.getItem(KEY) as Theme) : 'auto';
+}
+
+export function saveThemeMode(m: ThemeMode) {
+  localStorage.setItem(MODE_KEY, m);
+}
+
+export function systemTheme(): Theme {
+  if (typeof matchMedia !== 'undefined' && matchMedia('(prefers-color-scheme: light)').matches) {
+    return 'light';
+  }
+  return 'dark';
+}
+
+export function clearPinnedTheme() {
+  localStorage.removeItem(KEY);
+}

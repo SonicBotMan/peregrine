@@ -20,6 +20,7 @@
     onCategoryFilter,
     launchAtLogin,
     onToggleAutostart,
+    onSettings,
   }: {
     title: string;
     categoryFilter?: import('./categorize').Category | null;
@@ -34,6 +35,7 @@
     onCategoryFilter: (c: import('./categorize').Category | null) => void;
     launchAtLogin?: boolean;
     onToggleAutostart?: () => void;
+    onSettings?: () => void;
   } = $props();
 </script>
 
@@ -54,6 +56,7 @@
     onCategoryFilter={onCategoryFilter}
     launchAtLogin={launchAtLogin}
     onToggleAutostart={onToggleAutostart}
+    onSettings={onSettings}
   />
   <span class="appname" data-tauri-drag-region>{title}</span>
 </div>

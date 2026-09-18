@@ -135,6 +135,12 @@ export class Daemon {
   setGlobalLimit(bps: number): Promise<Settings> {
     return this.call('PUT', '/settings', { global_limit_bps: bps });
   }
+
+  /** Partial settings update (GUI-verify batch-2): only provided
+   * keys are written — the daemon merges, absent keys stay. */
+  updateSettings(patch: Partial<Settings>): Promise<Settings> {
+    return this.call('PUT', '/settings', patch);
+  }
 }
 
 /** Typed WebSocket stream with exponential-backoff reconnect and a

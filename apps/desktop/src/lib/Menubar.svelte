@@ -20,6 +20,7 @@ import { CATEGORIES, type Category } from './categorize';
     onCategoryFilter = () => {},
     launchAtLogin,
     onToggleAutostart,
+    onSettings,
   }: {
     onAdd: () => void;
     onPauseAll: () => void;
@@ -33,6 +34,7 @@ import { CATEGORIES, type Category } from './categorize';
     onCategoryFilter?: (c: Category | null) => void;
     launchAtLogin?: boolean;
     onToggleAutostart?: () => void;
+    onSettings?: () => void;
   } = $props();
 </script>
 
@@ -53,6 +55,12 @@ import { CATEGORIES, type Category } from './categorize';
           <MB.Item class="mitem" onclick={onToggleAutostart}>
             Launch at login
             <span class="mk" data-on={launchAtLogin}>{launchAtLogin ? '✓' : ''}</span>
+          </MB.Item>
+        {/if}
+        {#if onSettings}
+          <MB.Item class="mitem" onclick={onSettings}>
+            Settings…
+            <span class="mk">⌘,</span>
           </MB.Item>
         {/if}
       </MB.Content>

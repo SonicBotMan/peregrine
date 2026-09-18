@@ -11,6 +11,7 @@
   import { createStore, type TaskStore } from './lib/store.svelte';
   import TaskRow from './lib/TaskRow.svelte';
   import AddDialog from './lib/AddDialog.svelte';
+  import SettingsDialog from './lib/SettingsDialog.svelte';
   import RemoveDialog from './lib/RemoveDialog.svelte';
   import Toolbar from './lib/Toolbar.svelte';
   import StatusBar from './lib/StatusBar.svelte';
@@ -22,9 +23,14 @@
     initialTheme,
     applyTheme,
     saveTheme,
+    clearPinnedTheme,
+    getThemeMode,
+    saveThemeMode,
+    systemTheme,
     hasPinnedTheme,
     onSystemThemeChange,
     type Theme,
+    type ThemeMode,
   } from './lib/theme';
   import type { Conn } from './lib/store.svelte';
   import { notifyCompleted } from './lib/notify';
@@ -53,7 +59,11 @@
     (id) => {
       const t = store.list.find((x) => x.id === id);
       if (t) toast.push(`${fileName(t.url)} complete`);
-      void notifyCompleted(id, () => store.list.find((t) => t.id === id));
+      // Settings center (batch-2): completion notifications are
+      // opt-out; the toast still fires (it's in-app, not the OS).
+      if (localStorage.getItem('peregrine-notify') !== 'off') {
+        void notifyCompleted(id, () => store.list.find((t) => t.id === id));
+      }
     },
   );
 
@@ -68,6 +78,11 @@
   // U3 overlays: command palette (⌘K / /) + shortcuts cheat sheet (?)
   let paletteOpen = $state(false);
   let helpOpen = $state(false);
+  let settingsOpen = $state(false);
+  // Live values for the settings center; the initial-load effect
+  // below seeds them from GET /settings alongside the limit.
+  let maxConcurrent = $state(3);
+  let segConns = $state(32);
   // Plain subscribe (not `$store.conn`): conn is a nested property
   // holding a Svelte store, not a store-valued binding target.
   // WS death flips the badge immediately (resync only runs on
@@ -229,6 +244,42 @@
 
   let defaultDir = $state('~/Downloads'); // daemon settings source of truth
 
+  async function applyDefaultDir(dir: string) {
+    try {
+      await store.updateSettings({ default_dir: dir });
+      defaultDir = dir;
+      toast.push('Default directory updated');
+    } catch (e) {
+      banner(String(e instanceof Error ? e.message : e));
+    }
+  }
+  async function applyMaxConcurrent(n: number) {
+    try {
+      await store.updateSettings({ max_concurrent: n });
+      maxConcurrent = n;
+      toast.push(`Parallel tasks set to ${n}`);
+    } catch (e) {
+      banner(String(e instanceof Error ? e.message : e));
+    }
+  }
+  async function applySegConns(n: number) {
+    try {
+      await store.updateSettings({ seg_conns: n });
+      segConns = n;
+      toast.push(`Connections per download set to ${n}`);
+    } catch (e) {
+      banner(String(e instanceof Error ? e.message : e));
+    }
+  }
+  function setNotify(on: boolean) {
+    localStorage.setItem('peregrine-notify', on ? 'on' : 'off');
+    notifyOn = on;
+  }
+  function setClipWatchSetting(on: boolean) {
+    setClipWatch(on);
+    toast.push(on ? 'Clipboard detection on' : 'Clipboard detection off');
+  }
+
   async function applyGlobalLimit(bps: number | null) {
     try {
       await store.setGlobalLimit(bps ?? 0);
@@ -249,6 +300,8 @@
         // P3): quick-add and the AddDialog compose their save paths
         // against it instead of a hardcoded guess.
         if (st.default_dir) defaultDir = st.default_dir;
+        maxConcurrent = st.max_concurrent;
+        segConns = st.seg_conns;
       })
       .catch(() => {});
   });
@@ -345,15 +398,25 @@
 
   // ---- theme --------------------------------------------------
   let theme = $state<Theme>(initialTheme());
-  function toggleTheme() {
-    theme = theme === 'dark' ? 'light' : 'dark';
+  // Settings-center source of truth: 'auto' follows the OS; explicit
+  // dark/light pins. The status-bar button pins the opposite color.
+  let themeMode = $state<ThemeMode>(getThemeMode());
+  function setThemeMode(m: ThemeMode) {
+    themeMode = m;
+    if (m === 'auto') {
+      clearPinnedTheme();
+      theme = systemTheme();
+    } else {
+      theme = m;
+      saveTheme(m);
+    }
     applyTheme(theme);
-    saveTheme(theme);
   }
-  // GUI-verify batch-2: follow the OS theme while the user has not
-  // pinned one; the first manual toggle pins and detaches.
+  function toggleTheme() {
+    setThemeMode(theme === 'dark' ? 'light' : 'dark');
+  }
   $effect(() => {
-    if (hasPinnedTheme()) return;
+    if (themeMode !== 'auto') return;
     return onSystemThemeChange((t) => {
       theme = t;
       applyTheme(t);
@@ -449,10 +512,21 @@
   let clipHint = $state<{ url: string; label: string } | null>(null);
   let clipSeen = ''; // last offered/added URL — don't re-offer it
   let clipBusy = false; // readText in flight
+  // Settings center: the watch is opt-out (batch-2); reading only on
+  // focus stays — this flag gates the whole flow.
+  const CLIP_WATCH_KEY = 'peregrine-clip-watch';
+  let clipWatchOn = $state(localStorage.getItem(CLIP_WATCH_KEY) !== 'off');
+  const NOTIFY_KEY = 'peregrine-notify';
+  let notifyOn = $state(localStorage.getItem(NOTIFY_KEY) !== 'off');
+  function setClipWatch(on: boolean) {
+    clipWatchOn = on;
+    localStorage.setItem(CLIP_WATCH_KEY, on ? 'on' : 'off');
+    if (!on) clipHint = null;
+  }
   let clipDead = false; // permission denied / unsupported → stop trying
 
   async function checkClipboard() {
-    if (clipDead || clipBusy || clipHint) return;
+    if (clipDead || clipBusy || clipHint || !clipWatchOn) return;
     if (paletteOpen || helpOpen || showAdd) return; // overlays own the screen
     let text: string;
     try {
@@ -765,7 +839,14 @@
   ondragenter={onDragEnter}
   ondragleave={onDragLeave}
   ondrop={onDrop}
-  onkeydown={onKeydown}
+  onkeydown={(e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === ',') {
+      e.preventDefault();
+      settingsOpen = true;
+      return;
+    }
+    onKeydown(e);
+  }}
   onfocus={() => void checkClipboard()}
 />
 
@@ -785,6 +866,7 @@
       if (c) statusFilter = 'all';
     }}
     onShortcuts={() => (helpOpen = true)}
+    onSettings={() => (settingsOpen = true)}
     launchAtLogin={autostartSupported ? launchAtLogin : undefined}
     onToggleAutostart={autostartSupported ? () => void toggleAutostart() : undefined}
   />
@@ -955,6 +1037,29 @@
     }}
     onClose={() => (showAdd = false)}
     {defaultDir}
+  />
+{/if}
+
+{#if settingsOpen}
+  <SettingsDialog
+    onClose={() => (settingsOpen = false)}
+    {defaultDir}
+    {globalLimit}
+    {maxConcurrent}
+    {segConns}
+    {launchAtLogin}
+    themeMode={themeMode}
+    notifyEnabled={notifyOn}
+    clipWatchEnabled={clipWatchOn}
+    isDesktopShell={isDesktopShell}
+    onDefaultDir={(d) => void applyDefaultDir(d)}
+    onGlobalLimit={(bps) => void applyGlobalLimit(bps)}
+    onMaxConcurrent={(n) => void applyMaxConcurrent(n)}
+    onSegConns={(n) => void applySegConns(n)}
+    onLaunchAtLogin={() => void toggleAutostart()}
+    onThemeMode={(m) => setThemeMode(m)}
+    onNotifyToggle={setNotify}
+    onClipWatchToggle={setClipWatchSetting}
   />
 {/if}
 

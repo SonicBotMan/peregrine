@@ -18,7 +18,7 @@
 import { writable } from 'svelte/store';
 import { SvelteMap } from 'svelte/reactivity';
 import type { Daemon, EventStream } from './daemon';
-import type { EngineEvent, Task } from './types';
+import type { EngineEvent, Settings, Task } from './types';
 
 export interface TaskView extends Task {
   /** Derived: EMA bytes/sec (null before two samples, cleared on
@@ -306,6 +306,9 @@ export function createStore(
     },
     async setGlobalLimit(bps: number) {
       return daemon.setGlobalLimit(bps);
+    },
+    async updateSettings(patch: Partial<Settings>) {
+      return daemon.updateSettings(patch);
     },
     async getSettings() {
       return daemon.getSettings();
