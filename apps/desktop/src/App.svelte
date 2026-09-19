@@ -12,6 +12,7 @@
   import TaskRow from './lib/TaskRow.svelte';
   import AddDialog from './lib/AddDialog.svelte';
   import SettingsDialog from './lib/SettingsDialog.svelte';
+  import AboutDialog from './lib/AboutDialog.svelte';
   import RemoveDialog from './lib/RemoveDialog.svelte';
   import Toolbar from './lib/Toolbar.svelte';
   import StatusBar from './lib/StatusBar.svelte';
@@ -81,6 +82,7 @@
   let paletteOpen = $state(false);
   let helpOpen = $state(false);
   let settingsOpen = $state(false);
+  let showAbout = $state(false);
   // Live values for the settings center; the initial-load effect
   // below seeds them from GET /settings alongside the limit.
   let maxConcurrent = $state(3);
@@ -922,7 +924,7 @@
   <Titlebar
     title="Peregrine"
     version="2.0.0-alpha.3"
-    onAbout={() => toast.push('Peregrine 2.0.0-alpha.3 — Rust + Tauri 2, GPL-family build')}
+    onAbout={() => (showAbout = true)}
     onAdd={() => ((addUrl = ''), (showAdd = true))}
     onPauseAll={() => void bulkPause()}
     onResumeAll={() => void bulkResume()}
@@ -1145,6 +1147,10 @@
     onNotifyToggle={setNotify}
     onClipWatchToggle={setClipWatchSetting}
   />
+{/if}
+
+{#if showAbout}
+  <AboutDialog version="2.0.0-alpha.3" onClose={() => (showAbout = false)} />
 {/if}
 
 {#if paletteOpen}
