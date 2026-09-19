@@ -1,5 +1,6 @@
 <script lang="ts">
   import { fileName } from './notify';
+  import { composeSavePath } from './savepath';
   /** Add-download dialog: URL, save path, priority. Validates the
    * same schemes the daemon's auto-router accepts (client-side
    * hint only — the daemon's 422/409 remains the authority).

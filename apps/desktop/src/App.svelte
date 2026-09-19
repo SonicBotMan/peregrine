@@ -18,7 +18,9 @@
   import Titlebar from './lib/Titlebar.svelte';
   import DetailPanel from './lib/DetailPanel.svelte';
   import { TERMINAL, type StatusFilter } from './lib/types';
+  import { SvelteSet } from 'svelte/reactivity';
   import { categorize, type Category } from './lib/categorize';
+  import { composeSavePath } from './lib/savepath';
   import {
     initialTheme,
     applyTheme,
@@ -83,6 +85,7 @@
   // below seeds them from GET /settings alongside the limit.
   let maxConcurrent = $state(3);
   let segConns = $state(32);
+  let userAgentSetting = $state('');
   // Plain subscribe (not `$store.conn`): conn is a nested property
   // holding a Svelte store, not a store-valued binding target.
   // WS death flips the badge immediately (resync only runs on
@@ -154,6 +157,63 @@
 
   function select(id: string) {
     selectedId = selectedId === id ? null : id;
+    selectedIds.delete(id);
+  }
+
+  // Batch multi-select (GUI-verify batch-3): Ctrl/Cmd-click toggles a
+  // row into the batch set without touching the single-select drawer.
+  // Shift-range comes later; ctrl-toggle covers the 80% case.
+  let selectedIds = $state(new SvelteSet<string>());
+  // Ctrl/Cmd-click entry: TaskRow calls this WITHOUT the modifier in
+  // the signature — it reads e.ctrlKey itself and routes here only on
+  // a batch toggle.
+  function toggleBatch(id: string) {
+    selectedId = null;
+    if (selectedIds.has(id)) selectedIds.delete(id);
+    else selectedIds.add(id);
+  }
+  function clearBatch() {
+    selectedIds.clear();
+  }
+  async function bulkPauseSelected() {
+    for (const id of selectedIds) {
+      const t = store.list.find((x) => x.id === id);
+      if (t && isActive(t.status)) void act(store.pause(id));
+    }
+  }
+  async function bulkResumeSelected() {
+    for (const id of selectedIds) {
+      const t = store.list.find((x) => x.id === id);
+      if (t && t.status === 'paused') void act(store.resume(id));
+    }
+  }
+  async function removeSelected() {
+    const ids = [...selectedIds];
+    for (const id of ids) {
+      const t = store.list.find((x) => x.id === id);
+      if (!t) continue;
+      try {
+        await store.remove(id);
+      } catch {
+        /* banner already surfaced by store */
+      }
+    }
+    selectedIds.clear();
+    toast.push(`Removed ${ids.length} task${ids.length === 1 ? '' : 's'}`);
+  }
+  async function removeBatch() {
+    const ids = [...selectedIds];
+    for (const id of ids) {
+      const t = store.list.find((x) => x.id === id);
+      if (!t) continue;
+      try {
+        await store.remove(id);
+      } catch {
+        /* banner already surfaced by store */
+      }
+    }
+    selectedIds.clear();
+    toast.push(`Removed ${ids.length} task${ids.length === 1 ? '' : 's'}`);
   }
 
   const isActive = (s: string) => s === 'queued' || s === 'running' || s === 'paused';
@@ -271,6 +331,15 @@
       banner(String(e instanceof Error ? e.message : e));
     }
   }
+  async function applyUserAgent(ua: string) {
+    try {
+      await store.updateSettings({ user_agent: ua });
+      userAgentSetting = ua;
+      toast.push(ua ? 'User-Agent updated' : 'User-Agent reset to default');
+    } catch (e) {
+      banner(String(e instanceof Error ? e.message : e));
+    }
+  }
   function setNotify(on: boolean) {
     localStorage.setItem('peregrine-notify', on ? 'on' : 'off');
     notifyOn = on;
@@ -302,6 +371,7 @@
         if (st.default_dir) defaultDir = st.default_dir;
         maxConcurrent = st.max_concurrent;
         segConns = st.seg_conns;
+        userAgentSetting = st.user_agent;
       })
       .catch(() => {});
   });
@@ -480,23 +550,21 @@
   async function quickAdd(url: string): Promise<string | null> {
     const u = url.trim();
     if (!URL_OK.test(u)) return 'URL must be http(s), ftp, magnet:, bt: or file:';
-    // Compose the save path here: the daemon takes a FILE path, never
-    // a directory — passing the bare default dir would write every
-    // quick-added task into one file named "Downloads" (GUI-verify
-    // R2 P0-adjacent). Magnet URLs have no filename: refuse with the
-    // dialog hint instead of inventing one.
-    if (u.startsWith('magnet:') || u.startsWith('bt:')) {
+    // Composition rules live in savepath.ts (unit-tested): BT sources
+    // take the dir as sink; http/ftp compose dir + URL filename. A
+    // URL with no derivable filename falls back to the Add dialog.
+    const composed = composeSavePath(defaultDir, u);
+    if (composed.filenameless) {
       return 'magnet links need a save path — use Add URL';
     }
-    const base = fileName(u);
-    const savePath = `${defaultDir.replace(/\/+$/, '')}/${base}`;
+    const savePath = composed.savePath;
     if (store.list.some((t) => t.url === u && !TERMINAL.has(t.status))) {
       toast.push('That URL is already downloading — adding nothing');
       return null;
     }
     try {
       await store.add(u, savePath, 'normal');
-      toast.push(`Downloading ${base}`);
+      toast.push(`Downloading ${fileName(u)}`);
       return null;
     } catch (e) {
       const msg = String(e instanceof Error ? e.message : e);
@@ -970,6 +1038,7 @@
           onLimit={(id, bps) => void act(store.setTaskLimit(id, bps))}
           onSetPriority={(id, p) => void act(store.setPriority(id, p))}
           onSelect={select}
+          onToggleBatch={toggleBatch}
           onOpenFile={(id) => void openFile(id)}
           onOpenSaved={(id) => void openSavedFile(id)}
           onCopyUrl={(id) => void copyUrl(id)}
@@ -1040,6 +1109,16 @@
   />
 {/if}
 
+{#if selectedIds.size >= 2}
+  <div class="batchbar" role="toolbar" aria-label="Batch actions">
+    <span class="bcount">{selectedIds.size} selected</span>
+    <button class="ctl" onclick={() => void bulkPauseSelected()}>Pause</button>
+    <button class="ctl" onclick={() => void bulkResumeSelected()}>Resume</button>
+    <button class="ctl danger" onclick={() => void removeSelected()}>Remove</button>
+    <button class="ctl" onclick={clearBatch}>Clear selection</button>
+  </div>
+{/if}
+
 {#if settingsOpen}
   <SettingsDialog
     onClose={() => (settingsOpen = false)}
@@ -1047,6 +1126,8 @@
     {globalLimit}
     {maxConcurrent}
     {segConns}
+    userAgent={userAgentSetting}
+    onUserAgent={(ua) => void applyUserAgent(ua)}
     {launchAtLogin}
     themeMode={themeMode}
     notifyEnabled={notifyOn}

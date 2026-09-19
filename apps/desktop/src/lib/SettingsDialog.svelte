@@ -24,6 +24,7 @@
     globalLimit,
     maxConcurrent,
     segConns,
+    userAgent,
     launchAtLogin,
     themeMode,
     notifyEnabled,
@@ -34,6 +35,7 @@
     onMaxConcurrent,
     onSegConns,
     onLaunchAtLogin,
+    onUserAgent,
     onThemeMode,
     onNotifyToggle,
     onClipWatchToggle,
@@ -43,6 +45,7 @@
     globalLimit: number | null;
     maxConcurrent: number;
     segConns: number;
+    userAgent: string;
     launchAtLogin: boolean;
     themeMode: 'auto' | 'dark' | 'light';
     notifyEnabled: boolean;
@@ -53,6 +56,7 @@
     onMaxConcurrent: (n: number) => void;
     onSegConns: (n: number) => void;
     onLaunchAtLogin: () => void;
+    onUserAgent: (ua: string) => void;
     onThemeMode: (m: 'auto' | 'dark' | 'light') => void;
     onNotifyToggle: (on: boolean) => void;
     onClipWatchToggle: (on: boolean) => void;
@@ -65,6 +69,12 @@
   // on every prop change instead of trusting the patch order.
   let glimEl: HTMLSelectElement | undefined = $state();
   let segEl: HTMLSelectElement | undefined = $state();
+  // UA text input keeps a local draft; commits on change (blur) —
+  // a per-keystroke PUT would spam the daemon with mid-typing values.
+  let uaDraft = $state(userAgent);
+  $effect(() => {
+    uaDraft = userAgent;
+  });
   $effect(() => {
     if (glimEl) glimEl.value = globalLimit === null ? 'none' : String(globalLimit);
   });
@@ -245,6 +255,15 @@
             </select>
             <p class="scheme-hint">Applies to NEW downloads; running tasks keep their plan.</p>
           </label>
+          <div class="row col">
+            <span class="lab">HTTP User-Agent</span>
+            <input
+              bind:value={uaDraft}
+              placeholder="peregrine/<version>"
+              onchange={() => onUserAgent(uaDraft.trim())}
+            />
+            <p class="scheme-hint">Empty = the peregrine/&lt;version&gt; default. Applies to NEW downloads.</p>
+          </div>
         {/if}
       </div>
     </div>

@@ -79,6 +79,8 @@ export interface Settings {
   max_concurrent: number;
   /** Per-download segment connection ceiling for NEW downloads. */
   seg_conns: number;
+  /** Custom User-Agent for engine HTTP requests (empty = default). */
+  user_agent: string;
   /** Default save DIRECTORY for path-composing clients (quick-add,
    * AddDialog prefill). `~` is daemon-resolved at task-add time. */
   default_dir: string;

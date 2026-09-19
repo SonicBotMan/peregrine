@@ -57,6 +57,7 @@
     onLimit,
     onSetPriority,
     onSelect,
+    onToggleBatch,
     onOpenFile,
     onOpenSaved,
     onCopyUrl,
@@ -73,6 +74,7 @@
     onOpenFile: (id: string) => void;
     onOpenSaved: (id: string) => void;
     onCopyUrl: (id: string) => void;
+    onToggleBatch?: (id: string) => void;
   } = $props();
 
   const name = $derived(task.url.split('/').filter(Boolean).pop() ?? task.url);
@@ -138,7 +140,13 @@
         aria-pressed={selected}
         aria-label={`${name} — ${task.status}`}
         title={task.error ? `${task.error}\n${task.url}` : task.url}
-        onclick={() => onSelect(task.id)}
+        onclick={(e) => {
+          if ((e.ctrlKey || e.metaKey) && onToggleBatch) {
+            onToggleBatch(task.id);
+            return;
+          }
+          onSelect(task.id);
+        }}
         ondblclick={() => task.status === 'completed' && onOpenSaved(task.id)}
         onkeydown={(e) => {
           // Enter selects; Space toggles pause/resume on the FOCUSED
@@ -501,20 +509,23 @@
   }
   .row[data-status='failed'] .status i { background: var(--err); }
 
-  /* hover actions — quiet mini buttons */
+  /* hover actions — quiet mini buttons. Opacity reveals on hover,
+   * but the buttons stay CLICKABLE while invisible: gating them with
+   * pointer-events:none races the reveal transition (a click during
+   * the fade-in frame hit-tests to the row and is swallowed). The
+   * click zone is confined to the small button area at the row's
+   * right edge, where the buttons appear on hover anyway. */
   .acts {
     display: flex;
     gap: 4px;
     justify-content: flex-end;
     opacity: 0;
-    pointer-events: none;
     transition: opacity var(--dur) var(--ease);
   }
   .row:hover .acts,
   .row:focus-within .acts,
   .row.selected .acts {
     opacity: 1;
-    pointer-events: auto;
   }
   .mini {
     width: 22px;
