@@ -201,13 +201,14 @@ impl Service<hyper::Uri> for DaemonConnector {
                 }
                 #[cfg(not(unix))]
                 Endpoint::Unix(_) => {
-                    return Box::pin(async {
-                        Err(std::io::Error::new(
-                            std::io::ErrorKind::Unsupported,
-                            "unix-domain control socket is unavailable on Windows; \
-                             use --socket tcp:PORT",
-                        ))
-                    });
+                    // Inside the outer async block: return the error
+                    // itself, NOT a boxed future (the arm must produce
+                    // the block's Result value).
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Unsupported,
+                        "unix-domain control socket is unavailable on Windows; \
+                         use --socket tcp:PORT",
+                    ));
                 }
                 Endpoint::Tcp(authority) => {
                     let stream = tokio::net::TcpStream::connect(&authority).await?;
