@@ -7,3 +7,7 @@ apps/desktop/src-tauri/target/
 
 # M6-a: package output (built by scripts/package.sh, never committed)
 dist/
+
+# Local dev artifacts: sidecar staging + tauri codegen (GUI-verify rounds)
+apps/desktop/src-tauri/binaries/
+apps/desktop/src-tauri/gen/
