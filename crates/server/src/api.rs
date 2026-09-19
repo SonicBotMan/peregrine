@@ -291,6 +291,10 @@ pub struct SettingsBody {
     /// Custom User-Agent for engine HTTP requests (empty = the
     /// peregrine/<version> default).
     pub user_agent: String,
+    /// Proxy for engine HTTP(S) traffic: `http://[user:pass@]host:port`
+    /// or `socks5://...`. Empty = direct. Applied at engine-client
+    /// build time → takes effect on the next daemon start.
+    pub proxy_url: String,
 }
 
 /// Partial update: apply what's present, leave the rest alone.
@@ -301,6 +305,7 @@ struct PutSettingsBody {
     max_concurrent: Option<u32>,
     seg_conns: Option<u32>,
     user_agent: Option<String>,
+    proxy_url: Option<String>,
 }
 
 /// `PUT /tasks/{id}/limit {"bps": 131072}` — persists and pokes a
@@ -371,12 +376,21 @@ async fn get_settings(State(state): State<AppState>) -> Json<SettingsBody> {
         .ok()
         .flatten()
         .unwrap_or_default();
+    let proxy_url = state
+        .0
+        .store
+        .get_setting("proxy_url")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
     Json(SettingsBody {
         global_limit_bps: state.0.global_budget.bps(),
         default_dir,
         max_concurrent,
         seg_conns,
         user_agent,
+        proxy_url,
     })
 }
 
@@ -405,6 +419,29 @@ async fn put_settings(
             .set_setting("user_agent", &ua)
             .await
             .map_err(|e| map_err(TaskError::Storage(e)))?;
+    }
+    if let Some(p) = b.proxy_url {
+        let p = p.trim().to_string();
+        // Validate NOW so a typo fails the write instead of wedging
+        // the next daemon boot (client build would refuse it).
+        peregrine_engine_http::ProxyConfig::parse(&p).map_err(|e| {
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(ApiErrorBody {
+                    error: "invalid_proxy_url".into(),
+                    message: e.to_string(),
+                }),
+            )
+        })?;
+        state
+            .0
+            .store
+            .set_setting("proxy_url", &p)
+            .await
+            .map_err(|e| map_err(TaskError::Storage(e)))?;
+        // NOTE: deliberately NOT applied live — the pooled client
+        // bakes the connector in at build time. The GUI toasts
+        // "restart to apply".
     }
     if let Some(dir) = b.default_dir {
         let dir = dir.trim().to_string();

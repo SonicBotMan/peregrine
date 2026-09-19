@@ -16,7 +16,7 @@
    * toast, matching the status-bar limit selector's contract.
    */
   import { Select } from 'bits-ui';
-  import { X, SlidersHorizontal, Download, FolderOpen, Bell, Power, ClipboardCheck, Palette, Gauge, Layers, Type } from '@lucide/svelte';
+  import { X, SlidersHorizontal, Download, FolderOpen, Bell, Power, ClipboardCheck, Palette, Gauge, Layers, Type, Globe } from '@lucide/svelte';
 
   let {
     onClose,
@@ -25,6 +25,7 @@
     maxConcurrent,
     segConns,
     userAgent,
+    proxyUrl,
     themeMode,
     notifyEnabled,
     clipWatchEnabled,
@@ -39,6 +40,7 @@
     onNotifyToggle,
     onClipWatchToggle,
     onUserAgent,
+    onProxyUrl,
   }: {
     onClose: () => void;
     defaultDir: string;
@@ -46,6 +48,7 @@
     maxConcurrent: number;
     segConns: number;
     userAgent: string;
+    proxyUrl: string;
     themeMode: 'auto' | 'dark' | 'light';
     notifyEnabled: boolean;
     clipWatchEnabled: boolean;
@@ -60,6 +63,7 @@
     onNotifyToggle: (on: boolean) => void;
     onClipWatchToggle: (on: boolean) => void;
     onUserAgent: (ua: string) => void;
+    onProxyUrl: (p: string) => void;
   } = $props();
 
   let section = $state<'general' | 'download'>('general');
@@ -76,6 +80,13 @@
   let uaDraft = $state(userAgent);
   $effect(() => {
     uaDraft = userAgent;
+  });
+
+  // Proxy draft (roadmap item 2): same commit-on-change pattern; the
+  // toast (in App) explains it lands on daemon restart.
+  let proxyDraft = $state(proxyUrl);
+  $effect(() => {
+    proxyDraft = proxyUrl;
   });
 
   async function browseDir() {
@@ -342,6 +353,19 @@
                 data-ua="1"
                 placeholder="peregrine/<version>"
                 onchange={() => onUserAgent(uaDraft.trim())}
+              />
+            </div>
+            <div class="srow col">
+              <div class="stext">
+                <span class="sname"><Globe size={13} /> Proxy</span>
+                <span class="sdesc">http://[user:pass@]host:port or socks5:// — empty = direct. Applies after restart.</span>
+              </div>
+              <input
+                class="tin"
+                bind:value={proxyDraft}
+                data-proxy="1"
+                placeholder="http://127.0.0.1:7890"
+                onchange={() => onProxyUrl(proxyDraft.trim())}
               />
             </div>
           </div>

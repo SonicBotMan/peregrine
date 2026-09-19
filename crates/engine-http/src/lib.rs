@@ -17,8 +17,10 @@
 
 pub(crate) mod auto;
 pub(crate) mod download;
+pub mod proxy;
 pub mod segment;
 
+pub use proxy::{ProxyConfig, ProxyConnector};
 pub use segment::{SegmentConfig, plan_ranges};
 
 use http_body_util::Full;
@@ -29,7 +31,6 @@ use hyper::header::{
     LOCATION, RANGE,
 };
 use hyper_util::client::legacy::Client;
-use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
 use peregrine_api::engine::{ProbeFuture, ProbeInfo};
 use peregrine_api::{ApiError, ProtocolEngine};
@@ -45,9 +46,59 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 /// the SAME stack and pooling policy instead of dragging a second
 /// HTTP implementation into the tree (workspace rule: one HTTP
 /// stack; the engine IS the HTTP story).
-pub type HttpsClient = Client<hyper_rustls::HttpsConnector<HttpConnector>, Full<Bytes>>;
+pub type HttpsClient = Client<hyper_rustls::HttpsConnector<ProxyConnector>, Full<Bytes>>;
 
-/// Build the standard pooled HTTPS-or-HTTP client.
+/// Settings-center override (roadmap item 2): `proxy_url` from
+/// PUT /settings lands here. Read at client-BUILD time — the daemon
+/// restores it from the settings KV before constructing the engine,
+/// so a change takes effect on the next daemon start.
+static PROXY_OVERRIDE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Install a proxy URL (`http://` or `socks5://`), or clear it with
+/// an empty string. Boot-time only — see PROXY_OVERRIDE.
+pub fn set_proxy_url(raw: &str) {
+    let _ = PROXY_OVERRIDE.set(raw.trim().to_string());
+}
+
+pub fn proxy_url() -> Option<&'static str> {
+    PROXY_OVERRIDE
+        .get()
+        .map(|s| s.as_str())
+        .filter(|s| !s.is_empty())
+}
+
+/// TLS roots: system trust store, one shared config for every client
+/// build. A single unreadable cert is skipped with a warn — one bad
+/// system entry must not take the daemon down.
+fn tls_config() -> Result<rustls::ClientConfig, ApiError> {
+    let mut roots = rustls::RootCertStore::empty();
+    // 0.8 API: CertificateResult carries os_error + individual failures
+    // rather than a plain Result — never abort on a partial read.
+    let loaded = rustls_native_certs::load_native_certs();
+    for e in &loaded.errors {
+        tracing::warn!(error = %e, "reading a system cert source failed");
+    }
+    let mut skipped = 0usize;
+    for cert in &loaded.certs {
+        if let Err(e) = roots.add(cert.clone()) {
+            skipped += 1;
+            tracing::debug!(error = %e, "skipping unreadable system cert");
+        }
+    }
+    tracing::debug!(loaded = roots.len(), skipped, "native TLS roots loaded");
+    if roots.is_empty() && !loaded.errors.is_empty() {
+        return Err(ApiError::Internal(
+            "no usable TLS roots found on this system".into(),
+        ));
+    }
+    Ok(rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth())
+}
+
+/// Build the standard pooled HTTPS-or-HTTP client, honoring the
+/// configured proxy (CONNECT for https targets, absolute-form for
+/// plain http; SOCKS5 tunnels) or direct when none is set.
 ///
 /// Also installs the process-wide rustls CryptoProvider (ring) —
 /// workspace feature unification links BOTH ring and aws-lc-rs
@@ -58,13 +109,12 @@ pub type HttpsClient = Client<hyper_rustls::HttpsConnector<HttpConnector>, Full<
 /// free — no per-entrypoint discipline to forget.
 pub fn https_client() -> Result<HttpsClient, ApiError> {
     let _ = rustls::crypto::ring::default_provider().install_default();
-    let https = hyper_rustls::HttpsConnectorBuilder::new()
-        .with_native_roots()
-        .map_err(|e| ApiError::Internal(format!("load native TLS roots: {e}")))?
-        .https_or_http()
-        .enable_http1()
-        .build();
-    Ok(Client::builder(TokioExecutor::new()).build(https))
+    let proxy = match proxy_url() {
+        None => None,
+        Some(raw) => ProxyConfig::parse(raw)?,
+    };
+    let connector = hyper_rustls::HttpsConnector::from((ProxyConnector::new(proxy), tls_config()?));
+    Ok(Client::builder(TokioExecutor::new()).build(connector))
 }
 
 /// Identify ourselves on every request (probe, single, segments).

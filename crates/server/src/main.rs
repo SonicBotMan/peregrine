@@ -88,13 +88,42 @@ async fn main() -> anyhow::Result<()> {
         .db
         .clone()
         .or_else(|| std::env::var_os("PGRG_DB").map(std::path::PathBuf::from));
+    // Boot-time engine settings MUST be read before Daemon::build: the
+    // pooled HTTP client bakes the proxy connector in at construction.
+    // The store is opened once here for the pre-read, then handed to
+    // the daemon as the same file (SQLite multi-connection is fine).
+    if let Some(db_path) = db.as_deref() {
+        match peregrine_storage::Store::open(db_path) {
+            Ok(pre) => {
+                match pre.get_setting("proxy_url").await {
+                    Ok(Some(p)) if !p.trim().is_empty() => {
+                        if let Err(e) = peregrine_engine_http::ProxyConfig::parse(&p) {
+                            tracing::error!(
+                                error = %e,
+                                "persisted proxy_url is invalid — starting DIRECT; fix it in settings"
+                            );
+                        } else {
+                            peregrine_engine_http::set_proxy_url(&p);
+                            tracing::info!("proxy restored from settings (engine client)");
+                        }
+                    }
+                    _ => {}
+                }
+                if let Ok(Some(ua)) = pre.get_setting("user_agent").await {
+                    peregrine_engine_http::set_user_agent(&ua);
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "pre-read of settings failed; defaults apply"),
+        }
+    }
     let daemon = std::sync::Arc::new(Daemon::build(
         db.as_deref(),
         SchedulerConfig::default(),
         SegmentConfig::default(),
     )?);
-    // Custom User-Agent (GUI-verify batch-3): boot restore from the
-    // settings KV before any task can spawn an engine.
+    // Custom User-Agent (GUI-verify batch-3): re-apply from the live
+    // store (covers the in-memory db used by tests where the pre-read
+    // above had no file to open).
     if let Ok(Some(ua)) = daemon.store.get_setting("user_agent").await {
         peregrine_engine_http::set_user_agent(&ua);
     }

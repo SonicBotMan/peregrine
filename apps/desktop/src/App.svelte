@@ -88,6 +88,7 @@
   let maxConcurrent = $state(3);
   let segConns = $state(32);
   let userAgentSetting = $state('');
+  let proxySetting = $state('');
   // Plain subscribe (not `$store.conn`): conn is a nested property
   // holding a Svelte store, not a store-valued binding target.
   // WS death flips the badge immediately (resync only runs on
@@ -342,6 +343,15 @@
       banner(String(e instanceof Error ? e.message : e));
     }
   }
+  async function applyProxy(p: string) {
+    try {
+      await store.updateSettings({ proxy_url: p });
+      proxySetting = p;
+      toast.push(p ? 'Proxy saved — restart the app to apply' : 'Proxy cleared — restart to go direct');
+    } catch (e) {
+      banner(String(e instanceof Error ? e.message : e));
+    }
+  }
   function setNotify(on: boolean) {
     localStorage.setItem('peregrine-notify', on ? 'on' : 'off');
     notifyOn = on;
@@ -374,6 +384,7 @@
         maxConcurrent = st.max_concurrent;
         segConns = st.seg_conns;
         userAgentSetting = st.user_agent;
+        proxySetting = st.proxy_url ?? '';
       })
       .catch(() => {});
   });
@@ -1133,6 +1144,8 @@
     {segConns}
     userAgent={userAgentSetting}
     onUserAgent={(ua) => void applyUserAgent(ua)}
+    proxyUrl={proxySetting}
+    onProxyUrl={(p) => void applyProxy(p)}
     {launchAtLogin}
     themeMode={themeMode}
     notifyEnabled={notifyOn}

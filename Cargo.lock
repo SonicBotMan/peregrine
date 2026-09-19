@@ -2376,6 +2376,7 @@ name = "peregrine-engine-http"
 version = "2.0.0-alpha.3"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "futures",
  "http-body-util",
  "hyper",
@@ -2384,8 +2385,10 @@ dependencies = [
  "peregrine-api",
  "peregrine-storage",
  "rustls",
+ "rustls-native-certs",
  "tokio",
  "tokio-util",
+ "tower",
  "tracing",
  "url",
 ]

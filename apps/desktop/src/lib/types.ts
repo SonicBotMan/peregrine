@@ -81,6 +81,8 @@ export interface Settings {
   seg_conns: number;
   /** Custom User-Agent for engine HTTP requests (empty = default). */
   user_agent: string;
+  /** Proxy for engine traffic; empty = direct. Applied on daemon restart. */
+  proxy_url: string;
   /** Default save DIRECTORY for path-composing clients (quick-add,
    * AddDialog prefill). `~` is daemon-resolved at task-add time. */
   default_dir: string;
