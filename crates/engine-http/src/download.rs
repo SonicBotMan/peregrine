@@ -145,7 +145,7 @@ pub(crate) async fn fetch_get(
         let mut builder = Request::builder()
             .method(hyper::Method::GET)
             .uri(current.as_str())
-            .header(hyper::header::USER_AGENT, crate::USER_AGENT);
+            .header(hyper::header::USER_AGENT, crate::user_agent());
         if let Some(range) = range {
             builder = builder.header(RANGE, range);
         }

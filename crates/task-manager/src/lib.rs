@@ -257,6 +257,25 @@ impl TaskManager {
         .await
     }
 
+    /// Auto-retry entry (GUI-verify batch-3): a failed task returns
+    /// to the queue when the scheduler's retry policy still has
+    /// attempts left. Same CAS discipline as every transition — a
+    /// user pause/removal between the engine failure and this call
+    /// wins (NotFound/IllegalTransition surface to the caller, which
+    /// then falls back to the terminal fail write).
+    pub async fn retry(&self, id: &TaskId) -> Result<Task, TaskError> {
+        self.transition(
+            id,
+            TaskStatus::Queued,
+            None,
+            EngineEvent::TaskStatusChanged {
+                id: id.clone(),
+                status: TaskStatus::Queued,
+            },
+        )
+        .await
+    }
+
     /// Remove the task row (any status). Worker stop + partial-file
     /// cleanup policy live in the scheduler (M2-b); the manager only
     /// guarantees the row is gone and clients hear about it — with

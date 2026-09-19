@@ -73,6 +73,29 @@ pub fn https_client() -> Result<HttpsClient, ApiError> {
 /// MUST announce itself; same policy as aria2/curl.
 pub const USER_AGENT: &str = concat!("peregrine/", env!("CARGO_PKG_VERSION"));
 
+/// Settings-center override (GUI-verify batch-3): a custom User-Agent
+/// set via PUT /settings lands here; every request header reads the
+/// accessor instead of the const. Empty/unset = the peregrine default.
+static USER_AGENT_OVERRIDE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Install a custom User-Agent (boot restore or a live settings
+/// write). Later calls win; requests in flight keep their header.
+pub fn set_user_agent(ua: &str) {
+    let ua = ua.trim();
+    if ua.is_empty() {
+        let _ = USER_AGENT_OVERRIDE.set(USER_AGENT.to_string());
+    } else {
+        let _ = USER_AGENT_OVERRIDE.set(ua.to_string());
+    }
+}
+
+pub fn user_agent() -> &'static str {
+    USER_AGENT_OVERRIDE
+        .get()
+        .map(|s| s.as_str())
+        .unwrap_or(USER_AGENT)
+}
+
 /// An HTTP(S) engine with a shared, pooled client.
 pub struct HttpEngine {
     client: HttpsClient,
@@ -189,7 +212,7 @@ impl ProtocolEngine for HttpEngine {
                 let req = Request::builder()
                     .method(hyper::Method::HEAD)
                     .uri(current.as_str())
-                    .header(hyper::header::USER_AGENT, crate::USER_AGENT)
+                    .header(hyper::header::USER_AGENT, crate::user_agent())
                     .body(Full::new(Bytes::new()))
                     .map_err(|e| ApiError::Network(format!("build request: {e}")))?;
 
@@ -302,7 +325,7 @@ async fn confirm_range_support(
         .method(hyper::Method::GET)
         .uri(&info.url)
         .header(RANGE, "bytes=0-0")
-        .header(hyper::header::USER_AGENT, crate::USER_AGENT)
+        .header(hyper::header::USER_AGENT, crate::user_agent())
         .body(Full::new(Bytes::new()));
     let req = match req {
         Ok(req) => req,

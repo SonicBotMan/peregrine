@@ -93,6 +93,11 @@ async fn main() -> anyhow::Result<()> {
         SchedulerConfig::default(),
         SegmentConfig::default(),
     )?);
+    // Custom User-Agent (GUI-verify batch-3): boot restore from the
+    // settings KV before any task can spawn an engine.
+    if let Ok(Some(ua)) = daemon.store.get_setting("user_agent").await {
+        peregrine_engine_http::set_user_agent(&ua);
+    }
     let requeued = daemon.start().await?;
     if requeued > 0 {
         tracing::info!(

@@ -583,7 +583,11 @@ async fn engine_failure_maps_to_failed_with_reason() {
         ],
         1,
     );
+    // Batch-3 auto-retry is DISABLED here: this test pins the raw
+    // result-mapping contract (engine Err → Failed with the reason),
+    // not the retry policy (covered by its own tests).
     tokio::spawn(rig.sched.clone().run());
+    rig.sched.set_retry_attempts(0).await;
 
     let ok = add(&rig.sched, dir.path(), "ok", Priority::Normal).await;
     wait_for("first completes", || {
@@ -924,6 +928,71 @@ async fn set_max_concurrent_hot_applies_to_queued_tasks() {
     })
     .await;
 
+    rig.sched.shutdown().await;
+}
+
+#[tokio::test]
+async fn transient_failures_auto_retry_then_complete() {
+    // GUI-verify batch-3: a failed task requeues itself while the
+    // retry budget (default 3) has attempts left. Two transient
+    // failures then an Ok → the row lands COMPLETED, not failed.
+    let dir = tempfile::tempdir().unwrap();
+    let rig = rig(
+        vec![
+            Script::Fail(ApiError::Io("blip 1".into())),
+            Script::Fail(ApiError::Io("blip 2".into())),
+            Script::Ok {
+                bytes: 500,
+                total: Some(1000),
+                frames: 1,
+                frame_pause: None,
+            },
+        ],
+        1,
+    );
+    tokio::spawn(rig.sched.clone().run());
+    let t = add(&rig.sched, dir.path(), "f.bin", Priority::Normal).await;
+    wait_for("completed after two transient failures", || {
+        Box::pin(status_is(&rig.sched, &t.id, TaskStatus::Completed))
+    })
+    .await;
+    let row = rig.sched.tasks().get(&t.id).await.unwrap().unwrap();
+    assert_eq!(
+        row.received_bytes, 500,
+        "final attempt's bytes land (500 = the Ok script)"
+    );
+    rig.sched.shutdown().await;
+}
+
+#[tokio::test]
+async fn retry_budget_exhaustion_lands_terminal_failure() {
+    // Budget default 3: four consecutive immediate failures must
+    // end FAILED (not loop forever), and the in-process attempt
+    // counter must have stopped the task at the budget.
+    let dir = tempfile::tempdir().unwrap();
+    let rig = rig(
+        vec![
+            Script::Fail(ApiError::Io("e1".into())),
+            Script::Fail(ApiError::Io("e2".into())),
+            Script::Fail(ApiError::Io("e3".into())),
+            Script::Fail(ApiError::Io("e4".into())),
+            Script::Fail(ApiError::Io("e5 — beyond budget, must not run".into())),
+        ],
+        1,
+    );
+    tokio::spawn(rig.sched.clone().run());
+    let t = add(&rig.sched, dir.path(), "f.bin", Priority::Normal).await;
+    wait_for("terminal failure after budget exhaustion", || {
+        Box::pin(status_is(&rig.sched, &t.id, TaskStatus::Failed))
+    })
+    .await;
+    // Give an over-budget 5th script (if the budget were broken) time
+    // to run — the row must stay Failed.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        matches!(rig.sched.tasks().get(&t.id).await, Ok(Some(t)) if t.status == TaskStatus::Failed),
+        "budget exhaustion must be terminal"
+    );
     rig.sched.shutdown().await;
 }
 

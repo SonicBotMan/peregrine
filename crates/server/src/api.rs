@@ -288,6 +288,9 @@ pub struct SettingsBody {
     pub max_concurrent: u32,
     /// Per-download segment connection ceiling for NEW downloads.
     pub seg_conns: u32,
+    /// Custom User-Agent for engine HTTP requests (empty = the
+    /// peregrine/<version> default).
+    pub user_agent: String,
 }
 
 /// Partial update: apply what's present, leave the rest alone.
@@ -297,6 +300,7 @@ struct PutSettingsBody {
     default_dir: Option<String>,
     max_concurrent: Option<u32>,
     seg_conns: Option<u32>,
+    user_agent: Option<String>,
 }
 
 /// `PUT /tasks/{id}/limit {"bps": 131072}` — persists and pokes a
@@ -359,11 +363,20 @@ async fn get_settings(State(state): State<AppState>) -> Json<SettingsBody> {
         .flatten()
         .and_then(|s| s.parse::<u32>().ok())
         .unwrap_or(32);
+    let user_agent = state
+        .0
+        .store
+        .get_setting("user_agent")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
     Json(SettingsBody {
         global_limit_bps: state.0.global_budget.bps(),
         default_dir,
         max_concurrent,
         seg_conns,
+        user_agent,
     })
 }
 
@@ -382,6 +395,16 @@ async fn put_settings(
     }
     if let Some(n) = b.seg_conns {
         state.0.sched.set_seg_conns(n).await;
+    }
+    if let Some(ua) = b.user_agent {
+        let ua = ua.trim().to_string();
+        peregrine_engine_http::set_user_agent(&ua);
+        state
+            .0
+            .store
+            .set_setting("user_agent", &ua)
+            .await
+            .map_err(|e| map_err(TaskError::Storage(e)))?;
     }
     if let Some(dir) = b.default_dir {
         let dir = dir.trim().to_string();

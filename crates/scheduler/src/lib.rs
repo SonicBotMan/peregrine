@@ -452,6 +452,15 @@ pub struct Scheduler {
     /// this instead of cfg so the settings center can raise/lower it
     /// while tasks sit queued. cfg.max_concurrent is the boot seed.
     max_concurrent: AtomicUsize,
+    /// Auto-retry budget (GUI-verify batch-3): how many times a
+    /// FAILED task requeues itself before the failure is terminal.
+    /// 0 = auto-retry disabled (one failure is final). Settings
+    /// center writes it via `set_retry_attempts`.
+    max_retries: AtomicU32,
+    /// In-process attempt counters (task id → attempts so far).
+    /// Deliberately not durable: a restart resets the retry budget,
+    /// which is the friendlier semantics for a desktop app anyway.
+    retries: Mutex<HashMap<TaskId, u32>>,
     running: Mutex<HashMap<TaskId, Arc<Running>>>,
     /// Set by shutdown(); the run loop exits and every worker's
     /// token is cancelled.
@@ -485,6 +494,8 @@ impl Scheduler {
             global,
             cfg,
             max_concurrent: AtomicUsize::new(seed),
+            max_retries: AtomicU32::new(3),
+            retries: Mutex::new(HashMap::new()),
             running: Mutex::new(HashMap::new()),
             shutdown: CancellationToken::new(),
             wake: Arc::new(Notify::new()),
@@ -641,6 +652,46 @@ impl Scheduler {
             .unwrap_or(32)
             .clamp(1, 32);
         self.port.set_seg_conns(n);
+        n
+    }
+
+    /// Auto-retry budget (GUI-verify batch-3): how many times a
+    /// failed task requeues itself before the failure is terminal.
+    /// 0 disables auto-retry.
+    pub async fn set_retry_attempts(&self, n: u32) {
+        self.max_retries.store(n, Ordering::Relaxed);
+        if let Err(e) = self
+            .tm
+            .store()
+            .set_setting("retry_attempts", &n.to_string())
+            .await
+        {
+            tracing::warn!(error = %e, "persisting retry_attempts failed");
+        }
+    }
+
+    pub fn retry_attempts(&self) -> u32 {
+        self.max_retries.load(Ordering::Relaxed)
+    }
+
+    /// Boot restore (settings KV → live budget). Missing key = the
+    /// built-in default (3); persisted once so GET /settings always
+    /// reflects the effective value.
+    pub async fn restore_retry_attempts(&self) -> u32 {
+        let raw = self
+            .tm
+            .store()
+            .get_setting("retry_attempts")
+            .await
+            .ok()
+            .flatten();
+        let n = raw.and_then(|s| s.parse::<u32>().ok()).unwrap_or(3);
+        self.max_retries.store(n, Ordering::Relaxed);
+        let _ = self
+            .tm
+            .store()
+            .set_setting("retry_attempts", &n.to_string())
+            .await;
         n
     }
 
@@ -1025,6 +1076,9 @@ impl Worker {
                 // A lost CAS (task paused/removed in the window between
                 // the engine's `Ok` and this write) is a newer truth
                 // winning — not an error.
+                // A completed run clears the retry budget: the next
+                // failure of a re-added target starts from zero.
+                self.sched.retries.lock().unwrap().remove(&self.task.id);
                 match self.sched.tm.complete(&self.task.id).await {
                     Ok(_)
                     | Err(TaskError::NotFound(_))
@@ -1065,12 +1119,62 @@ impl Worker {
             Err(e) => {
                 tracing::warn!(task = %self.task.id, error = %e, "engine failed");
                 Arc::clone(sink).finish_pending().await;
-                match self.sched.tm.fail(&self.task.id, e.to_string()).await {
-                    Ok(_)
-                    | Err(TaskError::NotFound(_))
-                    | Err(TaskError::IllegalTransition { .. }) => Ok(()),
-                    Err(e) => Err(e),
+                // GUI-verify batch-3: bounded auto-retry. A failed
+                // task requeues itself while attempts remain under
+                // the retry budget; the CAS makes a user pause/remove
+                // between the failure and the requeue win. The requeue
+                // path (tm.retry) flips Failed → Queued and the run
+                // loop's wake refills the freed slot — transient
+                // network blips recover without user attention.
+                let attempt = {
+                    let mut r = self.sched.retries.lock().unwrap();
+                    let a = r.entry(self.task.id.clone()).or_insert(0);
+                    *a += 1;
+                    *a
+                };
+                let budget = self
+                    .sched
+                    .max_retries
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                // ORDER MATTERS (found by live debugging): the row is
+                // still RUNNING here — the terminal fail write hasn't
+                // happened. Failed→Queued is the only legal requeue
+                // path, so the failure is LANDED FIRST (making the
+                // error visible), then requeued while attempts remain.
+                let retriable = attempt <= budget;
+                if let Err(fail_err) = self.sched.tm.fail(&self.task.id, e.to_string()).await {
+                    // Fail CAS lost to a user action — the row's newer
+                    // truth stands; nothing left for us to do here.
+                    tracing::warn!(task = %self.task.id, error = %fail_err, "fail CAS lost a race");
+                    return Ok(());
                 }
+                if !retriable {
+                    return Ok(());
+                }
+                match self.sched.tm.retry(&self.task.id).await {
+                    Ok(requeued) => {
+                        tracing::info!(
+                            task = %self.task.id,
+                            attempt,
+                            budget,
+                            requeued_as = %requeued.status,
+                            error = %e,
+                            "auto-retry: failed task requeued"
+                        );
+                        // Wake so fill_slots sees the requeued row
+                        // (TaskStatusChanged alone doesn't wake the
+                        // run loop).
+                        self.sched.wake.notify_one();
+                    }
+                    Err(requeue_err) => {
+                        tracing::warn!(
+                            task = %self.task.id,
+                            error = %requeue_err,
+                            "auto-retry requeue lost a race — failure stays landed"
+                        );
+                    }
+                }
+                Ok(())
             }
         }
     }
