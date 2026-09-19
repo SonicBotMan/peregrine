@@ -1,0 +1,65 @@
+name: Bug report
+description: Something broke — or behaves differently from the docs
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file this. The more precise the
+        reproduction, the faster the fix. Logs beat adjectives.
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Surface
+      description: Where does this happen?
+      options:
+        - Desktop GUI
+        - CLI (pg)
+        - MCP (AI agent)
+        - Daemon / API directly
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      description: "`pg --version`, the About dialog, or the commit you built from"
+      placeholder: e.g. 2.0.0-alpha.3
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal and deterministic beats long and approximate
+      placeholder: |
+        1. peregrined --tcp
+        2. pg add "https://…" -o ~/out.bin
+        3. …
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include daemon stderr / task `error` field if available
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: "`RUST_LOG=debug peregrined --tcp` output, or the GUI sidecar log"
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-flight
+      options:
+        - label: I searched existing issues for a duplicate
+        - label: This happens on the latest build, not an older release

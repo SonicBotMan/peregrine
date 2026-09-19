@@ -114,3 +114,14 @@ jobs:
             apps/desktop/src-tauri/target/release/peregrine-desktop
             apps/desktop/src-tauri/target/release/bundle/**
           if-no-files-found: warn
+
+      - name: Attach bundles to the tag release
+        # Tag pushes (v*) ship desktop bundles with the release — the
+        # GUI shouldn't require a source build to install.
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            apps/desktop/src-tauri/target/release/bundle/deb/*.deb
+            apps/desktop/src-tauri/target/release/bundle/appimage/*.AppImage
+          fail_on_unmatched_files: true

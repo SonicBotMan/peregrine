@@ -2,6 +2,10 @@
 
 > **游隼** — 俯冲时速 389 km/h 的地球最快动物，同时捕猎多个目标。
 
+> **English:** An open-source Linux download manager — an IDM-class multi-segment acceleration
+> kernel with native AI-agent scheduling over MCP. One daemon, three clients: CLI, GUI, and MCP.
+> Docs below are in Chinese; issue reports in either language are welcome.
+
 **Linux 上的开源下载器：IDM 级多段加速内核 + AI Agent 原生调度，CLI / GUI / MCP 三端同构。**
 
 [![ci](https://github.com/SonicBotMan/peregrine/actions/workflows/ci.yml/badge.svg)](https://github.com/SonicBotMan/peregrine/actions/workflows/ci.yml)

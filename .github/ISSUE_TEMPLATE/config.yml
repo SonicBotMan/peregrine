@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question / usage help
+    url: https://github.com/SonicBotMan/peregrine/discussions
+    about: Open a discussion instead of an issue — questions get answered there.

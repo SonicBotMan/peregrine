@@ -5,6 +5,18 @@
 # https://docs.github.com/en/code-security/how-tos/secure-your-supply-chain/manage-your-dependency-security/customizing-dependabot-security-prs
 version: 2
 updates:
+  # Workspace root (engine / scheduler / server / task-manager deps).
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+  # Frontend deps (vite/svelte toolchain + tauri JS APIs).
+  - package-ecosystem: "npm"
+    directory: "/apps/desktop"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
   - package-ecosystem: "cargo"
     directory: "/apps/desktop/src-tauri"
     schedule:
