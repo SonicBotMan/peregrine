@@ -67,6 +67,19 @@ https://github.com/SonicBotMan/peregrine/releases
 tar xf peregrine-*-x86_64-unknown-linux-gnu.tar.gz
 ```
 
+**Windows x86_64**（原生安装包，CI 每次推送构建）：
+
+从 [Releases](https://github.com/SonicBotMan/peregrine/releases) 下载
+`*-x86_64.msix` 之外的安装器之一：
+
+- `peregrine_*_x64_zh-CN.msix` 不适用时选 **MSI**（`peregrine-*.msi`，企业/GPO 友好）
+- 或 **NSIS** 安装器（`peregrine-*-setup.exe`，向导式安装）
+
+安装包含 GUI（`Peregrine.exe`）与随附的 `peregrined.exe` sidecar：
+GUI 启动时自动拉起 daemon（回环 TCP 8420）。CLI（`pg` / `peregrine-mcp`）
+默认连 `tcp:127.0.0.1:8420`，无需配置。要求 Windows 10 1803+（WebView2
+缺失时由安装器自动装）。
+
 **从源码构建**（Rust 1.75+）：
 
 ```bash
@@ -145,9 +158,10 @@ apps/desktop    # Tauri 2 + Svelte 5 薄客户端（零业务逻辑）
 - BT 任务暂不支持单任务限速（全局限速有效）
 - MCP 订阅用 legacy `resources/subscribe`（Claude Desktop 当前方言）
 - TCP 面默认无鉴权且只绑回环（`--auth-token` 可加 Bearer 鉴权，`/health` 探活豁免）；不要把 daemon 暴露到非回环地址
-- 桌面安装包（AppImage/dmg）尚在 CI 打磨中
+- 桌面安装包：Linux（deb/AppImage）✓、Windows（MSI/NSIS）✓ 均由 CI 在推送/打 tag 时构建并附到 Release；macOS（dmg）待做
+- Windows 控制面为回环 TCP（无 UDS）：`pg` 默认 `tcp:127.0.0.1:8420`；多用户场景同样建议 `--auth-token`
 
-下一步：安装包分发（cargo-dist / AppImage）、批量选择操作、BT 运行时限速（librqbit limits）、多语言。
+下一步：macOS（dmg）签名分发、批量选择操作、BT 运行时限速（librqbit limits）、多语言。
 
 ## 参与开发
 

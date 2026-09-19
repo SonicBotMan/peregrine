@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! CLI↔daemon end-to-end over a REAL Unix socket: axum serve loop +
 //! `DaemonClient` (hyper over UDS) + scripted engine port. Pins the
 //! full client contract: typed round-trips, error propagation (the

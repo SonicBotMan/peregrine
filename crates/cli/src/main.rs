@@ -143,8 +143,28 @@ async fn main() -> anyhow::Result<()> {
                 .with_token(args.token.clone())
         }
         _ => {
-            let socket = peregrine_api::transport::socket_path(args.socket.as_deref())?;
-            DaemonClient::new(socket).with_token(args.token.clone())
+            // Windows has no UDS control channel: any non-`tcp:` spec
+            // is rejected, and the default is the loopback TCP port
+            // the GUI sidecar serves (`--tcp 8420`), so `pg` speaks to
+            // a running desktop app out of the box.
+            #[cfg(not(unix))]
+            {
+                if args.socket.is_some() {
+                    anyhow::bail!(
+                        "unix-domain sockets are unavailable on Windows; \
+                         use --socket tcp:PORT"
+                    );
+                }
+                let endpoint = peregrine_api::uds_client::Endpoint::Tcp(
+                    peregrine_api::transport::default_tcp_authority(),
+                );
+                DaemonClient::new(endpoint).with_token(args.token.clone())
+            }
+            #[cfg(unix)]
+            {
+                let socket = peregrine_api::transport::socket_path(args.socket.as_deref())?;
+                DaemonClient::new(socket).with_token(args.token.clone())
+            }
         }
     };
     match args.cmd {

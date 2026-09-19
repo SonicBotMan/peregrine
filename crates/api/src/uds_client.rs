@@ -194,9 +194,20 @@ impl Service<hyper::Uri> for DaemonConnector {
         let endpoint = self.endpoint.clone();
         Box::pin(async move {
             let stream = match endpoint {
+                #[cfg(unix)]
                 Endpoint::Unix(socket) => {
                     let stream = tokio::net::UnixStream::connect(socket).await?;
                     BoxedStream(TokioIo::new(Box::new(stream) as Box<dyn BoxedIo>))
+                }
+                #[cfg(not(unix))]
+                Endpoint::Unix(_) => {
+                    return Box::pin(async {
+                        Err(std::io::Error::new(
+                            std::io::ErrorKind::Unsupported,
+                            "unix-domain control socket is unavailable on Windows; \
+                             use --socket tcp:PORT",
+                        ))
+                    });
                 }
                 Endpoint::Tcp(authority) => {
                     let stream = tokio::net::TcpStream::connect(&authority).await?;

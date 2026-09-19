@@ -71,7 +71,12 @@ impl Args {
                     also_unix: unix.as_deref().map(std::path::PathBuf::from),
                 })
             }
+            #[cfg(unix)]
             (None, Some(p)) => Ok(Listen::Unix(std::path::PathBuf::from(p))),
+            #[cfg(not(unix))]
+            (None, Some(_)) => {
+                anyhow::bail!("unix-domain sockets are unavailable on Windows; use --tcp PORT")
+            }
             (None, None) => Ok(Listen::default()),
         }
     }
@@ -100,6 +105,14 @@ impl Listen {
             })?;
             match kind {
                 "unix" => {
+                    #[cfg(not(unix))]
+                    {
+                        let _ = rest;
+                        anyhow::bail!(
+                            "unix-domain listen specs are unavailable on Windows; use tcp:PORT"
+                        );
+                    }
+                    #[cfg(unix)]
                     if unix.is_some() {
                         anyhow::bail!(
                             "duplicate --listen unix spec (last-wins would silently drop the first)"
@@ -138,11 +151,22 @@ impl Listen {
 }
 
 impl Default for Listen {
+    #[cfg(unix)]
     fn default() -> Self {
         Listen::Unix(
             peregrine_api::transport::socket_path(None)
                 .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/peregrine.sock")),
         )
+    }
+
+    /// Windows: no UDS face — the desktop sidecar's loopback TCP is
+    /// the default surface, matching the pg/peregrine-mcp defaults.
+    #[cfg(not(unix))]
+    fn default() -> Self {
+        Listen::Tcp {
+            port: 8420,
+            also_unix: None,
+        }
     }
 }
 
@@ -183,6 +207,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn parses_tcp_plus_unix() {
         let args =
             Args::try_parse_from(["peregrined", "--listen", "tcp:8420+unix:/tmp/g.sock"]).unwrap();

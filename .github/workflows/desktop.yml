@@ -125,3 +125,75 @@ jobs:
             apps/desktop/src-tauri/target/release/bundle/deb/*.deb
             apps/desktop/src-tauri/target/release/bundle/appimage/*.AppImage
           fail_on_unmatched_files: true
+
+  # Native Windows installer (MSI + NSIS). Same contract as the Linux
+  # job: daemon sidecar built release, staged under its target-triple
+  # name, bundled by tauri. Windows has no UDS control channel — the
+  # daemon serves loopback TCP 8420 (see crates/server/src/uds.rs).
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/desktop/pnpm-lock.yaml
+
+      # rust-toolchain.toml pins 1.96.1; rustup on the runner picks it
+      # up automatically, but an explicit install keeps the log honest.
+      - name: Install pinned toolchain
+        run: rustup toolchain install 1.96.1 --profile minimal
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            apps/desktop/src-tauri
+
+      - name: Install frontend deps
+        run: pnpm install --frozen-lockfile
+        working-directory: apps/desktop
+
+      - name: Build daemon sidecar (release)
+        run: cargo build --locked -p peregrine-server --release
+
+      - name: Stage sidecar binary for tauri externalBin
+        run: |
+          $triple = (rustc -vV | Select-String 'host:').ToString().Split(' ')[1]
+          New-Item -ItemType Directory -Force -Path apps/desktop/src-tauri/binaries | Out-Null
+          Copy-Item target/release/peregrined.exe `
+            "apps/desktop/src-tauri/binaries/peregrined-$triple.exe"
+
+      - name: Build desktop bundle (msi + nsis)
+        run: pnpm exec tauri build --bundles msi,nsis
+        working-directory: apps/desktop
+
+      - name: Frontend type-check + unit tests
+        run: |
+          pnpm exec svelte-check --tsconfig ./tsconfig.app.json
+          pnpm test
+        working-directory: apps/desktop
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: peregrine-desktop-windows
+          path: |
+            apps/desktop/src-tauri/target/release/peregrine-desktop.exe
+            apps/desktop/src-tauri/target/release/bundle/**
+          if-no-files-found: warn
+
+      - name: Attach bundles to the tag release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            apps/desktop/src-tauri/target/release/bundle/msi/*.msi
+            apps/desktop/src-tauri/target/release/bundle/nsis/*.exe
+          fail_on_unmatched_files: true

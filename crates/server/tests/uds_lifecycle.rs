@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! Socket lifecycle integration tests — the security contract of the daemon's
 //! front door, exercised against the real filesystem in temp dirs:
 //! 1. a live daemon's socket is NEVER stolen by a second bind;

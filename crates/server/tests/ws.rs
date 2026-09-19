@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! `/events` WS bridge, tested end-to-end over a real Unix domain
 //! socket: axum serve loop + WS upgrade + tungstenite client. The
 //! events published on the bus while the socket is LIVE must arrive

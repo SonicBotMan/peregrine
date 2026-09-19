@@ -1,10 +1,18 @@
 //! Unix socket binding: live-daemon detection, stale-socket cleanup, and
 //! owner-only permissions. Path resolution lives in `peregrine_api::transport`
 //! (single source).
+//!
+//! Windows has no UDS control channel (tokio gates `UnixListener` to
+//! unix targets): `bind` exists as a stub that fails with a pointed
+//! error, and the daemon's Windows story is loopback TCP only — the
+//! unreachable code paths in `main.rs` stay type-correct against the
+//! stub without a second copy of the listener wiring.
 
 use anyhow::Context;
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
+#[cfg(unix)]
 use tokio::net::UnixListener;
 
 /// How long the liveness probe may wait. A live listener with a full accept
@@ -16,11 +24,17 @@ const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 /// after bind. Shutdown cleanup unlinks the path only if it still points at
 /// this exact file — between our shutdown and cleanup, another daemon may
 /// have probed our dead socket, removed the stale file, and bound its own.
+#[cfg(unix)]
 #[derive(Clone, Copy, Debug)]
 pub struct SocketIdentity {
     dev: u64,
     ino: u64,
 }
+
+/// Windows stub: no UDS, no socket file to identify.
+#[cfg(not(unix))]
+#[derive(Clone, Copy, Debug)]
+pub struct SocketIdentity;
 
 /// Bind a Unix listener, returning it with the socket file's identity for
 /// safe cleanup later.
@@ -29,6 +43,7 @@ pub struct SocketIdentity {
 /// answers `connect()` and we must refuse (never steal another daemon's
 /// socket); a refused connection means the file is stale from an unclean exit
 /// and is removed before rebinding.
+#[cfg(unix)]
 pub async fn bind(path: &Path) -> anyhow::Result<(UnixListener, SocketIdentity)> {
     if path.exists() {
         match tokio::time::timeout(PROBE_TIMEOUT, tokio::net::UnixStream::connect(path)).await {
@@ -77,8 +92,17 @@ pub async fn bind(path: &Path) -> anyhow::Result<(UnixListener, SocketIdentity)>
     ))
 }
 
+/// Windows stub: unreachable in practice (`Listen::Unix` and the
+/// `+unix:PATH` dual-bind are refused at parse time on this platform);
+/// kept type-compatible so the shared listener wiring compiles.
+#[cfg(not(unix))]
+pub async fn bind(_path: &Path) -> anyhow::Result<(tokio::net::TcpListener, SocketIdentity)> {
+    anyhow::bail!("unix-domain sockets are unavailable on Windows; serve via `--listen tcp:PORT`")
+}
+
 /// Security default: the socket is a control channel to the daemon —
 /// owner-only, always (0755-and-umask would expose it to the whole group).
+#[cfg(unix)]
 fn restrict_permissions(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
@@ -87,6 +111,7 @@ fn restrict_permissions(path: &Path) -> std::io::Result<()> {
 /// Only remove the stale candidate if it really is a socket file: `connect`
 /// to an ordinary file also fails with ECONNREFUSED, and a user pointing
 /// `--socket` at one of their files must not get it deleted.
+#[cfg(unix)]
 async fn ensure_socket_file(path: &Path) -> anyhow::Result<()> {
     use std::os::unix::fs::FileTypeExt;
     let meta = tokio::fs::metadata(path)
@@ -110,6 +135,7 @@ async fn ensure_socket_file(path: &Path) -> anyhow::Result<()> {
 /// file is removed), which defeats the (dev, ino) comparison
 /// alone. A live successor answers `connect()`; that is the
 /// authoritative "leave it alone" signal.
+#[cfg(unix)]
 pub async fn remove_socket_file(path: &Path, id: SocketIdentity) {
     match tokio::time::timeout(PROBE_TIMEOUT, tokio::net::UnixStream::connect(path)).await {
         Ok(Ok(_stream)) => {
@@ -137,3 +163,7 @@ pub async fn remove_socket_file(path: &Path, id: SocketIdentity) {
         ),
     }
 }
+
+/// Windows stub: nothing to clean up without a socket file.
+#[cfg(not(unix))]
+pub async fn remove_socket_file(_path: &Path, _id: SocketIdentity) {}
