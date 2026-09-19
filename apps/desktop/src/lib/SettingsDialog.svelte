@@ -348,10 +348,6 @@
         </div>
       {/if}
     </div>
-
-    <button class="close" title="Close" aria-label="Close settings" onclick={onClose}>
-      <X size={14} />
-    </button>
   </div>
 </div>
 
