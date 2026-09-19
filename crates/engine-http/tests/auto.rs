@@ -101,7 +101,12 @@ async fn serve_ranged(req_headers: &HeaderMap, full: &[u8], etag: &str) -> Respo
 /// HEAD-friendly ranged server: full method dispatch (axum `get` also
 /// answers HEAD automatically with the GET handler minus body).
 fn ranged_app() -> Router {
-    Router::new().route("/file", get(ranged_server))
+    Router::new()
+        .route(
+            "/dead",
+            get(|| async { axum::http::StatusCode::INTERNAL_SERVER_ERROR }),
+        )
+        .route("/file", get(ranged_server))
 }
 
 async fn spawn(app: Router) -> SocketAddr {
@@ -158,6 +163,8 @@ async fn fresh_ranged_large_routes_segmented() {
                 sink: sink.clone(),
                 resume: None,
                 expected_total: None,
+                mirrors: Vec::new(),
+                fetch_base: None,
             },
             &cfg(),
             &store,
@@ -217,6 +224,8 @@ async fn small_file_routes_single() {
                 sink: sink.clone(),
                 resume: None,
                 expected_total: None,
+                mirrors: Vec::new(),
+                fetch_base: None,
             },
             &cfg(),
             &store,
@@ -272,6 +281,8 @@ async fn no_ranges_routes_single() {
                 sink,
                 resume: None,
                 expected_total: None,
+                mirrors: Vec::new(),
+                fetch_base: None,
             },
             &cfg(),
             &store,
@@ -322,6 +333,8 @@ async fn probe_failure_falls_back_to_single() {
                 sink: sink.clone(),
                 resume: None,
                 expected_total: None,
+                mirrors: Vec::new(),
+                fetch_base: None,
             },
             &cfg(),
             &store,
@@ -370,6 +383,8 @@ async fn store_row_sticks_to_segmented() {
                 sink: sink.clone(),
                 resume: None,
                 expected_total: None,
+                mirrors: Vec::new(),
+                fetch_base: None,
             },
             &cfg(),
             &store,
@@ -405,6 +420,8 @@ async fn resume_context_routes_single() {
                     validator: Some(peregrine_api::IfRangeValidator::StrongEtag("\"v1\"".into())),
                 }),
                 expected_total: None,
+                mirrors: Vec::new(),
+                fetch_base: None,
             },
             &cfg(),
             &store,
@@ -487,6 +504,8 @@ async fn downgrade_restarts_single_stream() {
                 sink: sink.clone(),
                 resume: None,
                 expected_total: None,
+                mirrors: Vec::new(),
+                fetch_base: None,
             },
             &cfg(),
             &store,
@@ -604,6 +623,8 @@ async fn downgrade_validator_row_keys_original_url() {
                 sink: sink.clone(),
                 resume: None,
                 expected_total: None,
+                mirrors: Vec::new(),
+                fetch_base: None,
             },
             &cfg(),
             &store,
@@ -634,4 +655,53 @@ async fn downgrade_validator_row_keys_original_url() {
 /// A live (never-cancelled) token for tests that don't exercise cancellation.
 fn token() -> CancellationToken {
     CancellationToken::new()
+}
+
+/// Roadmap item 3 — mirror failover: the primary URL returns 500 on
+/// HEAD AND GET; the mirror serves the real file. download_auto must
+/// land on the mirror transparently (fetch_base), while the storage
+/// row keeps the CALLER'S url as its key.
+#[tokio::test]
+async fn dead_primary_fails_over_to_mirror() {
+    let (app, _worker_gets) = counting_app();
+    let addr = spawn(app).await;
+    let sink = temp_sink("failover");
+    let store = Store::open_memory().unwrap();
+
+    // "http://{addr}/file" is healthy; route the dead primary
+    // "/dead" at the same mock (HEAD/GET → 500).
+    let primary = format!("http://{addr}/dead");
+    let mirror = format!("http://{addr}/file");
+
+    let out = engine()
+        .download_auto(
+            peregrine_api::DownloadJob {
+                url: primary.clone(),
+                sink: sink.clone(),
+                resume: None,
+                expected_total: None,
+                mirrors: vec![format!("http://{addr}/also-dead"), mirror.clone()],
+                fetch_base: None,
+            },
+            &cfg(),
+            &store,
+            Arc::new(Recorder::default()),
+            token(),
+            &peregrine_api::budget::BudgetChain::unlimited(),
+        )
+        .await
+        .unwrap();
+
+    assert!(out.completed, "download must succeed via the mirror");
+    assert_eq!(std::fs::read(&sink).unwrap(), body_bytes());
+    // Storage identity stays the caller's URL — a re-add of the
+    // primary URL resumes onto the SAME row (the mirror is just
+    // where bytes came from).
+    let row = store
+        .get_task(&primary, &sink)
+        .await
+        .unwrap()
+        .expect("row keyed by the caller's url");
+    assert!(row.segments.iter().all(|s| s.is_complete()));
+    let _ = _worker_gets;
 }

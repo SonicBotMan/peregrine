@@ -187,6 +187,8 @@ fn job(url: &str, sink: &std::path::Path) -> DownloadJob {
         sink: sink.to_path_buf(),
         resume: None,
         expected_total: None,
+        mirrors: Vec::new(),
+        fetch_base: None,
     }
 }
 

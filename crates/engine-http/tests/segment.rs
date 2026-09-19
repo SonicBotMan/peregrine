@@ -174,6 +174,8 @@ fn job(url: String, sink: PathBuf) -> DownloadJob {
         sink,
         resume: None,
         expected_total: Some(1000),
+        mirrors: Vec::new(),
+        fetch_base: None,
     }
 }
 
@@ -782,6 +784,8 @@ async fn cancel_mid_swarm_keeps_cursors_and_resumes_cleanly() {
             validator: Some(IfRangeValidator::StrongEtag("v1".into())),
         }),
         expected_total: Some(1000),
+        mirrors: Vec::new(),
+        fetch_base: None,
     };
     let err = engine
         .download_segmented(
@@ -825,6 +829,8 @@ async fn cancel_mid_swarm_keeps_cursors_and_resumes_cleanly() {
                     validator: Some(IfRangeValidator::StrongEtag("v1".into())),
                 }),
                 expected_total: Some(1000),
+                mirrors: Vec::new(),
+                fetch_base: None,
             },
             &cfg,
             &store,
@@ -879,6 +885,8 @@ async fn cancelled_swarm_leaves_no_ghost_worker() {
         sink: sink.clone(),
         resume: None,
         expected_total: Some(1000),
+        mirrors: Vec::new(),
+        fetch_base: None,
     };
     let err = engine
         .download_segmented(

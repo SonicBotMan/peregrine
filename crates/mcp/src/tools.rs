@@ -39,14 +39,19 @@ const TOOL_SPECS: &[(&str, &str, SchemaBuilder)] = &[
          save_path must be an ABSOLUTE file path including the filename (relative paths \
          resolve against the daemon's cwd — pass absolute). No dedup: adding the same \
          URL twice creates two independent tasks (clean up with remove_download). \
-         priority is low|normal|high (default normal; case-insensitive).",
+         priority is low|normal|high (default normal; case-insensitive).          mirrors is an OPTIONAL array of backup URLs tried in order when the primary fails.",
         || {
             json!({
                 "type": "object",
                 "properties": {
                     "url": {"type": "string", "description": "source URL"},
                     "save_path": {"type": "string", "description": "absolute destination file path (incl. filename)"},
-                    "priority": {"type": "string", "enum": ["low", "normal", "high"], "default": "normal"}
+                    "priority": {"type": "string", "enum": ["low", "normal", "high"], "default": "normal"},
+                    "mirrors": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional backup URLs, tried in order when the primary fails"
+                    }
                 },
                 "required": ["url", "save_path"]
             })
@@ -183,7 +188,12 @@ pub async fn dispatch(mcp: &PeregrineMcp, name: &str, args: JsonObject) -> CallT
                     ));
                 }
             };
-            let body = json!({"url": a.url, "save_path": a.save_path, "priority": priority});
+            let body = json!({
+                "url": a.url,
+                "save_path": a.save_path,
+                "priority": priority,
+                "mirrors": a.mirrors,
+            });
             call!("POST", "/tasks", Some(&body), Task)
         }
         "list_downloads" => {
@@ -276,6 +286,10 @@ struct AddArgs {
     save_path: String,
     #[serde(default = "default_priority")]
     priority: String,
+    /// Optional mirror URLs, tried in order if the primary fails its
+    /// probe (roadmap item 3).
+    #[serde(default)]
+    mirrors: Vec<String>,
 }
 
 fn default_priority() -> String {

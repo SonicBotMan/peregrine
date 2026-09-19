@@ -14,6 +14,8 @@ async fn main() {
         sink: out.into(),
         resume: None,
         expected_total: None,
+        mirrors: Vec::new(),
+        fetch_base: None,
     };
     let r = e
         .download_merge(

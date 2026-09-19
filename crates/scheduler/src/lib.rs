@@ -461,6 +461,12 @@ pub struct Scheduler {
     /// Deliberately not durable: a restart resets the retry budget,
     /// which is the friendlier semantics for a desktop app anyway.
     retries: Mutex<HashMap<TaskId, u32>>,
+    /// Backoff base for auto-retry, milliseconds (roadmap item 3).
+    /// Attempt n waits min(base * 2^(n-1), 60s) with ±20% jitter.
+    /// Default 2s; tests shrink it — production never does.
+    backoff_base_ms: std::sync::atomic::AtomicU64,
+    /// Mirror URLs per task id (session-scoped — see add_with_mirrors).
+    mirrors: Mutex<HashMap<TaskId, Vec<String>>>,
     running: Mutex<HashMap<TaskId, Arc<Running>>>,
     /// Set by shutdown(); the run loop exits and every worker's
     /// token is cancelled.
@@ -495,7 +501,9 @@ impl Scheduler {
             cfg,
             max_concurrent: AtomicUsize::new(seed),
             max_retries: AtomicU32::new(3),
+            backoff_base_ms: std::sync::atomic::AtomicU64::new(2_000),
             retries: Mutex::new(HashMap::new()),
+            mirrors: Mutex::new(HashMap::new()),
             running: Mutex::new(HashMap::new()),
             shutdown: CancellationToken::new(),
             wake: Arc::new(Notify::new()),
@@ -524,7 +532,27 @@ impl Scheduler {
         save_path: impl Into<String>,
         priority: Priority,
     ) -> Result<Task, TaskError> {
+        self.add_with_mirrors(url, save_path, priority, Vec::new())
+            .await
+    }
+
+    /// add + mirrors (roadmap item 3). Mirrors are session-scoped
+    /// (in-process only): a crash recovery resumes from the PRIMARY
+    /// url — honest degradation, no schema change. Cleared on remove.
+    pub async fn add_with_mirrors(
+        &self,
+        url: impl Into<String>,
+        save_path: impl Into<String>,
+        priority: Priority,
+        mirrors: Vec<String>,
+    ) -> Result<Task, TaskError> {
         let task = self.tm.add(url, save_path, priority).await?;
+        if !mirrors.is_empty() {
+            self.mirrors
+                .lock()
+                .unwrap()
+                .insert(task.id.clone(), mirrors);
+        }
         self.wake.notify_one();
         Ok(task)
     }
@@ -672,6 +700,14 @@ impl Scheduler {
 
     pub fn retry_attempts(&self) -> u32 {
         self.max_retries.load(Ordering::Relaxed)
+    }
+
+    /// Backoff base for auto-retry (milliseconds, 0 = requeue
+    /// immediately). Test rigs shrink it; production keeps the 2 s
+    /// default.
+    pub fn set_backoff_base_ms(&self, ms: u64) {
+        self.backoff_base_ms
+            .store(ms, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Boot restore (settings KV → live budget). Missing key = the
@@ -1037,7 +1073,15 @@ impl Worker {
             }
         }
 
-        let job = resume_job(&self.task).await;
+        let mut job = resume_job(&self.task).await;
+        job.mirrors = self
+            .sched
+            .mirrors
+            .lock()
+            .unwrap()
+            .get(&self.task.id)
+            .cloned()
+            .unwrap_or_default();
         let resume_start = job.resume.as_ref().map(|r| r.start_offset).unwrap_or(0);
 
         // Race B (R2 review): a worker claimed after `shutdown()`
@@ -1078,6 +1122,7 @@ impl Worker {
                 // winning — not an error.
                 // A completed run clears the retry budget: the next
                 // failure of a re-added target starts from zero.
+                self.sched.mirrors.lock().unwrap().remove(&self.task.id);
                 self.sched.retries.lock().unwrap().remove(&self.task.id);
                 match self.sched.tm.complete(&self.task.id).await {
                     Ok(_)
@@ -1151,6 +1196,40 @@ impl Worker {
                 if !retriable {
                     return Ok(());
                 }
+                // Exponential backoff (roadmap item 3): attempt n
+                // waits min(2^(n-1) * 2s, 60s), ±20% jitter. The
+                // failure is ALREADY visible in the row (landed above)
+                // — the delay only postpones the requeue, and this
+                // worker slot is already freed, so a backoff nap costs
+                // no concurrency. Jitter from the sub-second clock
+                // keeps simultaneous failures (a proxy coming back)
+                // from hammering in lockstep.
+                let backoff = {
+                    let base_ms = self
+                        .sched
+                        .backoff_base_ms
+                        .load(std::sync::atomic::Ordering::Relaxed)
+                        as f64;
+                    let cap_ms = 60_000.0f64;
+                    let d = (base_ms * 2.0f64.powi(attempt.saturating_sub(1) as i32)).min(cap_ms);
+                    let nanos = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .subsec_nanos() as f64
+                        / 1e9;
+                    // base is MILLISECONDS — from_millis, not
+                    // from_secs (a from_secs(2000) default would park
+                    // a retrying worker for 33 minutes; found by the
+                    // auto-retry test, which hung on a 41 s nap).
+                    std::time::Duration::from_millis((d * (0.8 + 0.4 * nanos)) as u64)
+                };
+                tracing::info!(
+                    task = %self.task.id,
+                    attempt,
+                    backoff_ms = backoff.as_millis() as u64,
+                    "auto-retry: backing off before requeue"
+                );
+                tokio::time::sleep(backoff).await;
                 match self.sched.tm.retry(&self.task.id).await {
                     Ok(requeued) => {
                         tracing::info!(
@@ -1201,6 +1280,8 @@ async fn resume_job(task: &Task) -> DownloadJob {
         sink,
         resume,
         expected_total: task.total_bytes,
+        mirrors: Vec::new(),
+        fetch_base: None,
     }
 }
 

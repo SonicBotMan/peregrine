@@ -209,7 +209,7 @@ async fn create_task(
     let task = state
         .0
         .sched
-        .add(req.url, req.save_path, req.priority)
+        .add_with_mirrors(req.url, req.save_path, req.priority, req.mirrors)
         .await
         .map_err(map_err)?;
     Ok((StatusCode::CREATED, Json(task)))

@@ -25,7 +25,9 @@
 
 use crate::HttpEngine;
 use peregrine_api::ProtocolEngine;
-use peregrine_api::{ApiError, DownloadJob, DownloadOutcome, ResumeContext, SharedProgressSink};
+use peregrine_api::{
+    ApiError, DownloadJob, DownloadOutcome, ProbeInfo, ResumeContext, SharedProgressSink,
+};
 use peregrine_storage::Store;
 use tokio_util::sync::CancellationToken;
 impl HttpEngine {
@@ -97,17 +99,47 @@ impl HttpEngine {
             return self.download(job, progress, cancel, budget).await;
         }
 
-        // Fresh task: probe and decide.
+        // Fresh task: probe and decide — with mirror failover
+        // (roadmap item 3). A probe failure on the primary tries each
+        // mirror in order; the first that probes clean becomes this
+        // download's fetch source (`job.fetch_base`). Storage keys
+        // stay on the caller's URL, and mid-download source switches
+        // never happen (If-Range validators are source-bound).
         let info = match self.probe(&job.url).await {
             Ok(info) => Some(info),
-            Err(e) => {
-                // A failed probe is not a failed download: plenty of
-                // servers reject HEAD outright (405) but serve GETs
-                // fine. Fall through to single-stream and let IT
-                // produce the user-facing error if the URL is truly
-                // dead — same status, better context.
-                tracing::debug!(error = %e, "probe failed — trying single stream");
-                None
+            Err(primary_err) => {
+                let mut mirror_probe: Option<(String, ProbeInfo)> = None;
+                for m in &job.mirrors {
+                    match self.probe(m).await {
+                        Ok(info) => {
+                            tracing::info!(
+                                mirror = %m,
+                                primary = %job.url,
+                                "primary probe failed — failover to mirror"
+                            );
+                            mirror_probe = Some((m.clone(), info));
+                            break;
+                        }
+                        Err(me) => {
+                            tracing::warn!(mirror = %m, error = %me, "mirror probe failed");
+                        }
+                    }
+                }
+                match mirror_probe {
+                    Some((m, info)) => {
+                        job.fetch_base = Some(info.url.clone());
+                        let _ = m;
+                        Some(info)
+                    }
+                    None => {
+                        // No mirror either: the historical behavior —
+                        // fall through to single-stream and let IT
+                        // produce the user-facing error if the URL is
+                        // truly dead — same status, better context.
+                        tracing::debug!(error = %primary_err, "probe failed (mirrors exhausted) — trying single stream");
+                        None
+                    }
+                }
             }
         };
 
@@ -126,7 +158,14 @@ impl HttpEngine {
             // (B36-R2 P2-3 key drift — fixed by threading the
             // original through the downgrade restart).
             let original = job.url.clone();
-            job.url = info.url.clone();
+            if let Some(base) = job.fetch_base.clone() {
+                // Mirror-selected (roadmap item 3): the row key STAYS
+                // the caller's URL — the mirror is only where bytes
+                // come from. Its probe already resolved redirects.
+                job.fetch_base = Some(base);
+            } else {
+                job.url = info.url.clone();
+            }
             job.expected_total = info.content_length;
             job.resume = Some(ResumeContext::from_probe(&info, 0));
             tracing::debug!(total = ?info.content_length, "routing: segmented");

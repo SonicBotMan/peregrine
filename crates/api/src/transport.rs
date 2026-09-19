@@ -19,6 +19,11 @@ pub struct AddTaskRequest {
     pub save_path: String,
     #[serde(default)]
     pub priority: Priority,
+    /// Mirror URLs, tried in order when the primary probe fails
+    /// (roadmap item 3). Session-scoped: not persisted across a
+    /// daemon restart. Empty/absent = none.
+    #[serde(default)]
+    pub mirrors: Vec<String>,
 }
 
 /// Wire shape of every error the REST API returns: a machine code

@@ -169,6 +169,7 @@ async fn crud_roundtrip_returns_domain_tasks() {
             url: "http://example.test/f.bin".to_string(),
             save_path: save.display().to_string(),
             priority: Priority::High,
+            mirrors: Vec::new(),
         })),
     )
     .await;
@@ -222,6 +223,7 @@ async fn delete_purge_query_flows_to_engine_port() {
             url: "http://example.test/purge.bin".to_string(),
             save_path: save.display().to_string(),
             priority: Priority::Normal,
+            mirrors: Vec::new(),
         })),
     )
     .await;
@@ -245,6 +247,7 @@ async fn delete_purge_query_flows_to_engine_port() {
             url: "http://example.test/purge2.bin".to_string(),
             save_path: save2.display().to_string(),
             priority: Priority::Normal,
+            mirrors: Vec::new(),
         })),
     )
     .await;

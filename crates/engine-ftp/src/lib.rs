@@ -264,6 +264,7 @@ impl ProtocolEngine for FtpEngine {
                 sink,
                 resume,
                 expected_total,
+                ..
             } = job;
 
             let target = parse_url(&url)?;

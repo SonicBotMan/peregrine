@@ -131,6 +131,8 @@ fn job(url: &str, sink: &std::path::Path) -> DownloadJob {
         sink: sink.to_path_buf(),
         resume: None,
         expected_total: None,
+        mirrors: Vec::new(),
+        fetch_base: None,
     }
 }
 
@@ -845,6 +847,8 @@ async fn range_ignoring_server_is_rejected() {
                 sink,
                 resume: None,
                 expected_total: None,
+                mirrors: Vec::new(),
+                fetch_base: None,
             },
             std::sync::Arc::new(NoProgress),
             tokio_util::sync::CancellationToken::new(),
@@ -893,6 +897,8 @@ async fn playlist_redirects_are_followed() {
                 sink,
                 resume: None,
                 expected_total: None,
+                mirrors: Vec::new(),
+                fetch_base: None,
             },
             std::sync::Arc::new(NoProgress),
             tokio_util::sync::CancellationToken::new(),
@@ -953,6 +959,8 @@ async fn encrypted_map_is_decrypted_at_merge() {
                 sink: sink.clone(),
                 resume: None,
                 expected_total: None,
+                mirrors: Vec::new(),
+                fetch_base: None,
             },
             std::sync::Arc::new(NoProgress),
             tokio_util::sync::CancellationToken::new(),

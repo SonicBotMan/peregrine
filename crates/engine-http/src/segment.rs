@@ -355,7 +355,7 @@ async fn run_attempt(
         client: client.clone(),
         max_redirects,
         total,
-        url: url.clone(),
+        fetch_url: job.fetch_url().to_string(),
         sink: sink.clone(),
         task_id,
         validator: if_range,
@@ -575,7 +575,10 @@ struct SegmentCtx {
     /// Whole-resource total (planned cover of all segments) — the
     /// Content-Range total must match THIS, not the segment's own end.
     total: u64,
-    url: String,
+    /// Where workers actually dial (probe-chosen mirror, or the
+    /// caller's URL). Storage keys ride on `task_id`, so the ctx
+    /// never needs the URL itself.
+    fetch_url: String,
     sink: std::path::PathBuf,
     task_id: TaskId,
     validator: Option<String>,
@@ -604,7 +607,7 @@ async fn run_segment(
         client,
         max_redirects,
         total,
-        url,
+        fetch_url,
         ref sink,
         task_id,
         validator,
@@ -615,8 +618,8 @@ async fn run_segment(
     } = ctx;
     let frontier = seg.frontier();
     let want_range = format!("bytes={frontier}-{}", seg.end);
-    let start_url = url::Url::parse(&url)
-        .map_err(|e| fatal(ApiError::Network(format!("invalid url {url:?}: {e}"))))?;
+    let start_url = url::Url::parse(&fetch_url)
+        .map_err(|e| fatal(ApiError::Network(format!("invalid url {fetch_url:?}: {e}"))))?;
 
     let (res, final_url) = fetch_get(
         &client,

@@ -39,6 +39,10 @@ enum Cmd {
         /// Queue priority (low | normal | high).
         #[arg(long, short, default_value = "normal")]
         priority: Priority,
+        /// Mirror URL, tried in order when the primary probe fails.
+        /// Repeatable: -M a -M b.
+        #[arg(long = "mirror", short = 'M')]
+        mirror: Vec<String>,
     },
 
     /// List tasks (optionally filtered by status).
@@ -172,7 +176,12 @@ async fn main() -> anyhow::Result<()> {
             let health = client.ping().await?;
             println!("{}", serde_json::to_string_pretty(&health)?);
         }
-        Cmd::Add { url, out, priority } => {
+        Cmd::Add {
+            url,
+            out,
+            priority,
+            mirror,
+        } => {
             let task: Task = client
                 .request_json(
                     "POST",
@@ -181,6 +190,7 @@ async fn main() -> anyhow::Result<()> {
                         url,
                         save_path: out,
                         priority,
+                        mirrors: mirror,
                     }),
                 )
                 .await?;
@@ -430,7 +440,12 @@ mod tests {
         ])
         .unwrap();
         match args.cmd {
-            Cmd::Add { url, out, priority } => {
+            Cmd::Add {
+                url,
+                out,
+                priority,
+                mirror: _,
+            } => {
                 assert_eq!(url, "http://x/f.bin");
                 assert_eq!(out, "/tmp/f.bin");
                 assert_eq!(priority, Priority::High);

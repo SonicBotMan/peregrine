@@ -100,6 +100,8 @@ fn job_for(torrent: &std::path::Path, out_dir: &std::path::Path) -> DownloadJob 
         sink: out_dir.join("file.bin"),
         resume: None,
         expected_total: None,
+        mirrors: Vec::new(),
+        fetch_base: None,
     }
 }
 

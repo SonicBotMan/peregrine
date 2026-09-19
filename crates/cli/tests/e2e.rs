@@ -104,6 +104,7 @@ async fn add_list_pause_resume_remove_roundtrip() {
                 url: "http://example.test/a.bin".to_string(),
                 save_path: save.display().to_string(),
                 priority: Priority::High,
+                mirrors: Vec::new(),
             }),
         )
         .await
@@ -129,6 +130,7 @@ async fn add_list_pause_resume_remove_roundtrip() {
                 url: "http://example.test/a.bin".to_string(),
                 save_path: save.display().to_string(),
                 priority: Priority::Normal,
+                mirrors: Vec::new(),
             }),
         )
         .await
@@ -205,6 +207,7 @@ async fn remove_with_purge_sends_query_and_deletes_sink() {
                 url: "http://example.test/gone.bin".to_string(),
                 save_path: save.display().to_string(),
                 priority: Priority::Normal,
+                mirrors: Vec::new(),
             }),
         )
         .await
@@ -240,6 +243,7 @@ async fn remove_with_purge_sends_query_and_deletes_sink() {
                 url: "http://example.test/gone.bin".to_string(),
                 save_path: save.display().to_string(),
                 priority: Priority::Normal,
+                mirrors: Vec::new(),
             }),
         )
         .await

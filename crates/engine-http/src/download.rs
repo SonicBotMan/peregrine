@@ -243,18 +243,20 @@ async fn run_download_impl(
     if cancel.is_cancelled() {
         return Err(ApiError::Cancelled);
     }
+    let fetch_url = job.fetch_url().to_string();
     let DownloadJob {
         url,
         sink,
         resume,
         mut expected_total,
+        ..
     } = job;
     // Same session-base declaration as the segmented path (see
     // there): single-stream resumes from `start_offset`.
     progress.on_session_base(resume.as_ref().map(|c| c.start_offset).unwrap_or(0));
 
-    let current =
-        Url::parse(&url).map_err(|e| ApiError::Network(format!("invalid url {url:?}: {e}")))?;
+    let current = Url::parse(&fetch_url)
+        .map_err(|e| ApiError::Network(format!("invalid url {fetch_url:?}: {e}")))?;
 
     // Redirect chase + terminal response (shared with segment workers).
     let range = resume
@@ -325,6 +327,8 @@ async fn run_download_impl(
                     sink: sink.clone(),
                     resume: None,
                     expected_total,
+                    mirrors: Vec::new(),
+                    fetch_base: None,
                 };
                 let healed_out = Box::pin(run_download_impl(
                     client.clone(),

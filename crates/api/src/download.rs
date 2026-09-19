@@ -253,8 +253,19 @@ impl SegmentConfig {
 /// A single-connection download request.
 #[derive(Debug, Clone)]
 pub struct DownloadJob {
-    /// Final URL (already followed redirects during probe).
+    /// Final URL (already followed redirects during probe). ALSO the
+    /// storage row key — mirrors never take over this identity.
     pub url: String,
+    /// Mirror URLs (roadmap item 3): tried in order when the primary
+    /// probe fails. The FIRST mirror that probes clean becomes this
+    /// download's `fetch_base`; mid-download source switching is
+    /// deliberately NOT done — a source swap invalidates If-Range
+    /// validators and gluing across sources corrupts. Empty = none.
+    pub mirrors: Vec<String>,
+    /// Where workers actually fetch from: `None` = `url`, `Some` =
+    /// a mirror chosen at probe time. Never used as a storage key.
+    pub fetch_base: Option<String>,
+
     /// Destination file path. Parent directories must already exist.
     pub sink: PathBuf,
     /// Resume an existing partial file; `None` starts from byte 0.
@@ -267,6 +278,14 @@ pub struct DownloadJob {
     /// Expected total size (from probe). Used for short-read detection
     /// and progress totals; `None` when the server never said.
     pub expected_total: Option<u64>,
+}
+
+impl DownloadJob {
+    /// The URL network requests should target (mirror-aware); storage
+    /// row keys always keep using `url`.
+    pub fn fetch_url(&self) -> &str {
+        self.fetch_base.as_deref().unwrap_or(&self.url)
+    }
 }
 
 /// Terminal state of a completed download session.

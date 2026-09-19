@@ -286,6 +286,9 @@ fn rig_cfg(scripts: Vec<Script>, cfg: SchedulerConfig) -> Rig {
         peregrine_api::budget::RateBudget::unlimited(),
         cfg,
     ));
+    // Roadmap item 3: real backoff would blow the 3s wait_for budget —
+    // shrink the base (50ms keeps the timing path honest without the wait).
+    sched.set_backoff_base_ms(50); // tiny but nonzero: the real sleep path, far inside the 3s budget
     Rig { sched, port, bus }
 }
 
