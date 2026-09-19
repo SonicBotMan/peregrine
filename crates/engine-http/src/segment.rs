@@ -648,6 +648,16 @@ async fn run_segment(
             }));
         }
         206 => {}
+        // 416 while resuming: our range starts past the resource's
+        // end — the remote shrank/changed under the stored cursor.
+        // Same betrayal family as a rejected If-Range: retry from
+        // zero (the restart loop replans), never surface as a bare
+        // HTTP error the auto-router cannot reason about.
+        416 => {
+            return Err(restart(ApiError::Network(format!(
+                "416 for {want_range} at {final_url}: stored range is past the resource end — resource changed"
+            ))));
+        }
         other if status.is_success() => {
             return Err(fatal(ApiError::Network(format!(
                 "unexpected status {other} answering {want_range}: {final_url}"

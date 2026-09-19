@@ -145,6 +145,24 @@ fn engine() -> HttpEngine {
     HttpEngine::new().unwrap()
 }
 
+async fn serve_routed(headers: HeaderMap) -> Response {
+    // HEAD (probe) and the ranged 0-0 confirm both see the OLD
+    // 1000-byte face — the shrink happens right after the probe,
+    // before real segment workers connect. Only the confirm's exact
+    // shape (bytes=0-0) gets the old body; every real worker range
+    // hits the shrunk 500-byte v1 resource (etag kept identical so
+    // the 416 — not an etag guard — carries the report).
+    let range = headers
+        .get(header::RANGE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("bytes="));
+    match range {
+        None => shrunk_head().await,
+        Some("0-0") => serve_closed(&headers, &body_bytes(), "v1").await,
+        Some(_) => serve_closed(&headers, &body_bytes()[..500], "v1").await,
+    }
+}
+
 /// Standard segmented call: 1000-byte body, 250-byte segments → K=4.
 fn std_cfg() -> SegmentConfig {
     SegmentConfig::new(250, 4)
@@ -634,6 +652,64 @@ async fn progress_total_is_always_file_total() {
 /// A live (never-cancelled) token for tests that don't exercise cancellation.
 fn token() -> CancellationToken {
     CancellationToken::new()
+}
+
+/// Long-tail hardening (roadmap item 4): a resource that SHRANK under a
+/// stored plan. HEAD advertised 1000 bytes with etag v1; the GET face
+/// serves a 500-byte v2 body — segments starting at >=500 get a
+/// canonical 416 (bytes */500).
+async fn shrunk_head() -> Response {
+    let mut resp = StatusCode::OK.into_response();
+    let h = resp.headers_mut();
+    h.insert(header::CONTENT_LENGTH, HeaderValue::from_static("1000"));
+    h.insert(header::ETAG, HeaderValue::from_static("\"v1\""));
+    resp
+}
+
+#[tokio::test]
+async fn four16_on_shrunk_resource_surfaces_as_resource_change() {
+    let addr = spawn(vec![("/file", get(serve_routed))]).await;
+    let sink = temp_sink("shrunk");
+    let store = Store::open_memory().unwrap();
+
+    // Probe first (HEAD face), then segment with the stale total —
+    // the production Route-1 shape.
+    let engine = engine();
+    use peregrine_api::ProtocolEngine as _;
+    let probe = engine.probe(&format!("http://{addr}/file")).await.unwrap();
+    assert_eq!(probe.content_length, Some(1000));
+
+    let mut j = job(format!("http://{addr}/file"), sink.clone());
+    j.resume = Some(ResumeContext {
+        start_offset: 0,
+        validator: probe.etag.map(IfRangeValidator::StrongEtag),
+    });
+
+    let err = engine
+        .download_segmented(
+            j,
+            &std_cfg(),
+            &store,
+            Arc::new(Recorder::default()),
+            token(),
+            &peregrine_api::budget::BudgetChain::unlimited(),
+        )
+        .await
+        .unwrap_err();
+
+    // A shrunk resource must surface as a precise resource-change
+    // report — NOT a bare HTTP status. Which guard fires first is a
+    // race with the concurrent workers: the 416 branch (range past
+    // end) or the Content-Range total-mismatch branch. Both carry the
+    // actionable truth; the bare `HTTP status 416` shape means a guard
+    // regressed.
+    let msg = err.to_string();
+    let precise = (msg.contains("416") && msg.contains("resource changed"))
+        || msg.contains("resource total changed mid-download");
+    assert!(
+        precise,
+        "expected a precise resource-change report, got: {msg}"
+    );
 }
 
 // --------------------------------------------------------------------

@@ -237,9 +237,17 @@ impl ProtocolEngine for HttpEngine {
                             ApiError::Network(format!("{status} without Location: {current}"))
                         })?;
                     // `join` resolves relative Locations against `current`.
-                    current = current.join(location).map_err(|e| {
+                    let next = current.join(location).map_err(|e| {
                         ApiError::Network(format!("bad Location {location:?}: {e}"))
                     })?;
+                    // Same downgrade guard as fetch_get: a probe must
+                    // not silently bless a plaintext hop either.
+                    if is_https_downgrade(&current, &next) {
+                        return Err(ApiError::Network(format!(
+                            "refusing https→http downgrade redirect: {current} → {next}"
+                        )));
+                    }
+                    current = next;
                     tracing::debug!(hop, to = %current, "redirect");
                     if hop == max_redirects {
                         return Err(ApiError::TooManyRedirects(current.to_string()));
@@ -401,45 +409,164 @@ fn content_range_total(headers: &hyper::HeaderMap) -> Option<u64> {
     total.parse().ok()
 }
 
-/// Extract `filename` from a `Content-Disposition` header (RFC 6266),
-/// handling the quoted (`filename="a.bin"`) and bare (`filename=a.bin`)
-/// parameter forms. `filename*` (RFC 5987) is not parsed yet — segment
-/// planning does not depend on it.
+/// A redirect from an https origin to an http target is a downgrade:
+/// the request (with its credentials and If-Range validators) would
+/// travel in plaintext. Browsers interstitial-warning this; a
+/// downloader refuses outright.
+pub(crate) fn is_https_downgrade(from: &Url, to: &Url) -> bool {
+    from.scheme() == "https" && to.scheme() == "http"
+}
+
+/// Extract `filename` from a `Content-Disposition` header (RFC 6266).
 ///
-/// The result is sanitized ([`sanitize_filename`]): this is a
-/// server-controlled string, and `ProbeInfo` feeds task naming — path
-/// components and traversal fragments must never survive here.
+/// Long-tail hardening (roadmap item 4): the parameter forms
+/// historically seen in the wild, all of them:
+///
+/// * bare token      — `filename=a.bin`
+/// * quoted-string   — `filename="a.bin"` with `\\"` / `\\\\` escapes
+/// * RFC 5987 ext    — `filename*=UTF-8''%E4%B8%AD.bin` (also
+///   `iso-8859-1` and `us-ascii` charsets); takes priority over the
+///   plain form per RFC 6266 §4.3 when both are present
+///
+/// A server-controlled string feeds task naming, so the result is
+/// sanitized ([`sanitize_filename`]) — path components, traversal
+/// fragments, control characters and Windows reserved names must
+/// never survive.
 fn content_disposition_filename(headers: &hyper::HeaderMap) -> Option<String> {
     let raw = headers.get(CONTENT_DISPOSITION)?.to_str().ok()?;
+    let mut plain: Option<String> = None;
     for param in raw.split(';').skip(1) {
         // A parameter without `=` (e.g. a stray token) must not abort the
         // scan — later params may still carry the filename.
         let Some((key, value)) = param.trim().split_once('=') else {
             continue;
         };
-        if !key.trim().eq_ignore_ascii_case("filename") {
+        let key = key.trim();
+        let value = value.trim();
+        if key.eq_ignore_ascii_case("filename*") {
+            // RFC 5987 ext-value: charset'%lang'%percent-encoded.
+            // First ext param wins; it also outranks every plain
+            // filename= (RFC 6266: "many user agent implementations
+            // [...] this field supersedes").
+            if let Some(decoded) = decode_ext_value(value) {
+                return sanitize_filename(&decoded);
+            }
+            // A malformed ext param falls through to the plain form
+            // rather than poisoning the whole header.
             continue;
         }
-        let value = value.trim();
-        let value = if let Some(stripped) = value.strip_prefix('"') {
-            stripped.strip_suffix('"')?
-        } else {
-            value
-        };
-        return sanitize_filename(value);
+        if key.eq_ignore_ascii_case("filename") && plain.is_none() {
+            let value = unquote_cd_param(value)?;
+            plain = Some(value);
+        }
     }
-    None
+    let plain = plain?;
+    sanitize_filename(&plain)
 }
 
-/// Reduce a server-supplied filename to a bare name: strip any path
-/// components (`/` and `\\`, Windows-style included) and refuse traversal
-/// fragments, empty results, and NUL bytes. `None` = no usable name.
+/// Strip quotes and unescape a quoted-string CD parameter (`\\"` → `"`,
+/// `\\` → `\\`; any other backslash pair keeps the escaped char verbatim —
+/// the lenient reading real servers rely on). Bare tokens pass through.
+fn unquote_cd_param(value: &str) -> Option<String> {
+    if let Some(stripped) = value.strip_prefix('"') {
+        let inner = stripped.strip_suffix('"')?;
+        let mut out = String::with_capacity(inner.len());
+        let mut chars = inner.chars();
+        while let Some(c) = chars.next() {
+            if c == '\\' {
+                match chars.next() {
+                    Some(e @ ('"' | '\\')) => out.push(e),
+                    Some(other) => {
+                        out.push('\\');
+                        out.push(other);
+                    }
+                    None => out.push('\\'),
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        Some(out)
+    } else {
+        Some(value.to_string())
+    }
+}
+
+/// Decode an RFC 5987 `charset'language'percent-encoded` ext-value.
+/// Unknown charsets are refused (spec: "none" means the parameter is
+/// ignored), not mis-decoded.
+fn decode_ext_value(value: &str) -> Option<String> {
+    let (charset, rest) = value.split_once('\'')?;
+    let encoded = rest.split_once('\'')?.1;
+    if encoded.is_empty() {
+        return None;
+    }
+    let bytes: Vec<u8> = percent_decode(encoded)?;
+    match charset.to_ascii_lowercase().as_str() {
+        "utf-8" | "us-ascii" => String::from_utf8(bytes).ok(),
+        "iso-8859-1" => Some(bytes.iter().map(|&b| b as char).collect()),
+        _ => None,
+    }
+}
+
+/// Strict percent-decoding: `%XX` pairs only; a stray `%` poisons the
+/// value (defensive — a decoded filename that was garbage anyway must
+/// not mask a plain `filename=` sibling).
+fn percent_decode(s: &str) -> Option<Vec<u8>> {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hex = bytes.get(i + 1..i + 3)?;
+            let hi = (hex[0] as char).to_digit(16)?;
+            let lo = (hex[1] as char).to_digit(16)?;
+            out.push((hi * 16 + lo) as u8);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    Some(out)
+}
+
+/// Reduce a server-supplied filename to a safe bare name:
+///
+/// * strip every path component (`/` and `\`, Windows-style included)
+/// * refuse traversal fragments, empties and NUL bytes
+/// * strip control characters (a terminal rendering the task list must
+///   never eat an escape sequence from a remote header)
+/// * Windows reserved device names (`CON`, `COM1`…) get a `_` prefix —
+///   the same download landing on Windows must not collide with a
+///   device the OS refuses to create
+/// * trailing dots/spaces stripped (Windows drops them, and a name
+///   ending in `.` breaks extension detection)
+/// * clamp to 200 chars so a 4 KiB junk header cannot wedge the
+///   save-path UI or the filesystem (255-byte component ceiling)
 fn sanitize_filename(name: &str) -> Option<String> {
     let base = name.rsplit(['/', '\\']).next()?.trim();
     if base.is_empty() || base == "." || base == ".." || base.contains('\0') {
         return None;
     }
-    Some(base.to_string())
+    let cleaned: String = base.chars().filter(|c| !c.is_control()).collect();
+    let mut name: String = cleaned.trim_end_matches(['.', ' ']).to_string();
+    if name.is_empty() {
+        return None;
+    }
+    if name.chars().count() > 200 {
+        name = name.chars().take(200).collect();
+    }
+    // Windows reserved names: the DEVICE part before any extension.
+    let stem: String = name.split('.').next().unwrap_or("").to_ascii_uppercase();
+    const RESERVED: [&str; 22] = [
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+    if RESERVED.contains(&stem.as_str()) {
+        name = format!("_{name}");
+    }
+    Some(name)
 }
 
 #[cfg(test)]
@@ -485,6 +612,114 @@ mod tests {
             content_disposition_filename(&hdrs("attachment; filename=\"a;b.bin\"")),
             None
         );
+    }
+
+    #[test]
+    fn filename_ext_param_decodes_utf8_and_wins() {
+        // RFC 5987: UTF-8 percent-encoded ext-value.
+        assert_eq!(
+            content_disposition_filename(&hdrs(
+                "attachment; filename=\"fallback.bin\"; filename*=UTF-8''%E4%B8%AD%E6%96%87.zip"
+            )),
+            Some("中文.zip".into())
+        );
+        // Bare ext param (no plain sibling) also works.
+        assert_eq!(
+            content_disposition_filename(&hdrs("attachment; filename*=utf-8''a%20b.bin")),
+            Some("a b.bin".into())
+        );
+    }
+
+    #[test]
+    fn filename_ext_param_latin1_and_refusals() {
+        // iso-8859-1: bytes map to U+0080..U+00FF verbatim.
+        assert_eq!(
+            content_disposition_filename(&hdrs("attachment; filename*=ISO-8859-1''caf%E9.bin")),
+            Some("café.bin".into())
+        );
+        // Unknown charset → parameter ignored → plain sibling survives.
+        assert_eq!(
+            content_disposition_filename(&hdrs(
+                "attachment; filename=plain.bin; filename*=gbk''%C4%E3.bin"
+            )),
+            Some("plain.bin".into())
+        );
+        // Malformed (stray %) → ignored, plain wins.
+        assert_eq!(
+            content_disposition_filename(&hdrs(
+                "attachment; filename=plain.bin; filename*=UTF-8''%zz"
+            )),
+            Some("plain.bin".into())
+        );
+    }
+
+    #[test]
+    fn filename_quoted_escapes_unescape() {
+        // RFC 6266 quoted-pair, unit level (before sanitizing):
+        // \" is a literal quote; a backslash before anything else
+        // keeps both characters (the lenient reading real servers
+        // rely on).
+        assert_eq!(
+            unquote_cd_param("\"a\\\"b.bin\"").as_deref(),
+            Some("a\"b.bin")
+        );
+        assert_eq!(
+            unquote_cd_param("\"a\\\\b.bin\"").as_deref(),
+            Some("a\\b.bin")
+        );
+        // Through the full header + sanitize, a decoded backslash is a
+        // Windows path separator: basename only.
+        assert_eq!(
+            content_disposition_filename(&hdrs("attachment; filename=\"a\\\\b.bin\"")),
+            Some("b.bin".into())
+        );
+    }
+
+    #[test]
+    fn sanitize_strips_traversal_controls_and_windows_traps() {
+        // Path components (unix + windows) never survive.
+        assert_eq!(
+            content_disposition_filename(&hdrs("attachment; filename=\"../../etc/passwd\"")),
+            Some("passwd".into())
+        );
+        assert_eq!(
+            content_disposition_filename(&hdrs("attachment; filename=\"C:\\\\evil\\\\x.bin\"")),
+            Some("x.bin".into())
+        );
+        // Control characters are stripped; the rest of the name survives.
+        assert_eq!(
+            sanitize_filename("in\u{1b}[31mfect.bin").as_deref(),
+            Some("in[31mfect.bin")
+        );
+        // Windows reserved device name gets a prefix (with or without ext).
+        assert_eq!(sanitize_filename("CON"), Some("_CON".into()));
+        assert_eq!(sanitize_filename("com1.zip"), Some("_com1.zip".into()));
+        assert_eq!(sanitize_filename("NUL.tar.gz"), Some("_NUL.tar.gz".into()));
+        // Trailing dots/spaces dropped (Windows FS trap).
+        assert_eq!(sanitize_filename("a.bin. .."), Some("a.bin".into()));
+        // Empty after sanitizing → None.
+        assert_eq!(sanitize_filename(".. "), None);
+        assert_eq!(sanitize_filename("\u{1}\u{2}"), None);
+        // Length clamp at 200 chars.
+        let long = "x".repeat(500);
+        assert_eq!(
+            sanitize_filename(&long).map(|s| s.chars().count()),
+            Some(200)
+        );
+    }
+
+    #[test]
+    fn downgrade_redirect_detection() {
+        let https = Url::parse("https://a.example/f").unwrap();
+        let http = Url::parse("http://a.example/f").unwrap();
+        let https2 = Url::parse("https://b.example/f").unwrap();
+        assert!(is_https_downgrade(&https, &http));
+        assert!(
+            !is_https_downgrade(&https, &https2),
+            "cross-host https is fine"
+        );
+        assert!(!is_https_downgrade(&http, &http), "http to http is fine");
+        assert!(!is_https_downgrade(&http, &https), "upgrade is fine");
     }
 
     #[test]

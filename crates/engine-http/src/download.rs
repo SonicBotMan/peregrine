@@ -176,6 +176,16 @@ pub(crate) async fn fetch_get(
             let next = current
                 .join(location)
                 .map_err(|e| ApiError::Network(format!("bad Location {location:?}: {e}")))?;
+            // Downgrade guard: https → http redirects hand the
+            // (authenticated, cookie-bearing) request to a plaintext
+            // hop. Browsers warn loudly; a downloader must refuse —
+            // the cost is a failed task, the cost of compliance is a
+            // silent MITM surface.
+            if crate::is_https_downgrade(&current, &next) {
+                return Err(ApiError::Network(format!(
+                    "refusing https→http downgrade redirect: {current} → {next}"
+                )));
+            }
             if next == current {
                 return Err(ApiError::Network(format!(
                     "redirect loop at {current} (Location points at itself)"
