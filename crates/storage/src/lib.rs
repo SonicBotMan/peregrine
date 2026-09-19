@@ -237,6 +237,60 @@ impl Store {
         .context("join replace_segments")?
     }
 
+    /// Dynamic rebalancing (roadmap item 1): split segment `idx` at
+    /// byte `at` — the segment keeps `[start, at]` and a NEW segment
+    /// (next free idx) takes `[at+1, old_end]`. One transaction: the
+    /// cover invariant (sum of lens == total) never breaks on disk,
+    /// so a crash right after a split resumes into a consistent plan.
+    /// Returns the new segment's idx. `at` must be inside the segment
+    /// (`start <= at < end`).
+    pub async fn split_segment(&self, task: TaskId, idx: u32, at: u64) -> Result<u32> {
+        let this = self.0.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut conn = this.lock().unwrap();
+            let tx = conn.transaction().context("opening split tx")?;
+            let old_end: i64 = tx
+                .query_row(
+                    "SELECT end FROM segments WHERE task_id = ?1 AND idx = ?2",
+                    params![task.0, idx as i64],
+                    |r| r.get(0),
+                )
+                .context("split target segment not found")?;
+            let start: i64 = tx
+                .query_row(
+                    "SELECT start FROM segments WHERE task_id = ?1 AND idx = ?2",
+                    params![task.0, idx as i64],
+                    |r| r.get(0),
+                )
+                .context("split target segment not found")?;
+            if at < start as u64 || at >= old_end as u64 {
+                anyhow::bail!("split point {at} outside segment {idx} range [{start}, {old_end}]");
+            }
+            let new_idx: i64 = tx
+                .query_row(
+                    "SELECT COALESCE(MAX(idx) + 1, 0) FROM segments WHERE task_id = ?1",
+                    params![task.0],
+                    |r| r.get(0),
+                )
+                .context("max idx")?;
+            tx.execute(
+                "UPDATE segments SET end = ?3 WHERE task_id = ?1 AND idx = ?2",
+                params![task.0, idx as i64, at as i64],
+            )
+            .context("shrinking split target")?;
+            tx.execute(
+                "INSERT INTO segments (task_id, idx, start, end, done)
+                 VALUES (?1, ?2, ?3, ?4, 0)",
+                params![task.0, new_idx, (at + 1) as i64, old_end],
+            )
+            .context("inserting split tail")?;
+            tx.commit().context("committing split tx")?;
+            Ok(new_idx as u32)
+        })
+        .await
+        .context("join split_segment")?
+    }
+
     /// Advance a segment's confirmed cursor. Monotone (`MAX`): a stale
     /// worker reporting an older frontier cannot move it backwards.
     pub async fn update_cursor(&self, task: TaskId, idx: u32, done: u64) -> Result<()> {
@@ -394,6 +448,54 @@ mod tests {
             end,
             done,
         }
+    }
+
+    #[tokio::test]
+    async fn split_segment_keeps_the_cover_invariant() {
+        // Roadmap item 1: the rebalancer's transaction. After a split
+        // the plan must still partition the resource exactly — a
+        // crash mid-rebalance must never surface a gapped plan.
+        let store = Store::open_memory().unwrap();
+        let id = store
+            .upsert_task(
+                "http://x/f",
+                std::path::Path::new("/tmp/f.bin"),
+                Some(1000),
+                None,
+            )
+            .await
+            .unwrap();
+        store
+            .replace_segments(id, &[(0, 249), (250, 499), (500, 749), (750, 999)])
+            .await
+            .unwrap();
+
+        let new_idx = store.split_segment(id, 2, 624).await.unwrap();
+        let t = store
+            .get_task("http://x/f", std::path::Path::new("/tmp/f.bin"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(t.segments.len(), 5, "tail segment appended");
+        let s2 = &t.segments[2];
+        assert_eq!((s2.start, s2.end), (500, 624), "head keeps [start, at]");
+        let tail = &t.segments[new_idx as usize];
+        assert_eq!(
+            (tail.start, tail.end, tail.done),
+            (625, 749, 0),
+            "tail starts fresh"
+        );
+        let sum: u64 = t.segments.iter().map(|s| s.len()).sum();
+        assert_eq!(sum, 1000, "cover invariant holds across the split");
+
+        // Split point outside the segment → error, plan untouched.
+        assert!(store.split_segment(id, 2, 999).await.is_err());
+        let t2 = store
+            .get_task("http://x/f", std::path::Path::new("/tmp/f.bin"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(t2.segments.len(), 5, "failed split leaves the plan alone");
     }
 
     #[tokio::test]

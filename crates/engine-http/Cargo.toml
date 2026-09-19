@@ -8,6 +8,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+futures = { workspace = true }
 peregrine-api = { workspace = true }
 peregrine-storage = { workspace = true }
 hyper = { workspace = true }
@@ -25,4 +26,4 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 axum = { workspace = true }
-futures = "0.3"
+futures = { workspace = true }

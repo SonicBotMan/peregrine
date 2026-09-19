@@ -30,6 +30,7 @@ url = "2"
 # proxy connector + native root store (already in the tree via
 # hyper-rustls; pinned explicitly so the engine's own code can use them)
 base64 = "0.22"
+futures = "0.3"
 rustls-native-certs = "0.8"
 # https for engines (ring provider: pure-rust build, no system openssl)
 librqbit = { version = "9", default-features = false, features = ["rust-tls", "http-api-client"] }
@@ -46,7 +47,6 @@ hyper = "1"
 bytes = "1"
 hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
 http-body-util = "0.1"
-futures = "0.3"
 tokio-tungstenite = "0.29"
 tungstenite = "0.29"
 tower = { version = "0.5", features = ["util"] }

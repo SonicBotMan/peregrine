@@ -17,6 +17,7 @@
 
 use crate::download::fetch_get;
 use crate::{HttpEngine, HttpsClient};
+use futures::StreamExt;
 use http_body_util::BodyExt;
 use peregrine_api::download::{DownloadJob, DownloadOutcome, IfRangeValidator};
 use peregrine_api::{ApiError, DownloadProgress};
@@ -26,6 +27,70 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::Semaphore;
+
+/// Rebalance cadence (roadmap item 1): how often the driver looks for
+/// an idle slot + a fat remaining range to split. 1s — the probe is
+/// in-memory only, the cost is a scan of ≤32 entries.
+const REBALANCE_TICK: Duration = Duration::from_secs(1);
+
+/// One live segment as the swarm sees it: the (stealable) end, the
+/// worker's in-memory frontier, and whether the tail was ever split.
+#[derive(Default)]
+pub(crate) struct SegLive {
+    /// Current end (starts at the plan's end; shrinks on a split).
+    pub(crate) end: std::sync::atomic::AtomicU64,
+    /// The worker's absolute write frontier (start + done + written),
+    /// updated per chunk — the split point is always ≥ this, so a
+    /// split can never orphan written bytes into the tail.
+    pub(crate) frontier: std::sync::atomic::AtomicU64,
+    /// Set once the tail has been stolen: the worker then treats
+    /// "body continues past my (new) end" as truncation, not betrayal.
+    pub(crate) shrunk: std::sync::atomic::AtomicBool,
+}
+
+/// In-memory view of the live segment set: idx → state. Sits beside
+/// the SQLite rows (the durable truth) so workers read their end
+/// without a database round-trip per chunk. Split writes go to BOTH
+/// — the store transaction first, then the table.
+#[derive(Clone, Default)]
+pub(crate) struct SegTable(Arc<std::sync::Mutex<std::collections::BTreeMap<u32, Arc<SegLive>>>>);
+
+impl SegTable {
+    pub(crate) fn new() -> Self {
+        Self(Arc::new(std::sync::Mutex::new(
+            std::collections::BTreeMap::new(),
+        )))
+    }
+
+    pub(crate) fn insert(&self, idx: u32, live: Arc<SegLive>) {
+        self.0.lock().unwrap().insert(idx, live);
+    }
+
+    pub(crate) fn remove(&self, idx: u32) {
+        self.0.lock().unwrap().remove(&idx);
+    }
+
+    /// (idx, live) pairs with bytes still to fetch, longest remaining
+    /// first — the steal candidate order.
+    pub(crate) fn longest_remaining(&self) -> Vec<(u32, Arc<SegLive>)> {
+        let map = self.0.lock().unwrap();
+        let mut v: Vec<(u32, Arc<SegLive>)> = map
+            .iter()
+            .filter(|(_, l)| {
+                let end = l.end.load(std::sync::atomic::Ordering::Relaxed);
+                let f = l.frontier.load(std::sync::atomic::Ordering::Relaxed);
+                f <= end // frontier past end = worker is finishing up
+            })
+            .map(|(i, l)| (*i, l.clone()))
+            .collect();
+        v.sort_by_key(|(_, l)| {
+            let end = l.end.load(std::sync::atomic::Ordering::Relaxed);
+            let f = l.frontier.load(std::sync::atomic::Ordering::Relaxed);
+            std::cmp::Reverse(end.saturating_sub(f))
+        });
+        v
+    }
+}
 
 /// Segment size floor: never split a file into pieces smaller than
 /// this (PROPOSAL §5.1 stage 2: "段太小(阈值如 5MB)则合并").
@@ -355,6 +420,8 @@ async fn run_attempt(
         client: client.clone(),
         max_redirects,
         total,
+        table: SegTable::new(),
+        min_split_bytes: cfg.min_segment_bytes,
         fetch_url: job.fetch_url().to_string(),
         sink: sink.clone(),
         task_id,
@@ -364,12 +431,19 @@ async fn run_attempt(
         progress: progress.clone(),
         budget: budget.clone(),
     };
+    let table = ctx.table.clone();
     let permits = Arc::new(Semaphore::new(cfg.max_concurrency));
-    let mut handles = Vec::with_capacity(segments.len());
+    let mut handles = futures::stream::FuturesUnordered::new();
     for seg in &segments {
         if seg.is_complete() {
             continue;
         }
+        let live = Arc::new(SegLive {
+            end: std::sync::atomic::AtomicU64::new(seg.end),
+            frontier: std::sync::atomic::AtomicU64::new(seg.start + seg.done),
+            shrunk: std::sync::atomic::AtomicBool::new(false),
+        });
+        table.insert(seg.idx, live.clone());
         let permit = permits
             .clone()
             .acquire_owned()
@@ -379,7 +453,7 @@ async fn run_attempt(
         let seg = *seg;
         handles.push(tokio::spawn(async move {
             let _permit = permit; // held for the worker's lifetime
-            run_segment(ctx, seg).await
+            run_segment(ctx, seg, live).await
         }));
     }
 
@@ -391,41 +465,66 @@ async fn run_attempt(
     let mut last_etag: Option<String> = None;
     let mut first_failure: Option<(ApiError, bool)> = None;
     let mut cancelled = false;
-    let mut remaining = handles.into_iter();
-    for mut h in remaining.by_ref() {
-        // biased: a cancellation ping between worker completions is
-        // honored before awaiting the next worker.
+    let mut cancel_fired = false;
+    // Dynamic rebalancing tick (roadmap item 1): while workers run,
+    // an idle slot steals the fattest remaining tail. `FuturesUnordered`
+    // lets splits JOIN the same pool mid-download — the old fixed
+    // Vec could only drain, never grow.
+    let mut tick = tokio::time::interval(REBALANCE_TICK);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    'swarm: loop {
         let outcome = tokio::select! {
-            biased;
-            _ = cancel.cancelled() => {
-                // Cooperative stop: no ghost workers may outlive the
-                // caller (spawned tasks survive a dropped joiner —
-                // they hold file handles and connections into a file
-                // whose ownership is about to change). Cursors already
-                // flushed are the resume story.
-                tracing::debug!(url = %url, "segmented download cancelled");
-                None
+        biased;
+        _ = cancel.cancelled() => {
+            // Cooperative stop: no ghost workers may outlive the
+            // caller (spawned tasks survive a dropped joiner —
+            // they hold file handles and connections into a file
+            // whose ownership is about to change). Cursors already
+            // flushed are the resume story.
+            tracing::debug!(url = %url, "segmented download cancelled");
+            cancel_fired = true;
+            None
+        }
+        _ = tick.tick() => {
+            // Idle slot + fat remaining tail → split & spawn. Failures
+            // here are best-effort: a refused split just means the
+            // swarm keeps its current shape.
+            if let Err(e) =
+                maybe_split(&ctx, store, &permits, &mut handles, cancel).await
+            {
+                tracing::debug!(error = %e, "rebalance pass skipped");
             }
-            // `&mut h`: on the cancel branch the handle must stay
-            // owned HERE — dropping it would detach the worker
-            // (drop ≠ abort), leaking exactly one ghost (M2-b R2
-            // P0-1).
-            r = &mut h => Some(
-                r.map_err(|e| fatal(ApiError::Network(format!("segment worker panicked: {e}"))))
-            ),
+            continue 'swarm;
+        }
+        r = handles.next() => r.map(
+            |r| r.map_err(|e| fatal(ApiError::Network(format!("segment worker panicked: {e}")))),
+        ),
         };
+        // `None` is ambiguous: cancel fired, or the pool drained
+        // (every worker finished). `cancel_fired` disambiguates —
+        // treating a drained pool as cancellation would fail every
+        // happy download with `Err(Cancelled)`.
         let Some(r) = outcome else {
-            h.abort();
-            let _ = h.await;
-            cancelled = true;
-            break;
+            if cancel_fired {
+                for h in handles.iter_mut() {
+                    h.abort();
+                }
+                while handles.next().await.is_some() {}
+                cancelled = true;
+                break;
+            }
+            break; // pool drained: every segment completed
         };
         match r {
-            Ok(Ok((written, etag))) => {
+            Ok(Ok((written, etag, seg_idx))) => {
                 session_written += written;
                 if etag.is_some() {
                     last_etag = etag;
                 }
+                // The segment is done (or truncated to its stolen
+                // end) — drop it from the live set so it cannot be
+                // picked as a steal victim again.
+                ctx.table.remove(seg_idx);
             }
             Ok(Err((e, restart))) => {
                 tracing::warn!(error = %e, "segment worker failed");
@@ -435,17 +534,13 @@ async fn run_attempt(
             Err(e) => {
                 // Worker panic: abort every unjoined worker before
                 // surfacing — dropping handles detaches them (P1-4).
-                for h in remaining.by_ref() {
+                for h in handles.iter_mut() {
                     h.abort();
-                    let _ = h.await;
                 }
+                while handles.next().await.is_some() {}
                 return Err(e);
             }
         }
-    }
-    for h in remaining {
-        h.abort();
-        let _ = h.await;
     }
     if cancelled {
         return Err(fatal(ApiError::Cancelled));
@@ -527,6 +622,94 @@ async fn run_attempt(
     })
 }
 
+/// The swarm's join-handle pool: split workers join mid-download.
+type HandlePool = futures::stream::FuturesUnordered<
+    tokio::task::JoinHandle<Result<(u64, Option<String>, u32), (ApiError, bool)>>,
+>;
+
+/// Rebalance pass (roadmap item 1, idle-slot flavour): with a free
+/// slot and a segment whose remaining range is ≥ 2× the split floor,
+/// steal its TAIL half. The split point is `(frontier + end) / 2` —
+/// never before the worker's in-memory frontier, so no written byte
+/// falls into the stolen range. The store transaction lands first
+/// (crash → consistent plan), then the in-memory table flips, then
+/// the new worker spawns. Speed-driven stealing (splitting WITHOUT an
+/// idle slot by racing a parked worker) is a deliberate non-goal for
+/// this pass — it needs cooperative worker pauses.
+#[allow(clippy::too_many_arguments)]
+async fn maybe_split(
+    ctx: &SegmentCtx,
+    store: &Store,
+    permits: &Arc<Semaphore>,
+    handles: &mut HandlePool,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<(), ApiError> {
+    // (signature kept by reference; the caller passes the Arcs it owns)
+    if cancel.is_cancelled() {
+        return Ok(());
+    }
+    if permits.available_permits() == 0 {
+        return Ok(()); // no idle slot — nothing to run the stolen tail
+    }
+    let floor = ctx.min_split_bytes;
+    let candidates = ctx.table.longest_remaining();
+    for (idx, live) in candidates {
+        let end = live.end.load(std::sync::atomic::Ordering::Relaxed);
+        let frontier = live.frontier.load(std::sync::atomic::Ordering::Relaxed);
+        let remaining = end.saturating_sub(frontier.saturating_sub(1));
+        if remaining < floor * 2 {
+            break; // sorted longest-first — nothing fatter follows
+        }
+        let at = frontier + remaining / 2;
+        if at >= end {
+            continue;
+        }
+        // Durable first: crash right after the tx leaves a consistent
+        // plan (shrunken head + tail segment at done=0).
+        let new_idx = store
+            .split_segment(ctx.task_id, idx, at)
+            .await
+            .map_err(|e| ApiError::Storage(e.to_string()))?;
+        let old_end = end;
+        live.end.store(at, std::sync::atomic::Ordering::Relaxed);
+        live.shrunk
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let new_live = Arc::new(SegLive {
+            end: std::sync::atomic::AtomicU64::new(old_end),
+            frontier: std::sync::atomic::AtomicU64::new(at + 1),
+            shrunk: std::sync::atomic::AtomicBool::new(false),
+        });
+        ctx.table.insert(new_idx, new_live.clone());
+        let new_seg = SegmentState {
+            idx: new_idx,
+            start: at + 1,
+            end: old_end,
+            done: 0,
+        };
+        let permit = permits
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| ApiError::Network("segment pool closed".into()))?;
+        let worker_ctx = ctx.clone();
+        tracing::info!(
+            segment = idx,
+            new_segment = new_idx,
+            at,
+            "rebalance: idle slot stole the tail of the fattest remaining segment"
+        );
+        handles.push(tokio::spawn(async move {
+            let _permit = permit;
+            run_segment(worker_ctx, new_seg, new_live).await
+        }));
+        // One split per pass — the next tick re-evaluates with fresh
+        // frontiers. Bursts are unnecessary: a 1s cadence outruns any
+        // real network.
+        return Ok(());
+    }
+    Ok(())
+}
+
 /// Fresh plan + persisted rows for a task starting from zero. Also the
 /// wipe path: `set_validator` after `replace_segments` clears a stale
 /// stored etag (the upsert's COALESCE would otherwise keep the
@@ -572,6 +755,11 @@ async fn replan(
 struct SegmentCtx {
     client: HttpsClient,
     max_redirects: usize,
+    /// Live segment table (dynamic rebalancing — see SegTable).
+    table: SegTable,
+    /// Split floor: a split tail is never smaller than this (same
+    /// floor as the planner — a tail worth stealing is worth a dial).
+    min_split_bytes: u64,
     /// Whole-resource total (planned cover of all segments) — the
     /// Content-Range total must match THIS, not the segment's own end.
     total: u64,
@@ -600,7 +788,8 @@ struct SegmentCtx {
 async fn run_segment(
     ctx: SegmentCtx,
     seg: SegmentState,
-) -> Result<(u64, Option<String>), (ApiError, bool)> {
+    live: Arc<SegLive>,
+) -> Result<(u64, Option<String>, u32), (ApiError, bool)> {
     let fatal = |e: ApiError| (e, false);
     let restart = |e: ApiError| (e, true);
     let SegmentCtx {
@@ -615,9 +804,14 @@ async fn run_segment(
         done_counter,
         progress,
         budget,
+        table: _,
+        min_split_bytes: _,
     } = ctx;
-    let frontier = seg.frontier();
-    let want_range = format!("bytes={frontier}-{}", seg.end);
+    // The LIVE end (not the plan snapshot): a rebalance split may
+    // have shrunk this segment before the worker even dialed.
+    let cur_end = live.end.load(std::sync::atomic::Ordering::Relaxed);
+    let frontier = seg.frontier().min(cur_end);
+    let want_range = format!("bytes={frontier}-{cur_end}");
     let start_url = url::Url::parse(&fetch_url)
         .map_err(|e| fatal(ApiError::Network(format!("invalid url {fetch_url:?}: {e}"))))?;
 
@@ -685,7 +879,7 @@ async fn run_segment(
             reason: format!("206 without parseable Content-Range: {final_url}"),
         })
     })?;
-    if start != frontier || end != seg.end {
+    if start != frontier || end != cur_end {
         return Err(fatal(ApiError::Network(format!(
             "server answered 206 for bytes {start}-{end}, asked {want_range} — \
              refusing mismatched bytes"
@@ -752,21 +946,49 @@ async fn run_segment(
 
         if let Some(chunk) = frame.data_ref().filter(|c| !c.is_empty()) {
             let n = chunk.len() as u64;
+            // The LIVE end (roadmap item 1): a rebalance split may
+            // have shrunk this segment mid-transfer.
+            let cur_end = live.end.load(std::sync::atomic::Ordering::Relaxed);
+            let cur_len = cur_end.saturating_sub(seg.start) + 1 - seg.done;
             // Over-serve guard (P1-2, M1-c1 R2): a body longer than
-            // the requested range must NEVER spill into the next
-            // segment's territory — truncate-hard, not silently.
-            // Downgrade-able (P1-3, M1-c2 R2): a 206 that echoes the
-            // right Content-Range but streams past it is the same
-            // "stopped honoring Range" betrayal — retry-segmented
-            // hits the same wall, single-stream succeeds.
-            if written + n > seg.len() {
+            // the range must NEVER spill into the next segment's
+            // territory. Two reasons a body can overrun:
+            //  * our own rebalance stole the tail while this response
+            //    was in flight (`shrunk`) → truncate at cur_len and
+            //    finish — the stolen range belongs to another worker;
+            //  * the server "stopped honoring Range" → betrayal,
+            //    structured downgrade (P1-3) — single-stream succeeds.
+            if written + n > cur_len {
+                let shrunk = live.shrunk.load(std::sync::atomic::Ordering::Relaxed);
+                if shrunk {
+                    let keep = (cur_len - written) as usize;
+                    let keep = keep.min(n as usize);
+                    // write the prefix, then treat as clean EOF below
+                    // (fall through with a trimmed chunk).
+                    let head = &chunk[..keep];
+                    // Delegated to the normal write path by trimming:
+                    // rewrite chunk as head and skip the loop-end EOF
+                    // handling — simplest is to write here and break.
+                    budget.acquire(keep as u64).await;
+                    file.write_all(head).await.map_err(|e| {
+                        fatal(ApiError::Io(format!("write {}: {e}", sink.display())))
+                    })?;
+                    let t = keep as u64;
+                    written += t;
+                    since_progress += t;
+                    live.frontier.store(
+                        seg.start + seg.done + written,
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                    break;
+                }
                 return Err(fatal(ApiError::SingleStreamRequired {
                     reason: format!(
                         "segment {} over-serve: {} bytes served for a {}-byte range — \
                          refusing to spill into the next segment",
                         seg.idx,
                         written + n,
-                        seg.len()
+                        cur_len
                     ),
                 }));
             }
@@ -789,6 +1011,14 @@ async fn run_segment(
                 written += t;
                 since_persist += t;
                 since_progress += t;
+                // Frontier for the rebalancer (roadmap item 1): the
+                // absolute offset one past the last written byte —
+                // split points are derived from it, so it must move
+                // with EVERY write, not just the 1 MiB cursor flushes.
+                live.frontier.store(
+                    seg.start + seg.done + written,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
 
                 if since_persist >= CURSOR_PERSIST_BYTES {
                     store
@@ -821,20 +1051,29 @@ async fn run_segment(
         .await
         .map_err(|e| fatal(ApiError::Io(format!("flush {}: {e}", sink.display()))))?;
 
+    // Final cursor, clamped to the LIVE len (a tail-steal in flight
+    // may leave our written bytes past the shrunken end — those bytes
+    // belong to the new tail worker, which rewrites them idempotently;
+    // the cursor must not exceed the persisted plan's len or the
+    // completion proof would fail). `MAX()` in SQL keeps it monotone.
+    let cur_end = live.end.load(std::sync::atomic::Ordering::Relaxed);
+    let final_done = (seg.done + written).min(cur_end - seg.start + 1);
     // Short-read detection: within one session a segment must fill to
-    // its end — anything less is a truncated transfer.
-    if seg.done + written < seg.len() {
+    // ITS (possibly shrunken) end — anything less is a truncated
+    // transfer. A tail-stolen exit is NOT a short read: the tail has
+    // its own worker.
+    if final_done < cur_end - seg.start + 1
+        && !live.shrunk.load(std::sync::atomic::Ordering::Relaxed)
+    {
         return Err(fatal(ApiError::Network(format!(
             "segment {} short read: {} of {} bytes from {final_url}",
             seg.idx,
-            seg.done + written,
-            seg.len()
+            final_done,
+            cur_end - seg.start + 1
         ))));
     }
-
-    // Final cursor + progress for this segment.
     store
-        .update_cursor(task_id, seg.idx, seg.done + written)
+        .update_cursor(task_id, seg.idx, final_done)
         .await
         .map_err(|e| fatal(ApiError::Storage(e.to_string())))?;
     if since_progress > 0 {
@@ -845,7 +1084,7 @@ async fn run_segment(
         });
     }
 
-    Ok((written, served_etag))
+    Ok((written, served_etag, seg.idx))
 }
 
 #[cfg(test)]

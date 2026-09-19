@@ -968,3 +968,64 @@ async fn completion_keeps_plan_rows_for_telemetry_and_readd() {
     assert_eq!(out2.bytes_written, 0, "nothing left to fetch");
     assert_eq!(std::fs::read(&sink).unwrap(), body_bytes());
 }
+
+/// Roadmap item 1 — dynamic rebalancing: segment 2 (500-749) is slow
+/// (its handler sleeps before answering), the rest are instant. The
+/// fast workers free a slot; the rebalance tick steals the slow
+/// segment's tail; a fresh worker finishes it. The completed plan
+/// must contain MORE segments than the original 4 (proof the split
+/// fired), partition 1000 exactly, and the file must be byte-perfect.
+#[tokio::test]
+async fn rebalance_steals_the_slow_segments_tail() {
+    // 4000 deterministic bytes; 4 segments of 1000 (floor 250).
+    let big = (0..4000u32).map(|i| (i % 251) as u8).collect::<Vec<u8>>();
+    async fn slow_seg(headers: HeaderMap) -> Response {
+        // The slow segment's range start: byte 3000.
+        let start = headers
+            .get(header::RANGE)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("bytes="))
+            .and_then(|v| v.split('-').next())
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0);
+        if start == 3000 {
+            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        }
+        let big = (0..4000u32).map(|i| (i % 251) as u8).collect::<Vec<u8>>();
+        serve_closed(&headers, &big, "v1").await
+    }
+
+    let addr = spawn(vec![("/file", get(slow_seg))]).await;
+    let sink = temp_sink("rebalance");
+    let store = Store::open_memory().unwrap();
+
+    let mut j = job(format!("http://{addr}/file"), sink.clone());
+    j.expected_total = Some(4000);
+    let out = engine()
+        .download_segmented(
+            j,
+            &SegmentConfig::new(250, 4),
+            &store,
+            Arc::new(Recorder::default()),
+            token(),
+            &peregrine_api::budget::BudgetChain::unlimited(),
+        )
+        .await
+        .unwrap();
+
+    assert!(out.completed);
+    let disk = std::fs::read(&sink).unwrap();
+    assert_eq!(disk, big, "rebalanced swarm must stay byte-exact");
+    let kept = store
+        .get_task(&format!("http://{addr}/file"), &sink)
+        .await
+        .unwrap()
+        .expect("plan rows survive");
+    assert!(
+        kept.segments.len() > 4,
+        "the slow segment's tail must have been split off (got {} segments)",
+        kept.segments.len()
+    );
+    let sum: u64 = kept.segments.iter().map(|s| s.len()).sum();
+    assert_eq!(sum, 4000, "cover invariant holds after the split");
+}
