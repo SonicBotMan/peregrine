@@ -5,7 +5,21 @@
    * have a classic desktop path alongside the toolbar + shortcuts.
    */
   import { Menubar as MB } from 'bits-ui';
-import { CATEGORIES, type Category } from './categorize';
+  import {
+    Plus,
+    Command,
+    Pause,
+    Play,
+    Trash2,
+    Eye,
+    SunMoon,
+    Keyboard,
+    Settings,
+    Power,
+    Check,
+    Info,
+  } from '@lucide/svelte';
+  import { CATEGORIES, type Category } from './categorize';
 
   let {
     onAdd,
@@ -21,6 +35,8 @@ import { CATEGORIES, type Category } from './categorize';
     launchAtLogin,
     onToggleAutostart,
     onSettings,
+    version,
+    onAbout,
   }: {
     onAdd: () => void;
     onPauseAll: () => void;
@@ -35,6 +51,8 @@ import { CATEGORIES, type Category } from './categorize';
     launchAtLogin?: boolean;
     onToggleAutostart?: () => void;
     onSettings?: () => void;
+    version?: string;
+    onAbout?: () => void;
   } = $props();
 </script>
 
@@ -44,21 +62,30 @@ import { CATEGORIES, type Category } from './categorize';
       <MB.Trigger class="mtrigger">File</MB.Trigger>
       <MB.Content class="mcontent" align="start" sideOffset={4}>
         <MB.Item class="mitem" onclick={onAdd}>
+          <span class="mic"><Plus size={13} /></span>
           Add URL…
           <span class="mk">⌘N</span>
         </MB.Item>
         <MB.Item class="mitem" onclick={onPalette}>
+          <span class="mic"><Command size={13} /></span>
           Command Palette
           <span class="mk">⌘K</span>
         </MB.Item>
+        <MB.Separator class="msep" />
         {#if onToggleAutostart}
-          <MB.Item class="mitem" onclick={onToggleAutostart}>
+          <MB.CheckboxItem
+            class="mitem"
+            checked={launchAtLogin ?? false}
+            onCheckedChange={() => onToggleAutostart?.()}
+          >
+            <span class="mic"><Power size={13} /></span>
             Launch at login
-            <span class="mk" data-on={launchAtLogin}>{launchAtLogin ? '✓' : ''}</span>
-          </MB.Item>
+            <span class="mk">✓</span>
+          </MB.CheckboxItem>
         {/if}
         {#if onSettings}
           <MB.Item class="mitem" onclick={onSettings}>
+            <span class="mic"><Settings size={13} /></span>
             Settings…
             <span class="mk">⌘,</span>
           </MB.Item>
@@ -70,15 +97,18 @@ import { CATEGORIES, type Category } from './categorize';
       <MB.Trigger class="mtrigger">Task</MB.Trigger>
       <MB.Content class="mcontent" align="start" sideOffset={4}>
         <MB.Item class="mitem" onclick={onPauseAll}>
+          <span class="mic"><Pause size={13} /></span>
           Pause All
           <span class="mk">⇧⌘P</span>
         </MB.Item>
         <MB.Item class="mitem" onclick={onResumeAll}>
+          <span class="mic"><Play size={13} /></span>
           Resume All
           <span class="mk">⇧⌘R</span>
         </MB.Item>
         <MB.Separator class="msep" />
-        <MB.Item class="mitem" onclick={onClearDone}>
+        <MB.Item class="mitem danger" onclick={onClearDone}>
+          <span class="mic"><Trash2 size={13} /></span>
           Clear Finished…
         </MB.Item>
       </MB.Content>
@@ -92,6 +122,7 @@ import { CATEGORIES, type Category } from './categorize';
           onclick={() => onCategoryFilter(null)}
           data-on={categoryFilter === null}
         >
+          <span class="mic"><Eye size={13} /></span>
           All Types
           {#if categoryFilter === null}<span class="mk">✓</span>{/if}
         </MB.Item>
@@ -107,10 +138,12 @@ import { CATEGORIES, type Category } from './categorize';
         {/each}
         <MB.Separator class="msep" />
         <MB.Item class="mitem" onclick={onToggleTheme}>
+          <span class="mic"><SunMoon size={13} /></span>
           {themeLabel}
           <span class="mk">⌘T</span>
         </MB.Item>
         <MB.Item class="mitem" onclick={onShortcuts}>
+          <span class="mic"><Keyboard size={13} /></span>
           Keyboard Shortcuts
           <span class="mk">?</span>
         </MB.Item>
@@ -121,9 +154,16 @@ import { CATEGORIES, type Category } from './categorize';
       <MB.Trigger class="mtrigger">Help</MB.Trigger>
       <MB.Content class="mcontent" align="start" sideOffset={4}>
         <MB.Item class="mitem" onclick={onShortcuts}>
+          <span class="mic"><Keyboard size={13} /></span>
           Keyboard Shortcuts
           <span class="mk">?</span>
         </MB.Item>
+        {#if onAbout}
+          <MB.Item class="mitem" onclick={onAbout}>
+            <span class="mic"><Info size={13} /></span>
+            About Peregrine
+          </MB.Item>
+        {/if}
       </MB.Content>
     </MB.Menu>
   </MB.Root>
@@ -184,6 +224,19 @@ import { CATEGORIES, type Category } from './categorize';
   .menubar :global(.mk) {
     font: 500 10px var(--font-mono);
     color: var(--dim);
+  }
+  .menubar :global(.mic) {
+    display: inline-flex;
+    color: var(--dim);
+  }
+  .menubar :global(.mitem[data-highlighted] .mic) {
+    color: var(--on-accent-dim);
+  }
+  .menubar :global(.mitem.danger) {
+    color: var(--err);
+  }
+  .menubar :global(.mitem.danger .mic) {
+    color: var(--err);
   }
   .menubar :global(.msep) {
     height: 1px;

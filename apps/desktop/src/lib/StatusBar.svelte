@@ -6,7 +6,8 @@
    * pipe), theme toggle, version tag.
    */
   import { formatBytes, LIMIT_PRESETS } from './format';
-  import { ArrowDown, Circle, CircleDashed, Unplug, Sun, Moon } from '@lucide/svelte';
+  import { ArrowDown, Circle, CircleDashed, Unplug, Sun, Moon, Settings } from '@lucide/svelte';
+  import { Select } from 'bits-ui';
 
   let {
     totalSpeed,
@@ -20,6 +21,7 @@
     onGlobalLimit,
     theme,
     onToggleTheme,
+    onOpenSettings,
     version,
   }: {
     totalSpeed: number;
@@ -36,6 +38,7 @@
     onGlobalLimit: (bps: number | null) => void;
     theme: 'dark' | 'light';
     onToggleTheme: () => void;
+    onOpenSettings?: () => void;
     version: string;
   } = $props();
 
@@ -111,22 +114,39 @@
 
   <label class="glim" title="Global speed limit">
     Speed Limit
-    <select
-      bind:this={glimEl}
-      class="glim-select"
+    <Select.Root
+      type="single"
       value={globalLimit === null ? 'none' : String(globalLimit)}
-      onchange={(e) => {
-        const v = e.currentTarget?.value;
-        onGlobalLimit(!v || v === 'none' ? null : Number(v));
-      }}
+      onValueChange={(v) => onGlobalLimit(v === 'none' ? null : Number(v))}
     >
-      {#each LIMIT_PRESETS as p (p.label)}
-        <option value={p.bps}>{p.label}</option>
-      {/each}
-      <option value="none">Unlimited</option>
-    </select>
+      <Select.Trigger class="glim-select" aria-label="Global speed limit">
+        {globalLimit === null
+          ? 'Unlimited'
+          : (LIMIT_PRESETS.find((p) => String(p.bps) === String(globalLimit))?.label ??
+              `${formatBytes(globalLimit)}/s`)}
+      </Select.Trigger>
+      <Select.Content class="glimmenu">
+        {#if globalLimit !== null && !LIMIT_PRESETS.some((p) => String(p.bps) === String(globalLimit))}
+          <Select.Item value={String(globalLimit)} label={`${formatBytes(globalLimit)}/s`} class="glimitem" />
+        {/if}
+        <Select.Item value="none" label="Unlimited" class="glimitem" />
+        {#each LIMIT_PRESETS as p (p.label)}
+          <Select.Item value={String(p.bps)} label={p.label} class="glimitem" />
+        {/each}
+      </Select.Content>
+    </Select.Root>
   </label>
 
+  {#if onOpenSettings}
+    <button
+      class="ghost"
+      onclick={onOpenSettings}
+      title="Settings (⌘,)"
+      aria-label="Open settings"
+    >
+      <Settings size={12} strokeWidth={2} />
+    </button>
+  {/if}
   <button class="ghost" onclick={onToggleTheme} title="Toggle theme (⌘T)" aria-label="Toggle theme">
     {#if theme === 'dark'}<Sun size={12} />{:else}<Moon size={12} />{/if}
   </button>

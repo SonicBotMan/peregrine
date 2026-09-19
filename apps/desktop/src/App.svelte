@@ -921,6 +921,8 @@
 <div class="shell">
   <Titlebar
     title="Peregrine"
+    version="2.0.0-alpha.3"
+    onAbout={() => toast.push('Peregrine 2.0.0-alpha.3 — Rust + Tauri 2, GPL-family build')}
     onAdd={() => ((addUrl = ''), (showAdd = true))}
     onPauseAll={() => void bulkPause()}
     onResumeAll={() => void bulkResume()}
@@ -1087,6 +1089,7 @@
     onGlobalLimit={(bps) => void applyGlobalLimit(bps)}
     {theme}
     onToggleTheme={toggleTheme}
+    onOpenSettings={() => (settingsOpen = true)}
     version="dev"
   />
 </div>
