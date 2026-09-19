@@ -78,7 +78,7 @@ peregrine-scheduler = { path = "crates/scheduler" }
 peregrine-server = { path = "crates/server" }
 peregrine-storage = { path = "crates/storage" }
 # sqlite (WAL): segment table for byte-exact resume (PROPOSAL §5.2)
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 tempfile = "3"
 
 [profile.release]
